@@ -260,10 +260,22 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 }
 
 - (NSDictionary *)publicModel:(NSDictionary *)model {
+  NSArray *languages = model[@"languages"];
+  NSString *sourceLabel = [model[@"source"] isEqual:@"local"]
+                              ? @"Local file · reference only"
+                              : @"Hugging Face · managed by Friday";
+  NSString *sizeText = [NSByteCountFormatter
+      stringFromByteCount:[model[@"installedBytes"] longLongValue]
+               countStyle:NSByteCountFormatterCountStyleFile];
   return @{
     @"modelKey" : model[@"modelKey"] ?: @0,
     @"displayName" : model[@"displayName"] ?: @"Model",
     @"source" : model[@"source"] ?: @"local",
+    @"sourceLabel" : sourceLabel,
+    @"languageSummary" :
+        [NSString stringWithFormat:@"%lu languages",
+                                   (unsigned long)languages.count],
+    @"sizeText" : sizeText,
     @"managed" : model[@"managed"] ?: @NO,
     @"installedBytes" : model[@"installedBytes"] ?: @0,
     @"license" : model[@"license"] ?: @"Unknown",
@@ -284,13 +296,38 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       if ([model[@"managed"] boolValue])
         usage += [model[@"installedBytes"] unsignedLongLongValue];
     }
+    NSDictionary *active = [self modelForKey:self.activeModelKey];
+    NSArray *languages = active[@"languages"];
+    NSString *source = [active[@"source"] isEqual:@"local"]
+                           ? @"Local file · reference only"
+                           : @"Hugging Face · managed by Friday";
+    NSString *activeSize =
+        active
+            ? [NSByteCountFormatter
+                  stringFromByteCount:[active[@"installedBytes"] longLongValue]
+                           countStyle:NSByteCountFormatterCountStyleFile]
+            : @"";
+    NSString *managedSize = [NSByteCountFormatter
+        stringFromByteCount:(long long)usage
+                 countStyle:NSByteCountFormatterCountStyleFile];
     status = @{
       @"ok" : @YES,
       @"activeModelKey" : @(self.activeModelKey),
       @"activeModelReady" :
           @(self.activeModelKey != 0 && self.activeModelPath.length > 0 &&
             self.activeRuntimeReady),
+      @"activeModelName" : active[@"displayName"] ?: @"",
+      @"activeModelSource" : active ? source : @"",
+      @"activeModelLicense" : active[@"license"] ?: @"",
+      @"activeModelLanguages" : active
+          ? [NSString stringWithFormat:@"%lu languages",
+                                       (unsigned long)languages.count]
+          : @"",
+      @"activeModelBytes" : active[@"installedBytes"] ?: @0,
+      @"activeModelSizeText" : activeSize,
+      @"managedModelSizeText" : managedSize,
       @"models" : models,
+      @"modelCount" : @(models.count),
       @"managedBytes" : @(usage),
       @"downloadActive" : @(self.task != nil),
       @"downloadedBytes" : @(self.downloaded),

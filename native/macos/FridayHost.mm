@@ -8,6 +8,7 @@
 #import <AVFAudio/AVAudioApplication.h>
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <ServiceManagement/ServiceManagement.h>
 
 @interface FridayHostController : NSObject
 @property(nonatomic) friday_host_event_callback eventCallback;
@@ -36,6 +37,10 @@
 @property(nonatomic) uint64_t currentAudioGeneration;
 @property(nonatomic, strong) NSTimer *permissionTimer;
 @property(nonatomic) NSUInteger permissionPolls;
+@property(nonatomic, copy) NSString *dataDirectory;
+@property(nonatomic) uint64_t lastInferenceDurationMs;
+@property(nonatomic) uint64_t lastAudioDurationMs;
+@property(nonatomic, copy) NSString *lastErrorCode;
 - (instancetype)initWithDataDirectory:(NSString *)directory
                              callback:(friday_host_event_callback)callback
                               context:(void *)context;
@@ -56,6 +61,8 @@
                              callback:(friday_host_event_callback)callback
                               context:(void *)context {
   if ((self = [super init])) {
+    _dataDirectory = [directory copy];
+    _lastErrorCode = @"";
     _eventCallback = callback;
     _eventContext = context;
     _sources = [NSMutableDictionary dictionary];
@@ -68,20 +75,34 @@
     _delivery = [FridayTextDelivery new];
     _recognizer = [FridayNemoRecognizer new];
     __weak FridayHostController *weak = self;
-    _audio = [[FridayAudioSession alloc]
-        initWithEventHandler:^(NSString *event, NSDictionary *payload) {
-          FridayHostController *strong = weak;
-          if (!strong)
-            return;
-          uint64_t session = [payload[@"sessionId"] unsignedLongLongValue];
-          uint64_t generation =
-              [strong.audioGenerations[@(session)] unsignedLongLongValue];
-          [strong
-              emit:[NSString
-                       stringWithFormat:@"%@|%llu|%llu|%@", event, generation,
-                                        session,
-                                        [strong b64:[strong json:payload]]]];
-        }];
+    _audio = [[FridayAudioSession alloc] initWithEventHandler:^(
+                                             NSString *event,
+                                             NSDictionary *payload) {
+      FridayHostController *strong = weak;
+      if (!strong)
+        return;
+      uint64_t session = [payload[@"sessionId"] unsignedLongLongValue];
+      uint64_t generation =
+          [strong.audioGenerations[@(session)] unsignedLongLongValue];
+      if ([event isEqual:@"audio_meter"]) {
+        NSUInteger level = [payload[@"level"] unsignedIntegerValue];
+        uint64_t elapsed =
+            [payload[@"elapsedMilliseconds"] unsignedLongLongValue];
+        [strong.overlay updateMeterLevel:level elapsedMilliseconds:elapsed];
+        [strong
+            emit:[NSString
+                     stringWithFormat:@"audio_meter|%llu|%llu|%llu|%lu|%llu",
+                                      generation, session, elapsed,
+                                      (unsigned long)level,
+                                      [payload[@"capturedFrames"]
+                                          unsignedLongLongValue]]];
+      } else {
+        [strong emit:[NSString
+                         stringWithFormat:@"%@|%llu|%llu|%@", event, generation,
+                                          session,
+                                          [strong b64:[strong json:payload]]]];
+      }
+    }];
     _models = [[FridayModelRepository alloc]
         initWithDataDirectory:directory
                    recognizer:_recognizer
@@ -237,6 +258,63 @@
                            generation:(uint64_t)generation {
   return [NSString stringWithFormat:@"%llu:%llu", generation, session];
 }
+- (NSDictionary *)loginStatus {
+  SMAppServiceStatus status = SMAppService.mainAppService.status;
+  return @{
+    @"ok" : @YES,
+    @"enabled" : @(status == SMAppServiceStatusEnabled),
+    @"requiresApproval" : @(status == SMAppServiceStatusRequiresApproval),
+    @"status" : status == SMAppServiceStatusEnabled ? @"enabled"
+    : status == SMAppServiceStatusRequiresApproval  ? @"requires_approval"
+    : status == SMAppServiceStatusNotFound          ? @"unavailable"
+                                                    : @"disabled"
+  };
+}
+
+- (NSDictionary *)setLoginEnabled:(BOOL)enabled {
+  NSError *error = nil;
+  BOOL changed =
+      enabled ? [SMAppService.mainAppService registerAndReturnError:&error]
+              : [SMAppService.mainAppService unregisterAndReturnError:&error];
+  NSMutableDictionary *result = [[self loginStatus] mutableCopy];
+  result[@"ok"] = @(changed || error == nil);
+  result[@"message"] =
+      error.localizedDescription
+          ?: ([result[@"requiresApproval"] boolValue]
+                  ? @"Approve Friday in System Settings → General → Login "
+                    @"Items."
+              : enabled ? @"Friday will launch in the menu bar at login."
+                        : @"Friday will not launch at login.");
+  return result;
+}
+
+- (NSDictionary *)safeDiagnostics {
+  NSDictionary *model = [self.models status];
+  return @{
+    @"ok" : @YES,
+    @"appVersion" :
+            NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"]
+        ?: @"0.1.0",
+    @"nativeSdkVersion" : @"0.10.1",
+    @"nemoVersion" : @"0.1.0",
+    @"platform" : @"macOS 14+ · Apple Silicon",
+    @"permissions" : [self permissions],
+    @"hotkeyRunning" : @(self.input.running),
+    @"sourceTargetsRetained" : @(self.sources.count),
+    @"audio" : [self.audio diagnostics],
+    @"modelReady" : model[@"activeModelReady"] ?: @NO,
+    @"activeModelName" : model[@"activeModelName"] ?: @"",
+    @"activeModelLicense" : model[@"activeModelLicense"] ?: @"",
+    @"activeModelBytes" : model[@"activeModelBytes"] ?: @0,
+    @"managedModelBytes" : model[@"managedBytes"] ?: @0,
+    @"lastAudioDurationMs" : @(self.lastAudioDurationMs),
+    @"lastInferenceDurationMs" : @(self.lastInferenceDurationMs),
+    @"lastErrorCode" : self.lastErrorCode ?: @"",
+    @"transcriptIncluded" : @NO,
+    @"audioIncluded" : @NO,
+    @"rawPathsIncluded" : @NO
+  };
+}
 - (NSDictionary *)request:(NSString *)name payload:(NSString *)payload {
   if ([name isEqual:@"friday.spike"])
     return @{
@@ -266,6 +344,31 @@
           }];
     [self beginPermissionPolling];
     return [self permissions];
+  }
+  if ([name isEqual:@"friday.login.status"])
+    return [self loginStatus];
+  if ([name isEqual:@"friday.login.set"])
+    return [self setLoginEnabled:[payload isEqual:@"enabled"]];
+  if ([name isEqual:@"friday.login.cycle_test"]) {
+    NSDictionary *original = [self loginStatus];
+    BOOL originallyEnabled = [original[@"enabled"] boolValue];
+    NSDictionary *changed = [self setLoginEnabled:!originallyEnabled];
+    NSDictionary *observed = [self loginStatus];
+    NSDictionary *restored = [self setLoginEnabled:originallyEnabled];
+    NSDictionary *final = [self loginStatus];
+    BOOL restoredExactly = [final[@"enabled"] boolValue] == originallyEnabled &&
+                           ![final[@"requiresApproval"] boolValue];
+    fprintf(
+        stderr, "FRIDAY_AUTOMATION_LOGIN original=%s changed=%s restored=%s\n",
+        originallyEnabled ? "enabled" : "disabled",
+        [observed[@"status"] UTF8String], restoredExactly ? "true" : "false");
+    return @{
+      @"ok" : @([changed[@"ok"] boolValue] && [restored[@"ok"] boolValue] &&
+                restoredExactly),
+      @"originalEnabled" : @(originallyEnabled),
+      @"changedStatus" : observed[@"status"] ?: @"unknown",
+      @"restored" : @(restoredExactly)
+    };
   }
   if ([name isEqual:@"friday.hotkey.configure"]) {
     NSError *error = nil;
@@ -368,6 +471,8 @@
                  pasteAutomatically:pasteAutomatically] mutableCopy];
     delivery[@"sessionId"] = @(session);
     delivery[@"generation"] = @(generation);
+    if (![delivery[@"ok"] boolValue] || [delivery[@"kind"] isEqual:@"shown"])
+      delivery[@"text"] = text;
     [self.audio discardRetryAudio];
     return delivery;
   }
@@ -382,6 +487,8 @@
     [self.overlay showTranscribing];
     return @{@"ok" : @YES};
   }
+  if ([name isEqual:@"friday.audio.input_status"])
+    return [FridayAudioSession inputStatus];
   if ([name isEqual:@"friday.overlay.hide"]) {
     [self.overlay hide];
     return @{@"ok" : @YES};
@@ -402,22 +509,55 @@
     [self.models cancelOperation:payload.longLongValue];
     return @{@"ok" : @YES};
   }
+  if ([name isEqual:@"friday.model.remove"]) {
+    NSDictionary *fields = [self fields:payload];
+    return [self.models removeKey:(uint64_t)[fields[@"modelKey"] longLongValue]
+                    deleteManaged:[fields[@"delete"] boolValue]];
+  }
   if ([name isEqual:@"friday.model.cleanup"]) {
     [self.models removeFailedDownloads];
     return @{@"ok" : @YES};
   }
   if ([name isEqual:@"friday.diagnostics"])
-    return @{
-      @"ok" : @YES,
-      @"generation" : @(self.generation),
-      @"permissions" : [self permissions],
-      @"hotkeyRunning" : @(self.input.running),
-      @"sourceCount" : @(self.sources.count),
-      @"audioActive" : @(self.audio.active),
-      @"model" : [self.models status],
-      @"transcriptIncluded" : @NO,
-      @"audioIncluded" : @NO
+    return [self safeDiagnostics];
+  if ([name isEqual:@"friday.diagnostics.export"]) {
+    NSDictionary *diagnostics = [self safeDiagnostics];
+    NSData *data =
+        [NSJSONSerialization dataWithJSONObject:diagnostics
+                                        options:NSJSONWritingPrettyPrinted
+                                          error:nil];
+    NSString *directory =
+        [self.dataDirectory stringByAppendingPathComponent:@"Diagnostics"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+    NSString *path =
+        [directory stringByAppendingPathComponent:@"friday-diagnostics.json"];
+    NSError *error = nil;
+    BOOL written = [data writeToFile:path
+                             options:NSDataWritingAtomic
+                               error:&error];
+    return written ? @{@"ok" : @YES, @"exported" : @YES} : @{
+      @"ok" : @NO,
+      @"message" : error.localizedDescription
+          ?: @"Friday could not export diagnostics."
     };
+  }
+  if ([name isEqual:@"friday.diagnostics.reveal"]) {
+    NSString *path =
+        [[self.dataDirectory stringByAppendingPathComponent:@"Diagnostics"]
+            stringByAppendingPathComponent:@"friday-diagnostics.json"];
+    BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:path];
+    if (exists)
+      [NSWorkspace.sharedWorkspace
+          activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
+    return @{
+      @"ok" : @(exists),
+      @"message" : exists ? @"Revealed the diagnostics export."
+                          : @"Export diagnostics before revealing them."
+    };
+  }
   return @{@"ok" : @NO, @"message" : @"Unknown FridayHost command."};
 }
 - (void)requestAsync:(NSString *)name
@@ -488,6 +628,15 @@
                           sessionID:session
                          generation:generation
                          completion:^(NSDictionary *result) {
+                           self.lastAudioDurationMs =
+                               [capture[@"audioDurationMs"]
+                                   unsignedLongLongValue];
+                           self.lastInferenceDurationMs =
+                               [result[@"latencyMs"] unsignedLongLongValue];
+                           self.lastErrorCode =
+                               [result[@"ok"] boolValue]
+                                   ? @""
+                                   : result[@"code"] ?: @"transcription_failed";
                            if ([result[@"ok"] boolValue]) {
                              if (![result[@"silence"] boolValue] &&
                                  [result[@"text"] length] > 0) {
@@ -524,23 +673,30 @@
       });
       return;
     }
-    [self.recognizer transcribeAudioAtURL:retryURL
-                                sessionID:session
-                               generation:generation
-                               completion:^(NSDictionary *result) {
-                                 if ([result[@"ok"] boolValue]) {
-                                   if (![result[@"silence"] boolValue] &&
-                                       [result[@"text"] length] > 0) {
-                                     NSString *transcriptKey = [self
-                                         transcriptKeyForSession:session
-                                                      generation:generation];
-                                     self.transcripts[transcriptKey] =
-                                         result[@"text"];
-                                   }
-                                   [self.audio discardRetryAudio];
-                                 }
-                                 finish(result);
-                               }];
+    [self.recognizer
+        transcribeAudioAtURL:retryURL
+                   sessionID:session
+                  generation:generation
+                  completion:^(NSDictionary *result) {
+                    self.lastInferenceDurationMs =
+                        [result[@"latencyMs"] unsignedLongLongValue];
+                    self.lastErrorCode =
+                                     [result[@"ok"] boolValue]
+                                         ? @""
+                                         : result[@"code"]
+                                               ?: @"transcription_failed";
+                    if ([result[@"ok"] boolValue]) {
+                      if (![result[@"silence"] boolValue] &&
+                          [result[@"text"] length] > 0) {
+                        NSString *transcriptKey =
+                            [self transcriptKeyForSession:session
+                                               generation:generation];
+                        self.transcripts[transcriptKey] = result[@"text"];
+                      }
+                      [self.audio discardRetryAudio];
+                    }
+                    finish(result);
+                  }];
     return;
   }
   if ([name isEqual:@"friday.debug.fixture_delivery"]) {
@@ -618,6 +774,36 @@
                                 sessionID:session
                                generation:generation
                                completion:finish];
+    return;
+  }
+  if ([name isEqual:@"friday.model.pick_local"]) {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = @"Choose a compatible Parakeet TDT GGUF model";
+    panel.prompt = @"Add Model";
+    panel.message =
+        @"Choose a GGUF file with a matching Friday manifest sidecar.";
+    panel.canChooseDirectories = NO;
+    panel.canChooseFiles = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.allowedFileTypes = @[ @"gguf" ];
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) {
+      finish(@{
+        @"ok" : @NO,
+        @"code" : @"user_cancelled",
+        @"message" : @"No local model was selected."
+      });
+      return;
+    }
+    self.generation += 1;
+    uint64_t localKey = 1000 + self.generation;
+    [self.models addLocalPath:panel.URL.path
+                          key:localKey
+                   generation:self.generation
+                   completion:finish];
+    return;
+  }
+  if ([name isEqual:@"friday.model.add_hf_ui"]) {
+    [self.models addHuggingFaceID:payload operation:key completion:finish];
     return;
   }
   if ([name isEqual:@"friday.model.download"]) {
@@ -777,11 +963,24 @@ extern "C" size_t friday_host_native_contract_probes(uint8_t *output,
                deliverText:@"Friday copy-only delivery contract"
                   toSource:copyOnlySource
         pasteAutomatically:NO];
+    SMAppServiceStatus loginStatus = SMAppService.mainAppService.status;
+    FridayOverlayWindow *overlay =
+        [[FridayOverlayWindow alloc] initWithHandler:^(NSString *action) {
+          (void)action;
+        }];
+    NSDictionary *overlayProbe = [overlay runInteractionProbe];
     NSDictionary *result = @{
       @"audio" : [FridayAudioSession runStorageProbe],
+      @"audioInput" : [FridayAudioSession inputStatus],
       @"converterFailure" : [FridayAudioSession runFailureCleanupProbe],
       @"models" : [FridayModelRepository runRepositoryProbes],
-      @"copyOnlyDelivery" : copyOnly
+      @"overlay" : overlayProbe,
+      @"copyOnlyDelivery" : copyOnly,
+      @"loginStatusKnown" :
+          @(loginStatus == SMAppServiceStatusNotRegistered ||
+            loginStatus == SMAppServiceStatusEnabled ||
+            loginStatus == SMAppServiceStatusRequiresApproval ||
+            loginStatus == SMAppServiceStatusNotFound)
     };
     NSData *json = FridayJSON(result);
     if (!json || json.length >= capacity)

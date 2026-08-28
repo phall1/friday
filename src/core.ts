@@ -1,4 +1,6 @@
 import { Cmd, asciiBytes, utf8Bytes } from "@native-sdk/core";
+import { type TextInputEvent } from "@native-sdk/core/text";
+import { type StatusItemMenuItem, type StatusItemState, type ThemeState } from "@native-sdk/core/events";
 
 export type HostChannelState = "data" | "closed" | "rejected";
 export type HostChannelKey = 7001;
@@ -7,8 +9,25 @@ export type FailureStage = "capture" | "model" | "transcription" | "delivery";
 export type RecordingControl = "held" | "locked";
 export type StopDisposition = "transcribe" | "discard" | "cancel" | "duration_limit";
 const HOST_CHANNEL_KEY: HostChannelKey = 7001;
+export type AppPage = "settings" | "models" | "permissions" | "diagnostics";
+export type HotkeyChoice = "command_shift" | "control_option";
+export type ModelDownloadState = "idle" | "downloading" | "verifying" | "installed" | "cancelled" | "failed";
+export type LoginStatus = "checking" | "disabled" | "enabled" | "requires_approval" | "unavailable";
+export type MeterLevel = "quiet" | "low" | "medium" | "high";
+export type AppearanceChoice = "system" | "light" | "dark";
+export type SystemColorScheme = "light" | "dark";
 
 
+export interface ModelRow {
+  readonly modelKey: number;
+  readonly name: Uint8Array;
+  readonly source: Uint8Array;
+  readonly license: Uint8Array;
+  readonly languages: Uint8Array;
+  readonly size: Uint8Array;
+  readonly managed: boolean;
+  readonly active: boolean;
+}
 export type DictationWorkflow =
   | { readonly kind: "booting" }
   | { readonly kind: "not_ready" }
@@ -49,6 +68,38 @@ export interface Model {
   readonly pasteAutomatically: boolean;
   readonly launchAtLogin: boolean;
   readonly ambientDetail: Uint8Array;
+  readonly page: AppPage;
+  readonly onboardingStep: number;
+  readonly hotkeyChoice: HotkeyChoice;
+  readonly hotkeyPracticed: boolean;
+  readonly modelDownloadState: ModelDownloadState;
+  readonly modelDownloadUserCancelled: boolean;
+  readonly modelDownloadedBytes: number;
+  readonly modelTotalBytes: number;
+  readonly modelDownloadMessage: Uint8Array;
+  readonly managedModelBytes: number;
+  readonly modelCount: number;
+  readonly activeModelName: Uint8Array;
+  readonly activeModelSource: Uint8Array;
+  readonly activeModelLicense: Uint8Array;
+  readonly activeModelLanguages: Uint8Array;
+  readonly activeModelSizeText: Uint8Array;
+  readonly managedModelSizeText: Uint8Array;
+  readonly activeModelBytes: number;
+  readonly hfDraft: Uint8Array;
+  readonly modelRows: readonly ModelRow[];
+  readonly diagnostics: Uint8Array;
+  readonly diagnosticsExported: boolean;
+  readonly microphoneName: Uint8Array;
+  readonly microphoneDetail: Uint8Array;
+  readonly meterLevel: MeterLevel;
+  readonly elapsedMilliseconds: number;
+  readonly loginStatus: LoginStatus;
+  readonly appearanceOverride: AppearanceChoice;
+  readonly systemColorScheme: SystemColorScheme;
+  readonly reduceMotion: boolean;
+  readonly automationSceneActive: boolean;
+  readonly highContrast: boolean;
 }
 
 export type Msg =
@@ -89,21 +140,84 @@ export type Msg =
   | { readonly kind: "source_captured"; readonly body: Uint8Array }
   | { readonly kind: "source_capture_failed"; readonly error: Uint8Array }
   | { readonly kind: "dismiss_failure" }
+  | { readonly kind: "show_settings" }
+  | { readonly kind: "show_models" }
+  | { readonly kind: "show_permissions" }
+  | { readonly kind: "show_diagnostics" }
+  | { readonly kind: "quit_app" }
+  | { readonly kind: "onboarding_next" }
+  | { readonly kind: "onboarding_back" }
+  | { readonly kind: "accept_limited_mode" }
+  | { readonly kind: "choose_command_shift" }
+  | { readonly kind: "choose_control_option" }
+  | { readonly kind: "set_double_tap_fast" }
+  | { readonly kind: "set_double_tap_balanced" }
+  | { readonly kind: "set_double_tap_deliberate" }
+  | { readonly kind: "cancel_model_download" }
+  | { readonly kind: "retry_model_download" }
+  | { readonly kind: "choose_local_model" }
+  | { readonly kind: "local_model_added"; readonly body: Uint8Array }
+  | { readonly kind: "local_model_failed"; readonly error: Uint8Array }
+  | { readonly kind: "hf_draft_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "add_hugging_face_model" }
+  | { readonly kind: "hf_model_added"; readonly body: Uint8Array }
+  | { readonly kind: "hf_model_failed"; readonly error: Uint8Array }
+  | { readonly kind: "select_default_model" }
+  | { readonly kind: "model_selected"; readonly body: Uint8Array }
+  | { readonly kind: "model_select_failed"; readonly error: Uint8Array }
+  | { readonly kind: "remove_model_reference" }
+  | { readonly kind: "delete_managed_model" }
+  | { readonly kind: "model_removed"; readonly body: Uint8Array }
+  | { readonly kind: "model_remove_failed"; readonly error: Uint8Array }
+  | { readonly kind: "cleanup_model_downloads" }
+  | { readonly kind: "refresh_microphone" }
+  | { readonly kind: "microphone_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "select_model"; readonly rowKey: number }
+  | { readonly kind: "remove_model"; readonly rowKey: number }
+  | { readonly kind: "delete_model"; readonly rowKey: number }
+  | { readonly kind: "microphone_failed"; readonly error: Uint8Array }
+  | { readonly kind: "refresh_diagnostics" }
+  | { readonly kind: "diagnostics_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "diagnostics_failed"; readonly error: Uint8Array }
+  | { readonly kind: "copy_diagnostics_fresh" }
+  | { readonly kind: "diagnostics_copy_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "diagnostics_copy_failed"; readonly error: Uint8Array }
+  | { readonly kind: "copy_diagnostics" }
+  | { readonly kind: "export_diagnostics" }
+  | { readonly kind: "diagnostics_exported"; readonly body: Uint8Array }
+  | { readonly kind: "diagnostics_export_failed"; readonly error: Uint8Array }
+  | { readonly kind: "reveal_diagnostics" }
+  | { readonly kind: "login_status_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "login_status_failed"; readonly error: Uint8Array }
+  | { readonly kind: "login_setting_saved"; readonly body: Uint8Array }
+  | { readonly kind: "login_setting_failed"; readonly error: Uint8Array }
+  | { readonly kind: "appearance_changed"; readonly colorScheme: SystemColorScheme; readonly reduceMotion: boolean; readonly highContrast: boolean }
+  | { readonly kind: "automation_scene_requested"; readonly value: Uint8Array }
+  | { readonly kind: "automation_login_requested"; readonly value: Uint8Array }
+  | { readonly kind: "automation_login_finished"; readonly body: Uint8Array }
+  | { readonly kind: "automation_login_failed"; readonly error: Uint8Array }
   | { readonly kind: "debug_fixture_requested"; readonly value: Uint8Array }
   | { readonly kind: "debug_fixture_finished"; readonly body: Uint8Array }
   | { readonly kind: "debug_fixture_failed"; readonly error: Uint8Array }
+  | { readonly kind: "copy_immediate_result" }
   | { readonly kind: "dismiss_result" };
 
 export const envMsgs = [
   { env: "FRIDAY_AUTOMATION_FIXTURE", msg: "debug_fixture_requested" },
+  { env: "FRIDAY_AUTOMATION_SCENE", msg: "automation_scene_requested" },
+  { env: "FRIDAY_AUTOMATION_LOGIN", msg: "automation_login_requested" },
 ] as const;
-
+export const appearanceMsg = "appearance_changed";
 export const viewUnbound = [
   "host_event", "subscribed", "subscribe_failed", "permissions_loaded", "permissions_failed",
   "model_status_loaded", "model_status_failed", "model_downloaded", "model_download_failed",
   "restored", "fresh_boot", "restore_failed", "source_captured", "source_capture_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
   "audio_started", "audio_start_failed", "transcript_ready", "transcription_failed",
-  "delivery_finished", "delivery_failed", "debug_fixture_requested", "debug_fixture_finished", "debug_fixture_failed", "sessionSourceToken", "workflowMessage",
+  "delivery_finished", "delivery_failed", "debug_fixture_requested", "debug_fixture_finished", "debug_fixture_failed",
+  "local_model_added", "local_model_failed", "hf_model_added", "hf_model_failed", "model_selected", "model_select_failed", "model_removed", "model_remove_failed",
+  "microphone_loaded", "microphone_failed", "diagnostics_loaded", "diagnostics_failed", "diagnostics_copy_loaded", "diagnostics_copy_failed", "diagnostics_exported", "diagnostics_export_failed",
+  "login_status_loaded", "login_status_failed", "login_setting_saved", "login_setting_failed", "appearance_changed",
+  "automation_scene_requested", "automation_login_requested", "automation_login_finished", "automation_login_failed", "automationSceneActive", "systemColorScheme", "reduceMotion", "highContrast", "sessionSourceToken", "workflowMessage",
 ] as const;
 
 function hasPrefix(bytes: Uint8Array, prefix: Uint8Array): boolean {
@@ -123,6 +237,64 @@ function contains(bytes: Uint8Array, needle: Uint8Array): boolean {
   return false;
 }
 
+function byteEquals(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;
+  return true;
+}
+
+function jsonString(bytes: Uint8Array, key: Uint8Array): Uint8Array {
+  if (key.length === 0 || bytes.length < key.length) return asciiBytes("");
+  for (let start = 0; start <= bytes.length - key.length; start += 1) {
+    let match = true;
+    for (let index = 0; index < key.length; index += 1) if (bytes[start + index] !== key[index]) match = false;
+    if (!match) continue;
+    const valueStart = start + key.length;
+    let end = valueStart;
+    while (end < bytes.length && bytes[end] !== 34) end += 1;
+    return bytes.slice(valueStart, end);
+  }
+  return asciiBytes("");
+}
+
+
+function findBytes(bytes: Uint8Array, needle: Uint8Array, start: number): number {
+  if (needle.length === 0 || bytes.length < needle.length) return bytes.length;
+  for (let offset = start; offset <= bytes.length - needle.length; offset += 1) {
+    let match = true;
+    for (let index = 0; index < needle.length; index += 1) if (bytes[offset + index] !== needle[index]) match = false;
+    if (match) return offset;
+  }
+  return bytes.length;
+}
+
+function parseModelRows(bytes: Uint8Array): readonly ModelRow[] {
+  const rows: ModelRow[] = [];
+  const token = asciiBytes("\"modelKey\":");
+  let cursor = 0;
+  while (cursor < bytes.length && rows.length < 8) {
+    const keyAt = findBytes(bytes, token, cursor);
+    if (keyAt >= bytes.length) return rows;
+    let start = keyAt;
+    while (start > 0 && bytes[start] !== 123) start -= 1;
+    let end = keyAt;
+    while (end < bytes.length && bytes[end] !== 125) end += 1;
+    const object = bytes.slice(start, end);
+    const key = jsonInteger(object, token);
+    if (key > 0) rows[rows.length] = {
+      modelKey: key / 1,
+      name: jsonString(object, asciiBytes("\"displayName\":\"")),
+      source: jsonString(object, asciiBytes("\"sourceLabel\":\"")),
+      license: jsonString(object, asciiBytes("\"license\":\"")),
+      languages: jsonString(object, asciiBytes("\"languageSummary\":\"")),
+      size: jsonString(object, asciiBytes("\"sizeText\":\"")),
+      managed: contains(object, asciiBytes("\"managed\":true")),
+      active: contains(object, asciiBytes("\"active\":true")),
+    };
+    cursor = end + 1;
+  }
+  return rows;
+}
 function findPipe(bytes: Uint8Array, start: number): number {
   for (let index = start; index < bytes.length; index += 1) if (bytes[index] === 124) return index;
   return bytes.length;
@@ -185,12 +357,44 @@ function defaultModel(): Model {
     limitedModeAccepted: false,
     hotkeyConfirmed: false,
     doubleTapEnabled: true,
-    doubleTapWindowMs: 350 / 1,
+    doubleTapWindowMs: 300 / 1,
     minimumHoldMs: 300 / 1,
     overlayEnabled: true,
     pasteAutomatically: true,
     launchAtLogin: false,
     ambientDetail: utf8Bytes("Checking permissions and local model readiness…"),
+    page: "settings",
+    onboardingStep: 0 / 1,
+    hotkeyChoice: "command_shift",
+    hotkeyPracticed: false,
+    modelDownloadState: "idle",
+    modelDownloadUserCancelled: false,
+    modelDownloadedBytes: 0 / 1,
+    modelTotalBytes: 0 / 1,
+    modelDownloadMessage: asciiBytes(""),
+    managedModelBytes: 0 / 1,
+    modelCount: 0 / 1,
+    activeModelName: asciiBytes(""),
+    modelRows: [],
+    activeModelSource: asciiBytes(""),
+    activeModelLicense: asciiBytes(""),
+    activeModelLanguages: asciiBytes(""),
+    activeModelBytes: 0 / 1,
+    hfDraft: asciiBytes(""),
+    activeModelSizeText: asciiBytes(""),
+    managedModelSizeText: asciiBytes(""),
+    diagnosticsExported: false,
+    diagnostics: utf8Bytes("Diagnostics have not been collected."),
+    microphoneName: utf8Bytes("System default microphone"),
+    microphoneDetail: utf8Bytes("Checking input format…"),
+    meterLevel: "quiet",
+    elapsedMilliseconds: 0 / 1,
+    loginStatus: "checking",
+    appearanceOverride: "system",
+    systemColorScheme: "light",
+    reduceMotion: false,
+    automationSceneActive: false,
+    highContrast: false,
   };
 }
 
@@ -203,10 +407,10 @@ function readiness(model: Model): DictationWorkflow {
   if (!model.permissionsLoaded || !model.modelsLoaded) return { kind: "booting" };
   if (!model.microphonePermission) return { kind: "not_ready" };
 
-  if (!model.inputMonitoringPermission) return { kind: "not_ready" };
-  if (!model.hotkeyConfirmed) return { kind: "not_ready" };
+  if (!model.inputMonitoringPermission && !model.limitedModeAccepted) return { kind: "not_ready" };
+  if (!model.hotkeyConfirmed && !model.limitedModeAccepted) return { kind: "not_ready" };
   if (!model.modelReady || model.selectedModelKey === 0) return { kind: "not_ready" };
-  if (!model.onboardingComplete && !model.limitedModeAccepted) return { kind: "not_ready" };
+  if (!model.onboardingComplete) return { kind: "not_ready" };
   return { kind: "ready", modelKey: model.selectedModelKey };
 }
 function durableModel(model: Model): Model {
@@ -230,15 +434,48 @@ function durableModel(model: Model): Model {
     inputMonitoringPermission: false,
     modelReady: false,
     ambientDetail: asciiBytes(""),
+    modelDownloadState: "idle",
+    modelDownloadUserCancelled: false,
+    modelDownloadedBytes: 0 / 1,
+    modelTotalBytes: 0 / 1,
+    modelDownloadMessage: asciiBytes(""),
+    managedModelBytes: 0 / 1,
+    modelCount: 0 / 1,
+    activeModelName: asciiBytes(""),
+    activeModelSource: asciiBytes(""),
+    modelRows: [],
+    activeModelLicense: asciiBytes(""),
+    activeModelLanguages: asciiBytes(""),
+    activeModelBytes: 0 / 1,
+    hfDraft: asciiBytes(""),
+    diagnosticsExported: false,
+    activeModelSizeText: asciiBytes(""),
+    managedModelSizeText: asciiBytes(""),
+    diagnostics: utf8Bytes("Diagnostics have not been collected."),
+    microphoneName: utf8Bytes("System default microphone"),
+    microphoneDetail: utf8Bytes("Checking input format…"),
+    meterLevel: "quiet",
+    elapsedMilliseconds: 0 / 1,
+    loginStatus: "checking",
+    appearanceOverride: "system",
+    systemColorScheme: "light",
+    reduceMotion: false,
+    automationSceneActive: false,
+    highContrast: false,
   };
 }
 
-function notReadyMessage(model: Model): Uint8Array {
-  if (!model.microphonePermission) return utf8Bytes("Microphone permission is required before recording.");
-  if (!model.inputMonitoringPermission) return utf8Bytes("Input Monitoring permission is required for the global hotkey.");
-  if (!model.hotkeyConfirmed) return utf8Bytes("Confirm a global hotkey to enable dictation.");
-  if (!model.modelReady || model.selectedModelKey === 0) return utf8Bytes("Download or select a compatible Parakeet TDT GGUF model.");
-  return utf8Bytes("Complete onboarding before using Friday.");
+export function blockerText(model: Model): Uint8Array {
+  if (!model.permissionsLoaded || !model.modelsLoaded) return utf8Bytes("Checking Friday’s local requirements.");
+  if (!model.microphonePermission) return utf8Bytes("Microphone permission is required to record.");
+  if (!model.inputMonitoringPermission && !model.limitedModeAccepted) return utf8Bytes("Input Monitoring is required for the global shortcut. Manual Start remains available in limited mode.");
+  if (!model.hotkeyConfirmed && !model.limitedModeAccepted) return utf8Bytes("Choose and confirm a global dictation shortcut.");
+  if (!model.modelReady || model.selectedModelKey === 0) {
+    if (model.modelDownloadState === "failed") return utf8Bytes("The Parakeet model download failed. Retry or choose a compatible local model.");
+    return utf8Bytes("Download or select a compatible Parakeet TDT GGUF model.");
+  }
+  if (!model.onboardingComplete) return utf8Bytes("Finish setup before using Friday.");
+  return utf8Bytes("Friday is ready.");
 }
 
 
@@ -248,6 +485,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
     Cmd.request("friday.subscribe", asciiBytes("7001"), { key: "host-subscribe", ok: "subscribed", err: "subscribe_failed" }),
     Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
     Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+    Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+    Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
   ])];
 }
 
@@ -267,14 +506,14 @@ export function workflowName(model: Model): Uint8Array {
 export function workflowDetail(model: Model): Uint8Array {
   switch (model.workflow.kind) {
     case "booting": return utf8Bytes("Checking Friday’s local services…");
-    case "not_ready": return notReadyMessage(model);
-    case "ready": return model.hasImmediateResult ? model.immediateResultMessage : asciiBytes("Ready for local dictation.");
-    case "starting": return asciiBytes("Waiting for an intentional hold or second tap.");
-    case "recording": return model.workflow.control === "locked" ? asciiBytes("Recording is locked. Press the hotkey or Stop to finish.") : asciiBytes("Recording while the hotkey is held.");
-    case "stopping": return asciiBytes("Draining captured audio.");
-    case "transcribing": return asciiBytes("Transcribing locally with the selected model.");
-    case "delivering": return asciiBytes("Delivering only the final transcript to the exact source.");
-    case "failed": return model.workflowMessage;
+    case "not_ready": return blockerText(model);
+    case "ready": return model.hasImmediateResult ? model.immediateResultMessage : utf8Bytes("Ready. Hold the shortcut and speak naturally.");
+    case "starting": return utf8Bytes("Keep holding to record, or release to dismiss.");
+    case "recording": return model.workflow.control === "locked" ? utf8Bytes("Locked recording. Stop when you’re finished.") : utf8Bytes("Listening while the shortcut is held.");
+    case "stopping": return utf8Bytes("Finishing the recording safely.");
+    case "transcribing": return utf8Bytes("Transcribing locally with the active Parakeet model.");
+    case "delivering": return utf8Bytes("Returning the final words to the app where you started.");
+    case "failed": return failureDetail(model);
   }
 }
 export function isReady(model: Model): boolean { return model.workflow.kind === "ready"; }
@@ -291,10 +530,332 @@ export function permissionSummary(model: Model): Uint8Array {
 }
 export function modelSummary(model: Model): Uint8Array { return model.modelReady ? asciiBytes("Parakeet TDT model ready.") : asciiBytes("No compatible model ready."); }
 
+export function showOnboarding(model: Model): boolean { return !model.onboardingComplete; }
+export function showSettings(model: Model): boolean { return model.onboardingComplete && model.page === "settings"; }
+export function showModels(model: Model): boolean { return model.onboardingComplete && model.page === "models"; }
+export function availableModels(model: Model): readonly ModelRow[] { return model.modelRows.filter((row) => !row.active); }
+export function defaultModelInstalled(model: Model): boolean {
+  for (let index = 0; index < model.modelRows.length; index += 1) if (model.modelRows[index].modelKey === 1) return true;
+  return false;
+}
+export function showPermissions(model: Model): boolean { return model.onboardingComplete && model.page === "permissions"; }
+export function showDiagnostics(model: Model): boolean { return model.onboardingComplete && model.page === "diagnostics"; }
+export function isTranscribing(model: Model): boolean { return model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping"; }
+export function isFailed(model: Model): boolean { return model.workflow.kind === "failed"; }
+export function hasActiveModel(model: Model): boolean { return model.selectedModelKey > 0 && model.activeModelName.length > 0; }
+export function isDefaultModelActive(model: Model): boolean { return model.selectedModelKey === 1; }
+export function canCompleteOnboarding(model: Model): boolean {
+  return model.microphonePermission && model.modelReady &&
+    ((model.inputMonitoringPermission && model.hotkeyConfirmed) || model.limitedModeAccepted);
+}
+export function onboardingProgress(model: Model): Uint8Array {
+  if (model.onboardingStep === 0) return utf8Bytes("Step 1 of 4 · Privacy");
+  if (model.onboardingStep === 1) return utf8Bytes("Step 2 of 4 · Permissions");
+  if (model.onboardingStep === 2) return utf8Bytes("Step 3 of 4 · Shortcut");
+  return utf8Bytes("Step 4 of 4 · Local model");
+}
+export function permissionMicrophoneState(model: Model): Uint8Array { return model.microphonePermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required to record"); }
+export function permissionAccessibilityState(model: Model): Uint8Array { return model.accessibilityPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Optional — completed text will be copied"); }
+export function permissionInputState(model: Model): Uint8Array { return model.inputMonitoringPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required for the global shortcut"); }
+export function hotkeyLabel(model: Model): Uint8Array { return model.hotkeyChoice === "command_shift" ? utf8Bytes("Command + Shift") : utf8Bytes("Control + Option"); }
+export function waveformGlyph(model: Model): Uint8Array {
+  if (model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping") return utf8Bytes("▂ ▃ ▅ ▃ ▂");
+  if (model.workflow.kind !== "recording") return utf8Bytes("▁ ▁ ▁ ▁ ▁");
+  if (model.meterLevel === "high") return utf8Bytes("▃ ▆ █ ▇ ▄");
+  if (model.meterLevel === "medium") return utf8Bytes("▂ ▅ ▇ ▅ ▃");
+  if (model.meterLevel === "low") return utf8Bytes("▁ ▃ ▅ ▃ ▂");
+  return utf8Bytes("▁ ▂ ▂ ▂ ▁");
+}
+export function modelDownloadActive(model: Model): boolean { return model.modelDownloadState === "downloading" || model.modelDownloadState === "verifying"; }
+export function modelDownloadFailed(model: Model): boolean { return model.modelDownloadState === "failed" || model.modelDownloadState === "cancelled"; }
+export function loginStatusText(model: Model): Uint8Array {
+  if (model.loginStatus === "enabled") return utf8Bytes("Enabled");
+  if (model.loginStatus === "disabled") return utf8Bytes("Off");
+  if (model.loginStatus === "requires_approval") return utf8Bytes("Needs approval in Login Items");
+  if (model.loginStatus === "unavailable") return utf8Bytes("Unavailable — try again from Applications");
+  return utf8Bytes("Checking…");
+}
+export function failureDetail(model: Model): Uint8Array {
+  if (model.workflow.kind !== "failed") return asciiBytes("");
+  if (model.workflow.stage === "capture") return utf8Bytes("Friday lost microphone input. Check the selected microphone, then try again.");
+  if (model.workflow.stage === "model") return utf8Bytes("The active model is unavailable. Select or download a compatible model.");
+  if (model.workflow.stage === "transcription") return utf8Bytes("Local transcription did not finish. Retry the retained recording or change model.");
+  return utf8Bytes("Friday could not return the final text. The transcript remains available for manual copy when possible.");
+}
 
+export function elapsedLabel(model: Model): Uint8Array {
+  const minutes = Math.trunc(model.elapsedMilliseconds / 60000);
+  const seconds = Math.trunc(model.elapsedMilliseconds / 1000) % 60;
+  return seconds < 10 ? utf8Bytes(`${minutes}:0${seconds}`) : utf8Bytes(`${minutes}:${seconds}`);
+}
+export function hasDiagnosticsExport(model: Model): boolean { return model.diagnosticsExported; }
+export function themeState(model: Model): ThemeState {
+  return { pack: "house", colorScheme: model.appearanceOverride, accent: "#e7685f" };
+}
+
+function statusRow(id: number, label: Uint8Array, command: Uint8Array, enabled: boolean, detail: Uint8Array, role: "command" | "info"): StatusItemMenuItem {
+  const safeId = Number.isFinite(id) && id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0;
+  return { id: safeId, label, command, separator: false, enabled, detail, role, key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
+}
+
+export function statusItem(model: Model): StatusItemState {
+  const items: StatusItemMenuItem[] = [];
+  items[items.length] = statusRow(1, workflowName(model), asciiBytes(""), false, blockerText(model), "info");
+  if (model.workflow.kind === "ready") items[items.length] = statusRow(10, utf8Bytes("Start Recording"), asciiBytes("friday.start"), true, asciiBytes(""), "command");
+  if (model.workflow.kind === "recording") items[items.length] = statusRow(11, utf8Bytes("Stop Recording"), asciiBytes("friday.stop"), true, asciiBytes(""), "command");
+  if (isBusy(model)) items[items.length] = statusRow(12, utf8Bytes("Cancel"), asciiBytes("friday.cancel"), true, asciiBytes(""), "command");
+  items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
+  items[items.length] = statusRow(20, utf8Bytes("Settings…"), asciiBytes("friday.settings"), true, asciiBytes(""), "command");
+  items[items.length] = statusRow(21, utf8Bytes("Model Manager…"), asciiBytes("friday.models"), true, asciiBytes(""), "command");
+  items[items.length] = statusRow(22, utf8Bytes("Permission Status…"), asciiBytes("friday.permissions"), true, asciiBytes(""), "command");
+  items[items.length] = statusRow(23, model.launchAtLogin ? utf8Bytes("Disable Launch at Login") : utf8Bytes("Enable Launch at Login"), asciiBytes("friday.login"), model.loginStatus !== "checking", asciiBytes(""), "command");
+  items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
+  items[items.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
+  const title = model.workflow.kind === "recording" ? utf8Bytes("●") : model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping" ? utf8Bytes("···") : model.workflow.kind === "failed" ? utf8Bytes("!") : model.workflow.kind === "ready" ? utf8Bytes("F") : utf8Bytes("○");
+  const tone = model.workflow.kind === "failed" ? "critical" : model.workflow.kind === "not_ready" ? "warning" : model.workflow.kind === "recording" ? "critical" : "normal";
+  return {
+    iconPath: asciiBytes("assets/icon.png"),
+    tooltip: workflowDetail(model),
+    activationCommand: asciiBytes("friday.settings"),
+    alternateActivationCommand: model.workflow.kind === "ready" ? asciiBytes("friday.start") : asciiBytes("friday.settings"),
+    openCommand: asciiBytes("friday.settings"),
+    presentation: { title, width: 28, tone, iconOpacity: 1.0, monospaced: true, fontSize: 13.0, fontWeight: "semibold" },
+    items,
+  };
+}
+
+export function commandMsg(name: string): Msg | null {
+  if (name === "friday.start") return { kind: "start_recording" };
+  if (name === "friday.stop") return { kind: "stop_recording" };
+  if (name === "friday.cancel") return { kind: "cancel_active" };
+  if (name === "friday.settings") return { kind: "show_settings" };
+  if (name === "friday.models") return { kind: "show_models" };
+  if (name === "friday.permissions") return { kind: "show_permissions" };
+  if (name === "friday.login") return { kind: "toggle_launch_at_login" };
+  if (name === "friday.quit") return { kind: "quit_app" };
+  return null;
+}
+
+
+
+function automationScene(model: Model, value: Uint8Array): Model {
+  const dark = contains(value, asciiBytes("-dark"));
+  const base: Model = {
+    ...model,
+    page: "settings",
+    onboardingComplete: true,
+    onboardingStep: 0 / 1,
+    permissionsLoaded: true,
+    modelsLoaded: true,
+    microphonePermission: true,
+    accessibilityPermission: true,
+    inputMonitoringPermission: true,
+    hotkeyConfirmed: true,
+    hotkeyPracticed: true,
+    modelReady: true,
+    selectedModelKey: 1 / 1,
+    activeModelName: utf8Bytes("Parakeet TDT 0.6B v3"),
+    activeModelSource: utf8Bytes("Hugging Face · managed by Friday"),
+    activeModelLicense: utf8Bytes("CC-BY-4.0"),
+    activeModelLanguages: utf8Bytes("25 European languages"),
+    activeModelBytes: 713975456 / 1,
+    automationSceneActive: true,
+    managedModelBytes: 713975456 / 1,
+    modelCount: 1 / 1,
+    modelDownloadState: "installed",
+    modelDownloadedBytes: 713975456 / 1,
+    modelRows: [{
+      modelKey: 1 / 1,
+      name: utf8Bytes("Parakeet TDT 0.6B v3"),
+      source: utf8Bytes("Hugging Face · managed by Friday"),
+      license: utf8Bytes("CC-BY-4.0"),
+      languages: utf8Bytes("25 languages"),
+      size: utf8Bytes("714 MB"),
+      managed: true,
+      active: true,
+    }],
+    modelTotalBytes: 713975456 / 1,
+    workflow: { kind: "ready", modelKey: 1 / 1 },
+    activeModelSizeText: utf8Bytes("714 MB"),
+    managedModelSizeText: utf8Bytes("714 MB"),
+    appearanceOverride: dark ? "dark" : "light",
+    systemColorScheme: dark ? "dark" : "light",
+  };
+  if (contains(value, asciiBytes("onboarding"))) return {
+    ...base,
+    onboardingComplete: false,
+    onboardingStep: 1 / 1,
+    accessibilityPermission: false,
+    inputMonitoringPermission: false,
+    hotkeyConfirmed: false,
+    hotkeyPracticed: false,
+    modelReady: false,
+    selectedModelKey: 0 / 1,
+    activeModelName: asciiBytes(""),
+    modelDownloadState: "downloading",
+    modelDownloadedBytes: 302000000 / 1,
+    modelTotalBytes: 713975456 / 1,
+    workflow: { kind: "not_ready" },
+  };
+  if (contains(value, asciiBytes("model"))) return { ...base, page: "models" };
+  if (contains(value, asciiBytes("error"))) return { ...base, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true }, workflowMessage: utf8Bytes("Local transcription stopped before a final result.") };
+  if (contains(value, asciiBytes("recording"))) return { ...base, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
+  if (contains(value, asciiBytes("transcribing"))) return { ...base, workflow: { kind: "transcribing", retryAudioAvailable: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "quiet" };
+  return base;
+}
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   switch (msg.kind) {
-    case "subscribed": return { ...model, ambientDetail: msg.body };
+    case "appearance_changed":
+      return { ...model, systemColorScheme: msg.colorScheme, reduceMotion: msg.reduceMotion, highContrast: msg.highContrast };
+    case "automation_scene_requested":
+      return automationScene(model, msg.value);
+    case "automation_login_requested":
+      return [model, Cmd.request("friday.login.cycle_test", msg.value, { key: "automation-login", ok: "automation_login_finished", err: "automation_login_failed" })];
+    case "automation_login_finished":
+      return { ...model, ambientDetail: msg.body };
+    case "automation_login_failed":
+      return { ...model, ambientDetail: msg.error };
+    case "show_settings":
+      return [{ ...model, page: "settings" }, Cmd.showWindow("main")];
+    case "show_models":
+      return [{ ...model, page: "models" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    case "show_permissions":
+      return [{ ...model, page: "permissions" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" })])];
+    case "show_diagnostics":
+      return [{ ...model, page: "diagnostics" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics", ok: "diagnostics_loaded", err: "diagnostics_failed" })])];
+    case "quit_app":
+      return [model, Cmd.quitApp()];
+    case "onboarding_next":
+      if (model.onboardingStep === 0) return { ...model, onboardingStep: 1 / 1 };
+      if (model.onboardingStep === 1 && model.microphonePermission && (model.inputMonitoringPermission || model.limitedModeAccepted)) return { ...model, onboardingStep: 2 / 1 };
+      if (model.onboardingStep === 2 && (model.hotkeyConfirmed || model.limitedModeAccepted)) return { ...model, onboardingStep: 3 / 1 };
+      return model;
+    case "onboarding_back":
+      return { ...model, onboardingStep: model.onboardingStep > 0 ? (model.onboardingStep - 1) / 1 : 0 / 1 };
+    case "accept_limited_mode":
+      return { ...model, limitedModeAccepted: true };
+    case "choose_command_shift":
+      return [{ ...model, hotkeyChoice: "command_shift", hotkeyConfirmed: false, hotkeyPracticed: false }, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+    case "choose_control_option":
+      return [{ ...model, hotkeyChoice: "control_option", hotkeyConfirmed: false, hotkeyPracticed: false }, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+    case "set_double_tap_fast":
+      return [durableModel({ ...model, doubleTapWindowMs: 250 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    case "set_double_tap_balanced":
+      return [durableModel({ ...model, doubleTapWindowMs: 300 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    case "set_double_tap_deliberate":
+      return [durableModel({ ...model, doubleTapWindowMs: 400 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    case "select_model": {
+      if (isBusy(model)) return model;
+      const candidate = msg.rowKey + 0.0;
+      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
+      if (key === 0) return model;
+      return [model, Cmd.request("friday.model.select", utf8Bytes(`modelKey=${key};generation=0`), { key: "model-select", ok: "model_selected", err: "model_select_failed" })];
+    }
+    case "remove_model": {
+      if (isBusy(model)) return model;
+      const candidate = msg.rowKey + 0.0;
+      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
+      if (key === 0) return model;
+      return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${key};delete=0`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
+    }
+    case "delete_model": {
+      if (isBusy(model)) return model;
+      const candidate = msg.rowKey + 0.0;
+      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
+      if (key === 0) return model;
+      return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${key};delete=1`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
+    }
+    case "cancel_model_download":
+      return [{ ...model, modelDownloadState: "cancelled", modelDownloadUserCancelled: true, modelDownloadMessage: utf8Bytes("Download cancelled. The partial download is retained for an explicit retry.") }, Cmd.cancel("model-download")];
+    case "retry_model_download":
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadUserCancelled: false, modelDownloadMessage: utf8Bytes("Downloading Parakeet TDT 0.6B v3…") }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
+    case "choose_local_model":
+      return [model, Cmd.request("friday.model.pick_local", asciiBytes(""), { key: "model-local-picker", ok: "local_model_added", err: "local_model_failed" })];
+    case "local_model_added":
+    case "hf_model_added":
+    case "model_selected":
+    case "model_removed":
+      return [{ ...model, modelDownloadMessage: msg.body }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
+    case "local_model_failed":
+    case "hf_model_failed":
+    case "model_select_failed":
+    case "model_remove_failed":
+      return { ...model, modelDownloadState: "failed", modelDownloadMessage: msg.error };
+    case "hf_draft_edit":
+      if (msg.edit.kind === "insert_text") {
+        const room = model.hfDraft.length < 160 ? 160 - model.hfDraft.length : 0;
+        const addition = msg.edit.text.slice(0, room);
+        const next = new Uint8Array(model.hfDraft.length + addition.length);
+        next.set(model.hfDraft, 0);
+        next.set(addition, model.hfDraft.length);
+        return { ...model, hfDraft: next };
+      }
+      if (msg.edit.kind === "delete_backward" && model.hfDraft.length > 0) return { ...model, hfDraft: model.hfDraft.slice(0, model.hfDraft.length - 1) };
+      if (msg.edit.kind === "clear") return { ...model, hfDraft: asciiBytes("") };
+      return model;
+    case "add_hugging_face_model":
+      if (model.hfDraft.length === 0) return model;
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Resolving the constrained Parakeet source…") }, Cmd.request("friday.model.add_hf_ui", model.hfDraft, { key: "model-hf", ok: "hf_model_added", err: "hf_model_failed" })];
+    case "select_default_model":
+      if (isBusy(model)) return model;
+      return [model, Cmd.request("friday.model.select", asciiBytes("modelKey=1;generation=0"), { key: "model-select", ok: "model_selected", err: "model_select_failed" })];
+    case "remove_model_reference":
+      if (isBusy(model) || model.selectedModelKey === 0) return model;
+      return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${model.selectedModelKey};delete=0`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
+    case "delete_managed_model":
+      if (isBusy(model) || model.selectedModelKey === 0) return model;
+      return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${model.selectedModelKey};delete=1`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
+    case "cleanup_model_downloads":
+      return [{ ...model, modelDownloadState: "idle", modelDownloadedBytes: 0 / 1, modelTotalBytes: 0 / 1, modelDownloadMessage: utf8Bytes("Failed and partial managed downloads removed.") }, Cmd.host("friday.model.cleanup", asciiBytes(""))];
+    case "refresh_microphone":
+      return [model, Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" })];
+    case "microphone_loaded":
+      if (model.automationSceneActive) return model;
+      return { ...model, microphoneName: jsonString(msg.body, asciiBytes("\"deviceName\":\"")), microphoneDetail: jsonString(msg.body, asciiBytes("\"detail\":\"")) };
+    case "microphone_failed":
+      return { ...model, microphoneDetail: msg.error };
+    case "copy_diagnostics_fresh":
+      return [model, Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics-copy", ok: "diagnostics_copy_loaded", err: "diagnostics_copy_failed" })];
+    case "diagnostics_copy_loaded":
+      return [{ ...model, diagnostics: msg.body }, Cmd.clipboardWrite(msg.body)];
+    case "diagnostics_copy_failed":
+      return { ...model, diagnostics: msg.error };
+    case "refresh_diagnostics":
+      return [model, Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics", ok: "diagnostics_loaded", err: "diagnostics_failed" })];
+    case "diagnostics_loaded":
+      return { ...model, diagnostics: msg.body };
+    case "diagnostics_failed":
+      return { ...model, diagnostics: msg.error };
+    case "copy_diagnostics":
+      return [model, Cmd.clipboardWrite(model.diagnostics)];
+    case "export_diagnostics":
+      return [model, Cmd.request("friday.diagnostics.export", asciiBytes(""), { key: "diagnostics-export", ok: "diagnostics_exported", err: "diagnostics_export_failed" })];
+    case "diagnostics_exported":
+      return [{ ...model, diagnosticsExported: true }, Cmd.host("friday.diagnostics.reveal", asciiBytes(""))];
+    case "diagnostics_export_failed":
+      return { ...model, diagnostics: msg.error };
+    case "reveal_diagnostics":
+      if (model.diagnosticsExported) return [model, Cmd.host("friday.diagnostics.reveal", asciiBytes(""))];
+      return model;
+    case "login_status_loaded": {
+      if (model.automationSceneActive) return model;
+      const enabled = contains(msg.body, asciiBytes("\"enabled\":true"));
+      const approval = contains(msg.body, asciiBytes("\"requiresApproval\":true"));
+      return { ...model, launchAtLogin: enabled, loginStatus: approval ? "requires_approval" : enabled ? "enabled" : "disabled" };
+    }
+    case "login_status_failed":
+      return { ...model, loginStatus: "unavailable", ambientDetail: msg.error };
+    case "login_setting_saved": {
+      const enabled = contains(msg.body, asciiBytes("\"enabled\":true"));
+      const approval = contains(msg.body, asciiBytes("\"requiresApproval\":true"));
+      const durable = durableModel({ ...model, launchAtLogin: enabled, loginStatus: approval ? "requires_approval" : enabled ? "enabled" : "disabled" });
+      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }), Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" })])];
+    }
+    case "login_setting_failed":
+      return { ...model, loginStatus: "unavailable", ambientDetail: msg.error };
+    case "subscribed":
+      if (model.automationSceneActive) return model;
+      return { ...model, ambientDetail: msg.body };
     case "subscribe_failed": return { ...model, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "debug_fixture_requested":
       return [model, Cmd.request("friday.debug.fixture_delivery", msg.value, { key: "debug-fixture", ok: "debug_fixture_finished", err: "debug_fixture_failed" })];
@@ -304,23 +865,61 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.error, ambientDetail: msg.error };
     case "restored": {
       const restored = durableModel(model);
+      if (restored.onboardingComplete && restored.hotkeyConfirmed && restored.hotkeyChoice === "control_option") return [restored, Cmd.batch([
+        Cmd.hideWindow("main"),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
+        Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
+      ])];
+      if (restored.onboardingComplete && restored.hotkeyConfirmed) return [restored, Cmd.batch([
+        Cmd.hideWindow("main"),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
+        Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
+      ])];
+      if (restored.onboardingComplete) return [restored, Cmd.batch([
+        Cmd.hideWindow("main"),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
+      ])];
+      if (restored.hotkeyConfirmed && restored.hotkeyChoice === "control_option") return [restored, Cmd.batch([
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
+        Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
+      ])];
       if (restored.hotkeyConfirmed) return [restored, Cmd.batch([
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
         Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
       ])];
       return [restored, Cmd.batch([
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
       ])];
     }
     case "fresh_boot": return [durableModel(model), Cmd.batch([
       Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
       Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+      Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
     ])];
     case "restore_failed": return [durableModel(model), Cmd.batch([
       Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
       Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+      Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
     ])];
     case "permissions_loaded": {
       const next = { ...model,
@@ -330,33 +929,51 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         inputMonitoringPermission: contains(msg.body, asciiBytes("\"inputMonitoring\":true")),
         ambientDetail: msg.body,
       };
+      if (model.automationSceneActive) return model;
       if (model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready") return { ...next, workflow: readiness(next) };
       return next;
     }
     case "permissions_failed": return { ...model, permissionsLoaded: true, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "model_status_loaded": {
+      if (model.automationSceneActive) return model;
       const key = jsonInteger(msg.body, asciiBytes("\"activeModelKey\":"));
-      const ready =
-          key > 0 &&
-          contains(msg.body, asciiBytes("\"activeModelReady\":true"));
+      const ready = key > 0 && contains(msg.body, asciiBytes("\"activeModelReady\":true"));
       const selectedKey = key > 0 ? key / 1 : 0 / 1;
-      const next = { ...model, modelsLoaded: true, modelReady: ready, selectedModelKey: selectedKey, ambientDetail: msg.body };
-      if (!ready && !model.onboardingComplete) return [{ ...next, workflow: readiness(next) }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
+      const downloadActive = contains(msg.body, asciiBytes("\"downloadActive\":true"));
+      const next = {
+        ...model,
+        modelsLoaded: true,
+        modelReady: ready,
+        selectedModelKey: selectedKey,
+        managedModelBytes: jsonInteger(msg.body, asciiBytes("\"managedBytes\":")),
+        modelCount: jsonInteger(msg.body, asciiBytes("\"modelCount\":")),
+        activeModelName: jsonString(msg.body, asciiBytes("\"activeModelName\":\"")),
+        activeModelSource: jsonString(msg.body, asciiBytes("\"activeModelSource\":\"")),
+        activeModelLicense: jsonString(msg.body, asciiBytes("\"activeModelLicense\":\"")),
+        activeModelLanguages: jsonString(msg.body, asciiBytes("\"activeModelLanguages\":\"")),
+        activeModelSizeText: jsonString(msg.body, asciiBytes("\"activeModelSizeText\":\"")),
+        managedModelSizeText: jsonString(msg.body, asciiBytes("\"managedModelSizeText\":\"")),
+        activeModelBytes: jsonInteger(msg.body, asciiBytes("\"activeModelBytes\":")),
+        modelDownloadedBytes: jsonInteger(msg.body, asciiBytes("\"downloadedBytes\":")),
+        modelTotalBytes: jsonInteger(msg.body, asciiBytes("\"totalBytes\":")),
+        modelDownloadState: ready ? "installed" as ModelDownloadState : downloadActive ? "downloading" as ModelDownloadState : model.modelDownloadState === "installed" ? "idle" as ModelDownloadState : model.modelDownloadState,
+        modelRows: parseModelRows(msg.body),
+        ambientDetail: msg.body,
+      };
+      if (!ready && !model.onboardingComplete && !model.modelDownloadUserCancelled && model.modelDownloadState === "idle") return [{ ...next, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading Parakeet TDT 0.6B v3…"), workflow: readiness(next) }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
       if (model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready") return { ...next, workflow: readiness(next) };
       return next;
     }
-    case "model_status_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "model_status_failed":
+      return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, modelDownloadState: "failed", modelDownloadMessage: msg.error, workflowMessage: msg.error, ambientDetail: msg.error };
     case "model_downloaded": {
-      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1 / 1, ambientDetail: msg.body };
-      const durable = durableModel(next);
-      return [durable, Cmd.batch([
-        Cmd.persist(),
-        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
-        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
-      ])];
+      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1 / 1, modelDownloadState: "installed" as ModelDownloadState, modelDownloadMessage: utf8Bytes("Parakeet is verified and ready."), ambientDetail: msg.body };
+      return [next, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     }
-    case "model_download_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
-    case "confirm_hotkey": return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+    case "model_download_failed": return { ...model, modelsLoaded: true, modelReady: false, modelDownloadState: "failed", modelDownloadMessage: msg.error, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "confirm_hotkey":
+      if (model.hotkeyChoice === "control_option") return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+      return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
     case "hotkey_configured": {
       const next = { ...model, hotkeyConfirmed: true, ambientDetail: msg.body };
       const durable = durableModel(next);
@@ -371,12 +988,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "request_accessibility": return [model, Cmd.request("friday.permissions.request", asciiBytes("accessibility"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
     case "request_input_monitoring": return [model, Cmd.request("friday.permissions.request", asciiBytes("input"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
     case "complete_onboarding": {
-      if (!model.microphonePermission || !model.inputMonitoringPermission || !model.hotkeyConfirmed || !model.modelReady) return model;
-      const durable = durableModel({ ...model, onboardingComplete: true });
+      if (!canCompleteOnboarding(model)) return model;
+      const durable = durableModel({ ...model, onboardingComplete: true, page: "settings" });
       return [durable, Cmd.batch([
         Cmd.persist(),
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
       ])];
     }
     case "toggle_double_tap": {
@@ -394,11 +1012,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const durable = durableModel({ ...model, pasteAutomatically: !model.pasteAutomatically });
       return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
     }
-    case "toggle_launch_at_login": {
+    case "toggle_launch_at_login":
       if (isBusy(model)) return model;
-      const durable = durableModel({ ...model, launchAtLogin: !model.launchAtLogin });
-      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
-    }
+      return [{ ...model, loginStatus: "checking" }, Cmd.request("friday.login.set", model.launchAtLogin ? asciiBytes("disabled") : asciiBytes("enabled"), { key: "login-setting", ok: "login_setting_saved", err: "login_setting_failed" })];
     case "start_recording": {
       if (model.workflow.kind !== "ready") return model;
       return [{ ...model, workflow: { kind: "starting", lockCandidate: false }, sessionId: 0 / 1, generation: 0 / 1, pressedAtMs: 0 / 1 }, Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" })];
@@ -419,12 +1035,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "stop_recording": {
       if (model.workflow.kind !== "recording") return model;
       const current = model.workflow;
-      return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+      return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" }, meterLevel: "quiet" }, Cmd.batch([Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" }), Cmd.host("friday.overlay.transcribing", asciiBytes(""))])];
     }
     case "cancel_active": {
       if (!isBusy(model) && model.workflow.kind !== "failed") return model;
       const source = model.workflow.kind === "ready" || model.workflow.kind === "not_ready" || model.workflow.kind === "booting" ? asciiBytes("") : model.sessionSourceToken;
-      return [{ ...model, workflow: readiness(model) }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", source), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+      return [{ ...model, workflow: readiness(model), meterLevel: "quiet", elapsedMilliseconds: 0 / 1 }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", source), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
     }
     case "hold_elapsed": {
       if (model.workflow.kind !== "starting" || model.workflow.lockCandidate) return model;
@@ -436,7 +1052,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
       if (session !== model.sessionId) return model;
       const current = model.workflow;
-      return { ...model, capturedFrames: 0 / 1, workflow: { kind: "recording", control: current.lockCandidate ? "locked" : "held", warnedDurationLimit: false } };
+      return { ...model, capturedFrames: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "recording", control: current.lockCandidate ? "locked" : "held", warnedDurationLimit: false } };
     }
     case "audio_start_failed": {
       if (model.workflow.kind !== "starting") return model;
@@ -449,7 +1065,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
       const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
       if (session !== model.sessionId || generation !== model.generation) return model;
-      if (contains(msg.body, asciiBytes("\"silence\":true"))) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes("No speech detected."), lastQuickReleaseAtMs: 0 / 1, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+      if (contains(msg.body, asciiBytes("\"silence\":true"))) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes("No speech detected. Nothing was pasted or copied."), lastQuickReleaseAtMs: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
       const deliverSession = Number.isFinite(session) && session > 0 && session <= 9007199254740991 ? Math.trunc(session) : 0;
       const deliverGeneration = Number.isFinite(generation) && generation > 0 && generation <= 9007199254740991 ? Math.trunc(generation) : 0;
       if (deliverSession === 0 || deliverGeneration === 0) return model;
@@ -469,12 +1085,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
       if (session !== model.sessionId || generation !== model.generation) return model;
       const kind: DeliveryKind = contains(msg.body, asciiBytes("\"kind\":\"pasted\"")) ? "pasted" : contains(msg.body, asciiBytes("\"kind\":\"clipboard\"")) ? "clipboard" : "shown";
-      return { ...model, hasImmediateResult: true, immediateResultKind: kind, sessionSourceToken: asciiBytes(""), immediateResultMessage: msg.body, workflow: { kind: "ready", modelKey: model.selectedModelKey } };
+      return { ...model, hasImmediateResult: true, immediateResultKind: kind, sessionSourceToken: asciiBytes(""), immediateResultMessage: kind === "pasted" ? utf8Bytes("Pasted into the app where recording started.") : kind === "clipboard" ? utf8Bytes("Copied to the clipboard because the exact source could not accept paste.") : jsonString(msg.body, asciiBytes("\"text\":\"")), elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "ready", modelKey: model.selectedModelKey } };
     }
     case "delivery_failed": {
       if (model.workflow.kind !== "delivering") return model;
-      const current = model.workflow;
-      return { ...model, workflow: { kind: "failed", stage: "delivery", retryAudioAvailable: false }, workflowMessage: msg.error };
+      const text = jsonString(msg.error, asciiBytes("\"text\":\""));
+      return { ...model, hasImmediateResult: text.length > 0, immediateResultKind: "shown", immediateResultMessage: text, workflow: { kind: "failed", stage: "delivery", retryAudioAvailable: false }, workflowMessage: msg.error };
     }
     case "retry_transcription": {
       if (model.workflow.kind !== "failed" || model.workflow.stage !== "transcription" || !model.workflow.retryAudioAvailable) return model;
@@ -486,6 +1102,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const current = model.workflow;
       return [{ ...model, workflow: readiness(model) }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
     }
+    case "copy_immediate_result":
+      if (model.hasImmediateResult && model.immediateResultKind === "shown") return [model, Cmd.clipboardWrite(model.immediateResultMessage)];
+      return model;
     case "dismiss_result": {
       if (model.workflow.kind !== "ready") return model;
       return { ...model, hasImmediateResult: false, immediateResultMessage: asciiBytes("") };
@@ -497,6 +1116,31 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
       ])];
+      if (hasPrefix(msg.bytes, asciiBytes("model_progress|"))) {
+        const operationEnd = findPipe(msg.bytes, 15);
+        const stateEnd = findPipe(msg.bytes, operationEnd + 1);
+        const downloadedEnd = findPipe(msg.bytes, stateEnd + 1);
+        const state = msg.bytes.slice(operationEnd + 1, stateEnd);
+        const downloaded = parseUnsigned(msg.bytes, stateEnd + 1, downloadedEnd);
+        const total = parseUnsigned(msg.bytes, downloadedEnd + 1, msg.bytes.length);
+        const downloadState: ModelDownloadState =
+          byteEquals(state, asciiBytes("downloading")) ? "downloading" :
+          byteEquals(state, asciiBytes("verifying")) ? "verifying" :
+          byteEquals(state, asciiBytes("installed")) ? "installed" :
+          byteEquals(state, asciiBytes("cancelled")) ? "cancelled" :
+          byteEquals(state, asciiBytes("failed")) ? "failed" : model.modelDownloadState;
+        return { ...model, modelDownloadState: downloadState, modelDownloadedBytes: downloaded / 1, modelTotalBytes: total / 1 };
+      }
+      if (eventMatches(msg.bytes, asciiBytes("audio_meter|"), model) && model.workflow.kind === "recording") {
+        const generationEnd = findPipe(msg.bytes, 12);
+        const sessionEnd = findPipe(msg.bytes, generationEnd + 1);
+        const elapsedEnd = findPipe(msg.bytes, sessionEnd + 1);
+        const levelEnd = findPipe(msg.bytes, elapsedEnd + 1);
+        const elapsed = parseUnsigned(msg.bytes, sessionEnd + 1, elapsedEnd);
+        const level = parseUnsigned(msg.bytes, elapsedEnd + 1, levelEnd);
+        const frames = parseUnsigned(msg.bytes, levelEnd + 1, msg.bytes.length);
+        return { ...model, elapsedMilliseconds: elapsed / 1, meterLevel: level >= 3 ? "high" : level === 2 ? "medium" : level === 1 ? "low" : "quiet", capturedFrames: frames / 1 };
+      }
       if (hasPrefix(msg.bytes, asciiBytes("hotkey_down|"))) {
         const generationEnd = findPipe(msg.bytes, 12);
         const atEnd = findPipe(msg.bytes, generationEnd + 1);
@@ -505,6 +1149,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const at = parseUnsigned(msg.bytes, generationEnd + 1, atEnd);
         const token = msg.bytes.slice(atEnd + 1, tokenEnd);
         if (generation === 0 || at === 0) return model;
+        if (!model.onboardingComplete && model.hotkeyConfirmed)
+          return [{ ...model, hotkeyPracticed: true }, Cmd.host("friday.source.discard", token)];
         if (model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping") {
           const old = model.workflow;
           const session = generation;

@@ -140,7 +140,8 @@ pub const FridayHost = struct {
         return std.mem.eql(u8, name, "friday.audio.start") or std.mem.eql(u8, name, "friday.audio.finish") or
             std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.debug.fixture_delivery") or
             std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
-            std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.add_local") or
+            std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.pick_local") or
+            std.mem.eql(u8, name, "friday.model.add_hf_ui") or std.mem.eql(u8, name, "friday.model.add_local") or
             std.mem.eql(u8, name, "friday.model.add_hf") or std.mem.eql(u8, name, "friday.model.select");
     }
 
@@ -327,6 +328,10 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"missingActiveReset\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"finalCollisionCorruptionRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"loginStatusKnown\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"audioInput\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"statesComplete\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"positionAutosave\":\"FridayOverlayPosition\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"copyOnlyDelivery\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"kind\":\"clipboard\"") != null);
 }

@@ -5,6 +5,7 @@
 #import <AVFAudio/AVAudioFormat.h>
 #import <AVFAudio/AVAudioIONode.h>
 #import <AVFAudio/AVAudioSinkNode.h>
+#import <AVFoundation/AVCaptureDevice.h>
 
 #include <algorithm>
 #include <atomic>
@@ -117,6 +118,9 @@ struct FridayRealtimeCapture {
 @property(nonatomic) uint64_t startedAtMs;
 @property(nonatomic) uint64_t firstAudioAtMs;
 @property(nonatomic) BOOL warned;
+@property(nonatomic) uint64_t lastMeterAtMs;
+@property(nonatomic) float meterRMS;
+@property(nonatomic) float meterPeak;
 @end
 
 @implementation FridayAudioSession {
@@ -253,6 +257,9 @@ struct FridayRealtimeCapture {
   self.startedAtMs = [self now];
   self.firstAudioAtMs = 0;
   self.warned = NO;
+  self.lastMeterAtMs = 0;
+  self.meterRMS = 0;
+  self.meterPeak = 0;
   _conversionFailure.store(false, std::memory_order_release);
   _frames.store(0, std::memory_order_release);
   self.active = YES;
@@ -377,9 +384,37 @@ struct FridayRealtimeCapture {
     if (frames > 0) {
       fwrite(output.floatChannelData[0], sizeof(float), frames, self.file);
       _frames.fetch_add(frames, std::memory_order_release);
+      double energy = 0;
+      float peak = 0;
+      const float *converted = output.floatChannelData[0];
+      for (AVAudioFrameCount index = 0; index < frames; ++index) {
+        energy += (double)converted[index] * converted[index];
+        peak = fmaxf(peak, fabsf(converted[index]));
+      }
+      self.meterRMS = (float)sqrt(energy / frames);
+      self.meterPeak = peak;
     }
   }
   const uint64_t frames = _frames.load(std::memory_order_acquire);
+  const uint64_t now = [self now];
+  if (frames > 0 && now - self.lastMeterAtMs >= 100) {
+    self.lastMeterAtMs = now;
+    NSUInteger level = self.meterRMS >= .08 || self.meterPeak >= .35    ? 3
+                       : self.meterRMS >= .03 || self.meterPeak >= .16  ? 2
+                       : self.meterRMS >= .008 || self.meterPeak >= .05 ? 1
+                                                                        : 0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self.handler(
+          @"audio_meter", @{
+            @"sessionId" : @(self.sessionID),
+            @"capturedFrames" : @(frames),
+            @"elapsedMilliseconds" : @(now - self.startedAtMs),
+            @"level" : @(level),
+            @"rmsMilli" : @((NSUInteger)llround(self.meterRMS * 1000)),
+            @"peakMilli" : @((NSUInteger)llround(self.meterPeak * 1000))
+          });
+    });
+  }
   if (frames >= kFridayWarningFrames && !self.warned) {
     self.warned = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -518,6 +553,40 @@ struct FridayRealtimeCapture {
   if (self.retryAudioURL)
     [NSFileManager.defaultManager removeItemAtURL:self.retryAudioURL error:nil];
   self.retryAudioURL = nil;
+}
+
+- (NSDictionary *)diagnostics {
+  uint64_t dropped = _realtime ? _realtime->ring.dropped() : 0;
+  return @{
+    @"active" : @(self.active),
+    @"capturedFrames" : @(_frames.load(std::memory_order_acquire)),
+    @"droppedFrames" : @(dropped),
+    @"retryAudioAvailable" : @(self.retryAudioURL != nil),
+    @"conversionFailed" : @(_conversionFailure.load(std::memory_order_acquire))
+  };
+}
+
++ (NSDictionary *)inputStatus {
+  AVAudioEngine *engine = [AVAudioEngine new];
+  AVAudioFormat *format = [engine.inputNode outputFormatForBus:0];
+  AVCaptureDevice *device =
+      [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+  BOOL available = format.channelCount > 0 && format.sampleRate >= 8000 &&
+                   format.sampleRate <= 96000;
+  NSString *detail =
+      available
+          ? [NSString stringWithFormat:@"Available · %.0f Hz · %u channel%@",
+                                       format.sampleRate,
+                                       (unsigned)format.channelCount,
+                                       format.channelCount == 1 ? @"" : @"s"]
+          : @"No usable microphone input format is available.";
+  return @{
+    @"ok" : @(available),
+    @"deviceName" : device.localizedName ?: @"System default microphone",
+    @"detail" : detail,
+    @"sampleRate" : @(format.sampleRate),
+    @"channels" : @(format.channelCount)
+  };
 }
 
 - (void)configurationChanged:(NSNotification *)note {

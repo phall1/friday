@@ -15,6 +15,8 @@ typedef void (^FridayAudioEventHandler)(NSString *event,
 - (void)cancelSession:(uint64_t)sessionID;
 - (void)cancelActiveSession;
 - (void)discardRetryAudio;
+- (NSDictionary<NSString *, id> *)diagnostics;
++ (NSDictionary<NSString *, id> *)inputStatus;
 + (NSDictionary<NSString *, id> *)runStorageProbe;
 + (NSDictionary<NSString *, id> *)runFailureCleanupProbe;
 @end

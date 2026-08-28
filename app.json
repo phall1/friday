@@ -11,7 +11,7 @@
     "capabilities": ["native_module", "native_views", "gpu_surfaces", "menus", "shortcuts", "tray", "filesystem", "network", "clipboard", "open_url", "reveal_path", "persist"],
     "dock_visible": false,
     "persist": {
-        "version": 2,
+        "version": 8,
         "debounce_ms": 250,
         "restore": {
             "ok": "restored",
@@ -24,8 +24,8 @@
             {
                 "label": "main",
                 "title": "Friday",
-                "width": 640,
-                "height": 400,
+                "width": 760,
+                "height": 620,
                 "views": [
                     { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Friday onboarding and settings", "accessibility_label": "Friday", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]

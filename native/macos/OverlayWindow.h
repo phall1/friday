@@ -7,6 +7,8 @@ typedef void (^FridayOverlayHandler)(NSString *action);
 - (instancetype)initWithHandler:(FridayOverlayHandler)handler;
 - (void)showLocked:(BOOL)locked elapsedMilliseconds:(uint64_t)elapsed;
 - (void)setPreferredScreenFrame:(nullable NSValue *)screenFrame;
+- (void)updateMeterLevel:(NSUInteger)level
+     elapsedMilliseconds:(uint64_t)elapsed;
 - (void)showTranscribing;
 - (void)hide;
 - (NSDictionary<NSString *, id> *)runInteractionProbe;
