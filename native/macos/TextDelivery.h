@@ -20,7 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FridayTextDelivery : NSObject
 - (FridaySourceTarget *)captureFrontmostSource;
 - (NSDictionary<NSString *, id> *)deliverText:(NSString *)text
-                                     toSource:(FridaySourceTarget *)source;
+                                     toSource:(FridaySourceTarget *)source
+                           pasteAutomatically:(BOOL)pasteAutomatically;
 - (NSDictionary<NSString *, id> *)runProbeForApplication:
     (NSString *)applicationName;
 @end

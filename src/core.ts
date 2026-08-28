@@ -89,14 +89,21 @@ export type Msg =
   | { readonly kind: "source_captured"; readonly body: Uint8Array }
   | { readonly kind: "source_capture_failed"; readonly error: Uint8Array }
   | { readonly kind: "dismiss_failure" }
+  | { readonly kind: "debug_fixture_requested"; readonly value: Uint8Array }
+  | { readonly kind: "debug_fixture_finished"; readonly body: Uint8Array }
+  | { readonly kind: "debug_fixture_failed"; readonly error: Uint8Array }
   | { readonly kind: "dismiss_result" };
+
+export const envMsgs = [
+  { env: "FRIDAY_AUTOMATION_FIXTURE", msg: "debug_fixture_requested" },
+] as const;
 
 export const viewUnbound = [
   "host_event", "subscribed", "subscribe_failed", "permissions_loaded", "permissions_failed",
   "model_status_loaded", "model_status_failed", "model_downloaded", "model_download_failed",
   "restored", "fresh_boot", "restore_failed", "source_captured", "source_capture_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
   "audio_started", "audio_start_failed", "transcript_ready", "transcription_failed",
-  "delivery_finished", "delivery_failed", "sessionSourceToken", "workflowMessage",
+  "delivery_finished", "delivery_failed", "debug_fixture_requested", "debug_fixture_finished", "debug_fixture_failed", "sessionSourceToken", "workflowMessage",
 ] as const;
 
 function hasPrefix(bytes: Uint8Array, prefix: Uint8Array): boolean {
@@ -145,6 +152,15 @@ function jsonInteger(bytes: Uint8Array, key: Uint8Array): number {
   return 0;
 }
 
+function eventMatches(bytes: Uint8Array, prefix: Uint8Array, model: Model): boolean {
+  if (!hasPrefix(bytes, prefix)) return false;
+  const generationEnd = findPipe(bytes, prefix.length);
+  const sessionEnd = findPipe(bytes, generationEnd + 1);
+  const generation = parseUnsigned(bytes, prefix.length, generationEnd);
+  const session = parseUnsigned(bytes, generationEnd + 1, sessionEnd);
+  return generation === model.generation && session === model.sessionId;
+}
+
 function defaultModel(): Model {
   return {
     workflow: { kind: "booting" },
@@ -186,11 +202,35 @@ export function migrate(snapshot: Uint8Array, fromVersion: number): Model {
 function readiness(model: Model): DictationWorkflow {
   if (!model.permissionsLoaded || !model.modelsLoaded) return { kind: "booting" };
   if (!model.microphonePermission) return { kind: "not_ready" };
+
   if (!model.inputMonitoringPermission) return { kind: "not_ready" };
   if (!model.hotkeyConfirmed) return { kind: "not_ready" };
   if (!model.modelReady || model.selectedModelKey === 0) return { kind: "not_ready" };
   if (!model.onboardingComplete && !model.limitedModeAccepted) return { kind: "not_ready" };
   return { kind: "ready", modelKey: model.selectedModelKey };
+}
+function durableModel(model: Model): Model {
+  return {
+    ...model,
+    workflow: { kind: "booting" },
+    sessionId: 0 / 1,
+    generation: 0 / 1,
+    pressedAtMs: 0 / 1,
+    lastQuickReleaseAtMs: 0 / 1,
+    capturedFrames: 0 / 1,
+    sessionSourceToken: asciiBytes(""),
+    workflowMessage: asciiBytes(""),
+    hasImmediateResult: false,
+    immediateResultKind: "shown",
+    immediateResultMessage: asciiBytes(""),
+    permissionsLoaded: false,
+    modelsLoaded: false,
+    microphonePermission: false,
+    accessibilityPermission: false,
+    inputMonitoringPermission: false,
+    modelReady: false,
+    ambientDetail: asciiBytes(""),
+  };
 }
 
 function notReadyMessage(model: Model): Uint8Array {
@@ -256,8 +296,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "subscribed": return { ...model, ambientDetail: msg.body };
     case "subscribe_failed": return { ...model, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "debug_fixture_requested":
+      return [model, Cmd.request("friday.debug.fixture_delivery", msg.value, { key: "debug-fixture", ok: "debug_fixture_finished", err: "debug_fixture_failed" })];
+    case "debug_fixture_finished":
+      return { ...model, hasImmediateResult: true, immediateResultKind: contains(msg.body, asciiBytes("\"kind\":\"clipboard\"")) ? "clipboard" : "shown", immediateResultMessage: msg.body, ambientDetail: msg.body };
+    case "debug_fixture_failed":
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.error, ambientDetail: msg.error };
     case "restored": {
-      const restored = { ...model, workflow: { kind: "booting" } as DictationWorkflow, permissionsLoaded: false, modelsLoaded: false };
+      const restored = durableModel(model);
       if (restored.hotkeyConfirmed) return [restored, Cmd.batch([
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
@@ -268,11 +314,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
       ])];
     }
-    case "fresh_boot": return [model, Cmd.batch([
+    case "fresh_boot": return [durableModel(model), Cmd.batch([
       Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
       Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
     ])];
-    case "restore_failed": return [{ ...model, ambientDetail: msg.error }, Cmd.batch([
+    case "restore_failed": return [durableModel(model), Cmd.batch([
       Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
       Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
     ])];
@@ -290,7 +336,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "permissions_failed": return { ...model, permissionsLoaded: true, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "model_status_loaded": {
       const key = jsonInteger(msg.body, asciiBytes("\"activeModelKey\":"));
-      const ready = key > 0 && contains(msg.body, asciiBytes("\"compatibility\":\"compatible\""));
+      const ready =
+          key > 0 &&
+          contains(msg.body, asciiBytes("\"activeModelReady\":true"));
       const selectedKey = key > 0 ? key / 1 : 0 / 1;
       const next = { ...model, modelsLoaded: true, modelReady: ready, selectedModelKey: selectedKey, ambientDetail: msg.body };
       if (!ready && !model.onboardingComplete) return [{ ...next, workflow: readiness(next) }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
@@ -299,14 +347,24 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "model_status_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "model_downloaded": {
-      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1, ambientDetail: msg.body };
-      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1 / 1, ambientDetail: msg.body };
+      const durable = durableModel(next);
+      return [durable, Cmd.batch([
+        Cmd.persist(),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      ])];
     }
     case "model_download_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "confirm_hotkey": return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
     case "hotkey_configured": {
       const next = { ...model, hotkeyConfirmed: true, ambientDetail: msg.body };
-      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+      const durable = durableModel(next);
+      return [durable, Cmd.batch([
+        Cmd.persist(),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      ])];
     }
     case "hotkey_failed": return { ...model, hotkeyConfirmed: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "request_microphone": return [model, Cmd.request("friday.permissions.request", asciiBytes("microphone"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
@@ -314,21 +372,33 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "request_input_monitoring": return [model, Cmd.request("friday.permissions.request", asciiBytes("input"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
     case "complete_onboarding": {
       if (!model.microphonePermission || !model.inputMonitoringPermission || !model.hotkeyConfirmed || !model.modelReady) return model;
-      const next = { ...model, onboardingComplete: true };
-      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+      const durable = durableModel({ ...model, onboardingComplete: true });
+      return [durable, Cmd.batch([
+        Cmd.persist(),
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      ])];
     }
-    case "toggle_double_tap":
+    case "toggle_double_tap": {
       if (isBusy(model)) return model;
-      return [{ ...model, doubleTapEnabled: !model.doubleTapEnabled }, Cmd.persist()];
-    case "toggle_overlay":
+      const durable = durableModel({ ...model, doubleTapEnabled: !model.doubleTapEnabled });
+      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    }
+    case "toggle_overlay": {
       if (isBusy(model)) return model;
-      return [{ ...model, overlayEnabled: !model.overlayEnabled }, Cmd.persist()];
-    case "toggle_paste":
+      const durable = durableModel({ ...model, overlayEnabled: !model.overlayEnabled });
+      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    }
+    case "toggle_paste": {
       if (isBusy(model)) return model;
-      return [{ ...model, pasteAutomatically: !model.pasteAutomatically }, Cmd.persist()];
-    case "toggle_launch_at_login":
+      const durable = durableModel({ ...model, pasteAutomatically: !model.pasteAutomatically });
+      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    }
+    case "toggle_launch_at_login": {
       if (isBusy(model)) return model;
-      return [{ ...model, launchAtLogin: !model.launchAtLogin }, Cmd.persist()];
+      const durable = durableModel({ ...model, launchAtLogin: !model.launchAtLogin });
+      return [durable, Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    }
     case "start_recording": {
       if (model.workflow.kind !== "ready") return model;
       return [{ ...model, workflow: { kind: "starting", lockCandidate: false }, sessionId: 0 / 1, generation: 0 / 1, pressedAtMs: 0 / 1 }, Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" })];
@@ -380,7 +450,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
       if (session !== model.sessionId || generation !== model.generation) return model;
       if (contains(msg.body, asciiBytes("\"silence\":true"))) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes("No speech detected."), lastQuickReleaseAtMs: 0 / 1, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
-      return [{ ...model, workflow: { kind: "delivering" } }, Cmd.request("friday.deliver_session", asciiBytes(""), { key: "delivery", ok: "delivery_finished", err: "delivery_failed" })];
+      const deliverSession = Number.isFinite(session) && session > 0 && session <= 9007199254740991 ? Math.trunc(session) : 0;
+      const deliverGeneration = Number.isFinite(generation) && generation > 0 && generation <= 9007199254740991 ? Math.trunc(generation) : 0;
+      if (deliverSession === 0 || deliverGeneration === 0) return model;
+      return [{ ...model, workflow: { kind: "delivering" } }, Cmd.request("friday.deliver_session", utf8Bytes(`session=${deliverSession};generation=${deliverGeneration};paste=${model.pasteAutomatically ? 1 : 0}`), { key: "delivery", ok: "delivery_finished", err: "delivery_failed" })];
     }
     case "transcription_failed": {
       if (model.workflow.kind !== "stopping" && model.workflow.kind !== "transcribing") return model;
@@ -483,19 +556,28 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       if (hasPrefix(msg.bytes, asciiBytes("hotkey_cancel|")) || hasPrefix(msg.bytes, asciiBytes("overlay_cancel|"))) return update(model, { kind: "cancel_active" });
       if (hasPrefix(msg.bytes, asciiBytes("overlay_stop|"))) return update(model, { kind: "stop_recording" });
-      if (hasPrefix(msg.bytes, asciiBytes("duration_warning|")) && model.workflow.kind === "recording") return { ...model, workflow: { ...model.workflow, warnedDurationLimit: true } };
-      if (hasPrefix(msg.bytes, asciiBytes("duration_limit|")) && model.workflow.kind === "recording") {
-        const current = model.workflow;
-        return [{ ...model, workflow: { kind: "stopping", disposition: "duration_limit" } }, Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
-      }
-      if (hasPrefix(msg.bytes, asciiBytes("audio_interrupted|")) && model.workflow.kind === "recording") {
-        const current = model.workflow;
-        return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.bytes };
-      }
-      if (hasPrefix(msg.bytes, asciiBytes("audio_interrupted|")) && model.workflow.kind === "starting") {
-        const current = model.workflow;
-        return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.bytes };
-      }
+      if (eventMatches(msg.bytes, asciiBytes("duration_warning|"), model) &&
+          model.workflow.kind === "recording")
+        return { ...model, workflow: { ...model.workflow, warnedDurationLimit: true } };
+      if (eventMatches(msg.bytes, asciiBytes("duration_limit|"), model) &&
+          model.workflow.kind === "recording")
+        return [{ ...model, workflow: { kind: "stopping", disposition: "duration_limit" } },
+                Cmd.request("friday.audio.finish", asciiBytes(""),
+                            { key: "audio-session", ok: "transcript_ready",
+                              err: "transcription_failed" })];
+      if (eventMatches(msg.bytes, asciiBytes("audio_interrupted|"), model) &&
+          (model.workflow.kind === "recording" ||
+           model.workflow.kind === "starting"))
+        return [{ ...model,
+                  workflow: { kind: "failed", stage: "capture",
+                              retryAudioAvailable: false },
+                  workflowMessage: msg.bytes,
+                  sessionSourceToken: asciiBytes("") },
+                Cmd.batch([Cmd.cancel("audio-session"),
+                           Cmd.host("friday.audio.discard", asciiBytes("")),
+                           Cmd.host("friday.source.discard",
+                                    model.sessionSourceToken),
+                           Cmd.host("friday.overlay.hide", asciiBytes(""))])];
       return model;
     }
   }

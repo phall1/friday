@@ -138,7 +138,8 @@ pub const FridayHost = struct {
 
     fn isAsync(name: []const u8) bool {
         return std.mem.eql(u8, name, "friday.audio.start") or std.mem.eql(u8, name, "friday.audio.finish") or
-            std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
+            std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.debug.fixture_delivery") or
+            std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
             std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.add_local") or
             std.mem.eql(u8, name, "friday.model.add_hf") or std.mem.eql(u8, name, "friday.model.select");
     }
@@ -287,6 +288,31 @@ test "completion queue preserves order cancellation and pending state" {
     try std.testing.expectEqualStrings("second", result.bytes);
     try std.testing.expect(!FridayHost.pending(&host));
 }
+test "native completion is consumed once and closing suppresses late delivery" {
+    var host: FridayHost = undefined;
+    host.mutex = .{};
+    host.completion_head = 0;
+    host.completion_tail = 0;
+    host.completion_count = 0;
+    host.in_flight_count = 0;
+    host.in_flight_used = @splat(false);
+    host.in_flight_keys = @splat(0);
+    host.closing = false;
+    host.services = null;
+    try std.testing.expect(host.addInFlightLocked(77));
+    FridayHost.nativeCompletion(&host, 77, true, "done".ptr, "done".len);
+    try std.testing.expectEqual(@as(usize, 0), host.in_flight_count);
+    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
+    FridayHost.nativeCompletion(&host, 77, true, "duplicate".ptr, "duplicate".len);
+    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
+
+    try std.testing.expect(host.addInFlightLocked(78));
+    host.closing = true;
+    FridayHost.nativeCompletion(&host, 78, false, "late".ptr, "late".len);
+    try std.testing.expectEqual(@as(usize, 0), host.in_flight_count);
+    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
+}
+
 test "native audio and model contracts reject unsafe states" {
     var buffer: [4096]u8 = undefined;
     const length = friday_host_native_contract_probes(&buffer, buffer.len);
@@ -294,7 +320,13 @@ test "native audio and model contracts reject unsafe states" {
     const result = buffer[0..length];
     try std.testing.expect(std.mem.indexOf(u8, result, "\"expectedBytes\":38400000") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"droppedFrameFailure\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"tempRemoved\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"activeCleared\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"malformedRejected\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"shaFailed\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"missingActiveReset\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"finalCollisionCorruptionRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"copyOnlyDelivery\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"kind\":\"clipboard\"") != null);
 }

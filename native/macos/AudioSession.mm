@@ -122,12 +122,14 @@ struct FridayRealtimeCapture {
 @implementation FridayAudioSession {
   std::unique_ptr<FridayRealtimeCapture> _realtime;
   std::atomic<uint64_t> _frames;
+  std::atomic<bool> _conversionFailure;
 }
 
 - (instancetype)initWithEventHandler:(FridayAudioEventHandler)handler {
   self = [super init];
   if (self) {
     _handler = [handler copy];
+    _conversionFailure.store(false, std::memory_order_relaxed);
     _queue =
         dispatch_queue_create("com.phall.friday.audio", DISPATCH_QUEUE_SERIAL);
     NSString *root =
@@ -251,6 +253,7 @@ struct FridayRealtimeCapture {
   self.startedAtMs = [self now];
   self.firstAudioAtMs = 0;
   self.warned = NO;
+  _conversionFailure.store(false, std::memory_order_release);
   _frames.store(0, std::memory_order_release);
   self.active = YES;
 
@@ -288,6 +291,41 @@ struct FridayRealtimeCapture {
     @"sampleRate" : @(kFridayRate),
     @"channels" : @1
   };
+}
+
+- (void)failConversion:(NSError *)error {
+  if (_conversionFailure.exchange(true, std::memory_order_acq_rel))
+    return;
+  if (_realtime)
+    _realtime->accepting.store(false, std::memory_order_release);
+  uint64_t session = self.sessionID;
+  NSString *reason = error.localizedDescription ?: @"Audio conversion failed.";
+  dispatch_async(dispatch_get_main_queue(), ^{
+    self.active = NO;
+    [self.engine stop];
+    [self.engine disconnectNodeOutput:self.engine.inputNode];
+    if (self.sink)
+      [self.engine detachNode:self.sink];
+    if (self.timer) {
+      dispatch_source_cancel(self.timer);
+      self.timer = nil;
+    }
+    dispatch_async(self.queue, ^{
+      if (self.file) {
+        fclose(self.file);
+        self.file = NULL;
+      }
+      [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+      self.retryAudioURL = nil;
+      self->_realtime.reset();
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self.handler(
+            @"audio_interrupted",
+            @{@"sessionId" : @(session),
+              @"reason" : reason});
+      });
+    });
+  });
 }
 
 - (void)drainConverter {
@@ -329,14 +367,7 @@ struct FridayRealtimeCapture {
                        return input;
                      }];
     if (status == AVAudioConverterOutputStatus_Error || error) {
-      dispatch_async(dispatch_get_main_queue(), ^{
-        self.handler(
-            @"audio_interrupted", @{
-              @"sessionId" : @(self.sessionID),
-              @"reason" : error.localizedDescription
-                  ?: @"Audio conversion failed."
-            });
-      });
+      [self failConversion:error];
       return;
     }
     uint64_t remaining =
@@ -531,6 +562,36 @@ struct FridayRealtimeCapture {
     @"warningAtSeconds" : @585,
     @"warningFrames" : @(kFridayWarningFrames),
     @"droppedFrameFailure" : @(overflowRejected && ring.dropped() == 1)
+  };
+}
++ (NSDictionary *)runFailureCleanupProbe {
+  NSString *path = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:@"friday-converter-failure-probe.f32"];
+  __block BOOL eventReceived = NO;
+  FridayAudioSession *session = [[FridayAudioSession alloc]
+      initWithEventHandler:^(NSString *event, NSDictionary *payload) {
+        (void)payload;
+        eventReceived = [event isEqual:@"audio_interrupted"];
+      }];
+  session.url = [NSURL fileURLWithPath:path];
+  session.file = fopen(path.fileSystemRepresentation, "wb");
+  session.sessionID = 42;
+  session.active = YES;
+  [session failConversion:[NSError errorWithDomain:@"com.phall.friday.audio"
+                                              code:99
+                                          userInfo:nil]];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!eventReceived && deadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.currentRunLoop
+           runMode:NSDefaultRunLoopMode
+        beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  BOOL removed = ![NSFileManager.defaultManager fileExistsAtPath:path];
+  return @{
+    @"ok" : @(eventReceived && removed && !session.active &&
+              session.retryAudioURL == nil),
+    @"eventReceived" : @(eventReceived),
+    @"tempRemoved" : @(removed),
+    @"activeCleared" : @(!session.active)
   };
 }
 @end

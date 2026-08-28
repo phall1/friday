@@ -130,7 +130,8 @@
 }
 
 - (NSDictionary<NSString *, id> *)deliverText:(NSString *)text
-                                     toSource:(FridaySourceTarget *)source {
+                                     toSource:(FridaySourceTarget *)source
+                           pasteAutomatically:(BOOL)pasteAutomatically {
   if (!text.length)
     return @{
       @"kind" : @"shown",
@@ -144,6 +145,16 @@
       @"message" : @"The source token expired or was already consumed."
     };
   source.consumed = YES;
+  if (!pasteAutomatically) {
+    BOOL copied = [self copyText:text changeCount:NULL];
+    return @{
+      @"kind" : copied ? @"clipboard" : @"shown",
+      @"ok" : @(copied),
+      @"message" : copied
+          ? @"Paste is disabled. The transcript was copied to the clipboard."
+          : @"Paste is disabled and the clipboard could not be updated."
+    };
+  }
   NSRunningApplication *app = [self liveApplication:source];
   if (!app) {
     BOOL copied = [self copyText:text changeCount:NULL];
@@ -374,7 +385,9 @@
 
   NSString *probe = [NSString
       stringWithFormat:@"Friday exact-source probe %@", NSUUID.UUID.UUIDString];
-  NSDictionary *delivery = [self deliverText:probe toSource:target];
+  NSDictionary *delivery = [self deliverText:probe
+                                    toSource:target
+                          pasteAutomatically:YES];
   NSDate *pasteWait = [NSDate dateWithTimeIntervalSinceNow:0.25];
   while (pasteWait.timeIntervalSinceNow > 0)
     [NSRunLoop.currentRunLoop

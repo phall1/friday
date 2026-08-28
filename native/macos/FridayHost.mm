@@ -327,14 +327,16 @@
                      @"stale generation."
       };
     NSDictionary *delivery = [self.delivery deliverText:[self fromB64:parts[1]]
-                                               toSource:source];
+                                               toSource:source
+                                     pasteAutomatically:YES];
     [self.audio discardRetryAudio];
     return delivery;
   }
   if ([name isEqual:@"friday.deliver_session"]) {
     NSDictionary *fields = [self fields:payload];
-    uint64_t session = [fields[@"session"] unsignedLongLongValue];
-    uint64_t generation = [fields[@"generation"] unsignedLongLongValue];
+    uint64_t session = (uint64_t)[fields[@"session"] longLongValue];
+    uint64_t generation = (uint64_t)[fields[@"generation"] longLongValue];
+    BOOL pasteAutomatically = [fields[@"paste"] boolValue];
     NSString *token = nil;
     for (FridaySourceTarget *candidate in self.sources.allValues) {
       if (candidate.generation == generation) {
@@ -361,7 +363,9 @@
       };
     }
     NSMutableDictionary *delivery =
-        [[self.delivery deliverText:text toSource:source] mutableCopy];
+        [[self.delivery deliverText:text
+                           toSource:source
+                 pasteAutomatically:pasteAutomatically] mutableCopy];
     delivery[@"sessionId"] = @(session);
     delivery[@"generation"] = @(generation);
     [self.audio discardRetryAudio];
@@ -505,7 +509,7 @@
     return;
   }
   if ([name isEqual:@"friday.audio.retry"]) {
-    uint64_t session = [fields[@"session"] unsignedLongLongValue];
+    uint64_t session = (uint64_t)[fields[@"session"] longLongValue];
     if (session == 0)
       session = self.currentAudioSession;
     if (![fields[@"generation"] longLongValue])
@@ -537,6 +541,70 @@
                                  }
                                  finish(result);
                                }];
+    return;
+  }
+  if ([name isEqual:@"friday.debug.fixture_delivery"]) {
+    NSString *modelPath = self.models.activeModelPath;
+    if (!modelPath.length || !payload.length) {
+      finish(@{
+        @"ok" : @NO,
+        @"code" : @"fixture_prerequisite_missing",
+        @"message" : @"The automation fixture and an active model are required."
+      });
+      return;
+    }
+    self.generation += 1;
+    generation = self.generation;
+    uint64_t session = generation;
+    self.asyncGenerations[@(key)] = @(generation);
+    self.asyncSessions[@(key)] = @(session);
+    FridaySourceTarget *source = [self.delivery captureFrontmostSource];
+    source.generation = generation;
+    self.sources[source.token] = source;
+    [self.sourceOrder addObject:source.token];
+    [self.recognizer
+        activateModelAtPath:modelPath
+                 generation:generation
+                 completion:^(NSDictionary *activation) {
+                   if (![activation[@"ok"] boolValue]) {
+                     [self.sources removeObjectForKey:source.token];
+                     [self.sourceOrder removeObject:source.token];
+                     finish(activation);
+                     return;
+                   }
+                   [self.recognizer
+                       transcribeAudioAtURL:[NSURL fileURLWithPath:payload]
+                                  sessionID:session
+                                 generation:generation
+                                 completion:^(NSDictionary *transcription) {
+                                   NSString *text = transcription[@"text"];
+                                   if (![transcription[@"ok"] boolValue] ||
+                                       [transcription[@"silence"] boolValue] ||
+                                       !text.length) {
+                                     [self.sources
+                                         removeObjectForKey:source.token];
+                                     [self.sourceOrder
+                                         removeObject:source.token];
+                                     finish(transcription);
+                                     return;
+                                   }
+                                   NSString *transcriptKey = [self
+                                       transcriptKeyForSession:session
+                                                    generation:generation];
+                                   self.transcripts[transcriptKey] = text;
+                                   NSString *deliveryPayload =
+                                       [NSString stringWithFormat:
+                                                     @"session=%llu;generation="
+                                                     @"%llu;paste=0",
+                                                     session, generation];
+                                   NSMutableDictionary *delivery = [[self
+                                       request:@"friday.deliver_session"
+                                       payload:deliveryPayload] mutableCopy];
+                                   delivery[@"fixture"] = payload;
+                                   delivery[@"recognizedText"] = text;
+                                   finish(delivery);
+                                 }];
+                 }];
     return;
   }
   if ([name isEqual:@"friday.nemo.unload"]) {
@@ -586,6 +654,16 @@
   [self.recognizer cancelGeneration:generation];
   [self.models cancelOperation:key];
   [self.audio cancelSession:session];
+  for (FridaySourceTarget *source in self.sources.allValues.copy) {
+    if (source.generation == generation) {
+      [self.sources removeObjectForKey:source.token];
+      [self.sourceOrder removeObject:source.token];
+    }
+  }
+  if (session)
+    [self.transcripts
+        removeObjectForKey:[self transcriptKeyForSession:session
+                                              generation:generation]];
   [self.audioGenerations removeObjectForKey:@(session)];
   finish(@{
     @"ok" : @NO,
@@ -692,9 +770,18 @@ extern "C" size_t friday_host_native_contract_probes(uint8_t *output,
   if (!output || capacity == 0)
     return 0;
   @autoreleasepool {
+    FridaySourceTarget *copyOnlySource = [FridaySourceTarget new];
+    copyOnlySource.token = @"contract-copy-only";
+    copyOnlySource.capturedAt = [NSDate date];
+    NSDictionary *copyOnly = [[FridayTextDelivery new]
+               deliverText:@"Friday copy-only delivery contract"
+                  toSource:copyOnlySource
+        pasteAutomatically:NO];
     NSDictionary *result = @{
       @"audio" : [FridayAudioSession runStorageProbe],
-      @"models" : [FridayModelRepository runRepositoryProbes]
+      @"converterFailure" : [FridayAudioSession runFailureCleanupProbe],
+      @"models" : [FridayModelRepository runRepositoryProbes],
+      @"copyOnlyDelivery" : copyOnly
     };
     NSData *json = FridayJSON(result);
     if (!json || json.length >= capacity)

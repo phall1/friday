@@ -13,9 +13,13 @@ const dispatch = (model: Model, msg: Msg): Model => modelOf(update(model, msg));
 function readyModel(): Model {
   const [initial] = initialModel();
   let model = dispatch(initial, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
-  model = dispatch(model, { kind: "model_status_loaded", body: bytes('{"activeModelKey":1,"compatibility":"compatible"}') });
+  model = dispatch(model, { kind: "model_status_loaded", body: bytes('{"activeModelKey":1,"activeModelReady":true,"compatibility":"compatible"}') });
   model = dispatch(model, { kind: "hotkey_configured", body: bytes('{"ok":true}') });
+  model = dispatch(model, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
+  model = dispatch(model, { kind: "model_status_loaded", body: bytes('{"activeModelKey":1,"activeModelReady":true,"compatibility":"compatible"}') });
   model = dispatch(model, { kind: "complete_onboarding" });
+  model = dispatch(model, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
+  model = dispatch(model, { kind: "model_status_loaded", body: bytes('{"activeModelKey":1,"activeModelReady":true,"compatibility":"compatible"}') });
   assert.equal(model.workflow.kind, "ready");
   return model;
 }
@@ -96,4 +100,102 @@ test("v1 migration resets unreleased spike snapshots without transcript history"
   assert.equal(migrated.workflow.kind, "booting");
   assert.equal(migrated.hasImmediateResult, false);
   assert.equal(migrated.immediateResultMessage.length, 0);
+});
+
+test("non-silence transcript carries exact delivery identity and paste preference", () => {
+  let model = readyModel();
+  model = {
+    ...model,
+    workflow: { kind: "stopping", disposition: "transcribe" },
+    sessionId: 42,
+    generation: 77,
+    sessionSourceToken: bytes("opaque"),
+    pasteAutomatically: false,
+  };
+  const result = update(model, {
+    kind: "transcript_ready",
+    body: bytes('{"ok":true,"sessionId":42,"generation":77,"silence":false}'),
+  });
+  const delivering = modelOf(result);
+  assert.equal(delivering.workflow.kind, "delivering");
+  const command = commandOf(result) as unknown as { op: string; payload: Uint8Array };
+  assert.equal(command.op, "request");
+  assert.equal(
+    new TextDecoder().decode(command.payload),
+    "session=42;generation=77;paste=0",
+  );
+  const delivered = dispatch(delivering, {
+    kind: "delivery_finished",
+    body: bytes('{"ok":true,"sessionId":42,"generation":77,"kind":"clipboard"}'),
+  });
+  assert.equal(delivered.workflow.kind, "ready");
+  assert.equal(delivered.immediateResultKind, "clipboard");
+});
+
+test("stale duration and interruption facts cannot mutate the current session", () => {
+  const base = readyModel();
+  const recording: Model = {
+    ...base,
+    workflow: { kind: "recording", control: "held", warnedDurationLimit: false },
+    sessionId: 9,
+    generation: 11,
+  };
+  assert.deepEqual(
+    dispatch(recording, hostEvent("duration_warning|10|9|e30=")),
+    recording,
+  );
+  assert.deepEqual(
+    dispatch(recording, hostEvent("duration_limit|11|8|e30=")),
+    recording,
+  );
+  assert.deepEqual(
+    dispatch(recording, hostEvent("audio_interrupted|10|9|e30=")),
+    recording,
+  );
+  const interrupted = update(
+    recording,
+    hostEvent("audio_interrupted|11|9|e30="),
+  );
+  assert.equal(modelOf(interrupted).workflow.kind, "failed");
+  assert.equal(commandOf(interrupted)?.op, "batch");
+});
+
+test("persistence projection scrubs every transient and ambient field", () => {
+  let model = readyModel();
+  model = {
+    ...model,
+    workflow: { kind: "ready", modelKey: 1 },
+    sessionId: 91,
+    generation: 92,
+    pressedAtMs: 93,
+    lastQuickReleaseAtMs: 94,
+    capturedFrames: 95,
+    sessionSourceToken: bytes("secret-source"),
+    workflowMessage: bytes("secret-error"),
+    hasImmediateResult: true,
+    immediateResultMessage: bytes("secret-transcript"),
+    ambientDetail: bytes("ambient"),
+  };
+  const persisted = modelOf(update(model, { kind: "toggle_overlay" }));
+  assert.equal(persisted.workflow.kind, "booting");
+  assert.equal(persisted.sessionId, 0);
+  assert.equal(persisted.generation, 0);
+  assert.equal(persisted.sessionSourceToken.length, 0);
+  assert.equal(persisted.workflowMessage.length, 0);
+  assert.equal(persisted.hasImmediateResult, false);
+  assert.equal(persisted.immediateResultMessage.length, 0);
+  assert.equal(persisted.permissionsLoaded, false);
+  assert.equal(persisted.modelsLoaded, false);
+  assert.equal(persisted.modelReady, false);
+  assert.equal(persisted.ambientDetail.length, 0);
+  const serialized = JSON.stringify(persisted);
+  assert.equal(serialized.includes("secret-source"), false);
+  assert.equal(serialized.includes("secret-transcript"), false);
+
+  const restored = modelOf(update(model, { kind: "restored" }));
+  assert.equal(restored.workflow.kind, "booting");
+  assert.equal(restored.sessionSourceToken.length, 0);
+  assert.equal(restored.hasImmediateResult, false);
+  assert.equal(restored.microphonePermission, false);
+  assert.equal(restored.modelReady, false);
 });

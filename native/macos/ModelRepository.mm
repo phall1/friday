@@ -26,6 +26,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 @property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *models;
 @property(nonatomic, readwrite) uint64_t activeModelKey;
 @property(nonatomic, readwrite, copy, nullable) NSString *activeModelPath;
+@property(nonatomic) BOOL activeRuntimeReady;
 @property(nonatomic, strong, nullable) NSURLSessionDataTask *task;
 @property(nonatomic, strong, nullable) NSFileHandle *handle;
 @property(nonatomic, strong, nullable) NSURL *partialURL;
@@ -71,7 +72,15 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       [_recognizer activateModelAtPath:_activeModelPath
                             generation:0
                             completion:^(NSDictionary *result) {
-                              (void)result;
+                              [self onQueue:^{
+                                self.activeRuntimeReady =
+                                    [result[@"ok"] boolValue];
+                                if (!self.activeRuntimeReady) {
+                                  self.activeModelKey = 0;
+                                  self.activeModelPath = nil;
+                                  [self saveIndexDurably];
+                                }
+                              }];
                             }];
     }
   }
@@ -123,6 +132,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 
 - (void)publishProgress:(NSString *)state
              downloaded:(uint64_t)downloaded
+
                   total:(uint64_t)total {
   if (!self.progress)
     return;
@@ -130,6 +140,29 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   dispatch_async(dispatch_get_main_queue(), ^{
     self.progress(operation, state, downloaded, total);
   });
+}
+- (BOOL)validateDefaultDirectory:(NSString *)directory {
+  NSString *modelPath =
+      [directory stringByAppendingPathComponent:@"model.gguf"];
+  NSString *manifestPath =
+      [directory stringByAppendingPathComponent:@"manifest.json"];
+  NSData *manifestData = [NSData dataWithContentsOfFile:manifestPath];
+  NSDictionary *manifest =
+      manifestData ? [NSJSONSerialization JSONObjectWithData:manifestData
+                                                     options:0
+                                                       error:nil]
+                   : nil;
+  uint64_t size =
+      [[[NSFileManager.defaultManager attributesOfItemAtPath:modelPath
+                                                       error:nil]
+          objectForKey:NSFileSize] unsignedLongLongValue];
+  return [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
+         [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
+         [manifest[@"format"] isEqual:@"gguf"] &&
+         [manifest[@"revision"] isEqual:FridayRevision] &&
+         [manifest[@"sha256"] isEqual:FridaySHA] &&
+         [manifest[@"expectedBytes"] unsignedLongLongValue] == FridayBytes &&
+         size == FridayBytes && [[self sha256:modelPath] isEqual:FridaySHA];
 }
 
 - (void)loadIndex {
@@ -158,11 +191,26 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   }
   self.activeModelKey = [index[@"activeModelKey"] unsignedLongLongValue];
   NSMutableDictionary *active = [self modelForKey:self.activeModelKey];
-  if ([NSFileManager.defaultManager fileExistsAtPath:active[@"path"]])
-    self.activeModelPath = active[@"path"];
+  NSString *activePath = active[@"path"];
+  BOOL activeValid = NO;
+  if ([active[@"managed"] boolValue]) {
+    activeValid =
+        [self validateDefaultDirectory:[activePath
+                                           stringByDeletingLastPathComponent]];
+  } else if (activePath.length) {
+    activeValid = [self validatedLocalManifestForModel:activePath
+                                                 error:nil] != nil;
+  }
+  if (activeValid) {
+    self.activeModelPath = activePath;
+  } else {
+    self.activeModelKey = 0;
+    self.activeModelPath = nil;
+    [self saveIndexDurably];
+  }
 }
 
-- (void)saveIndexDurably {
+- (BOOL)saveIndexDurably {
   NSDictionary *index = @{
     @"schemaVersion" : @1,
     @"activeModelKey" : @(self.activeModelKey),
@@ -172,29 +220,35 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       [NSJSONSerialization dataWithJSONObject:index
                                       options:NSJSONWritingPrettyPrinted
                                         error:nil];
+  if (!data)
+    return NO;
   NSString *temporary = [self.indexPath
       stringByAppendingFormat:@".%@.tmp", NSUUID.UUID.UUIDString];
   if (![data writeToFile:temporary options:0 error:nil])
-    return;
+    return NO;
   int descriptor = open(temporary.fileSystemRepresentation, O_RDONLY);
-  if (descriptor >= 0) {
-    fsync(descriptor);
-    close(descriptor);
+  if (descriptor < 0 || fsync(descriptor) != 0) {
+    if (descriptor >= 0)
+      close(descriptor);
+    [NSFileManager.defaultManager removeItemAtPath:temporary error:nil];
+    return NO;
   }
+  close(descriptor);
   if (rename(temporary.fileSystemRepresentation,
              self.indexPath.fileSystemRepresentation) != 0) {
     [NSFileManager.defaultManager removeItemAtPath:temporary error:nil];
-    return;
+    return NO;
   }
-  [self fsyncDirectory:self.modelsRoot];
+  return [self fsyncDirectory:self.modelsRoot];
 }
 
-- (void)fsyncDirectory:(NSString *)path {
+- (BOOL)fsyncDirectory:(NSString *)path {
   int descriptor = open(path.fileSystemRepresentation, O_RDONLY);
-  if (descriptor >= 0) {
-    fsync(descriptor);
-    close(descriptor);
-  }
+  if (descriptor < 0)
+    return NO;
+  BOOL ok = fsync(descriptor) == 0;
+  close(descriptor);
+  return ok;
 }
 
 - (NSMutableDictionary *)modelForKey:(uint64_t)key {
@@ -233,6 +287,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     status = @{
       @"ok" : @YES,
       @"activeModelKey" : @(self.activeModelKey),
+      @"activeModelReady" :
+          @(self.activeModelKey != 0 && self.activeModelPath.length > 0 &&
+            self.activeRuntimeReady),
       @"models" : models,
       @"managedBytes" : @(usage),
       @"downloadActive" : @(self.task != nil),
@@ -331,14 +388,12 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   [self onQueue:^{
     NSMutableDictionary *installed = [self modelForKey:FridayDefaultKey];
     if (installed &&
-        [NSFileManager.defaultManager fileExistsAtPath:installed[@"path"]]) {
-      dispatch_async(dispatch_get_main_queue(), ^{
-        completion(@{
-          @"ok" : @YES,
-          @"modelKey" : @(FridayDefaultKey),
-          @"message" : @"The verified default model is already installed."
-        });
-      });
+        [self
+            validateDefaultDirectory:[installed[@"path"]
+                                         stringByDeletingLastPathComponent]]) {
+      [self selectKey:FridayDefaultKey
+           generation:operationID
+           completion:completion];
       return;
     }
     if (self.task || self.completion) {
@@ -524,10 +579,71 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   unsigned char digest[CC_SHA256_DIGEST_LENGTH];
   CC_SHA256_Final(digest, &context);
   NSMutableString *hex =
+
       [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
   for (NSUInteger index = 0; index < sizeof(digest); ++index)
     [hex appendFormat:@"%02x", digest[index]];
   return hex;
+}
+- (void)finishPublicationAtDirectory:(NSString *)directory
+                            manifest:(NSDictionary *)manifest
+                                size:(uint64_t)size {
+  NSString *finalModel =
+      [directory stringByAppendingPathComponent:@"model.gguf"];
+  [self.recognizer
+      activateModelAtPath:finalModel
+               generation:self.operation
+               completion:^(NSDictionary *finalProbe) {
+                 [self onQueue:^{
+                   if (![finalProbe[@"ok"] boolValue]) {
+                     [self fail:finalProbe[@"message"]
+                                    ?: @"The published model failed its final "
+                                       @"runtime probe."
+                           code:@"published_model_probe_failed"];
+                     return;
+                   }
+                   NSMutableDictionary *record = [manifest mutableCopy];
+                   record[@"path"] = finalModel;
+                   NSMutableDictionary *old =
+                       [self modelForKey:FridayDefaultKey];
+                   uint64_t previousKey = self.activeModelKey;
+                   NSString *previousPath = self.activeModelPath;
+                   if (old)
+                     [self.models removeObject:old];
+                   [self.models addObject:record];
+                   self.activeModelKey = FridayDefaultKey;
+                   self.activeModelPath = finalModel;
+                   self.activeRuntimeReady = YES;
+                   if (![self saveIndexDurably]) {
+                     [self.models removeObject:record];
+                     if (old)
+                       [self.models addObject:old];
+                     self.activeModelKey = previousKey;
+                     self.activeModelPath = previousPath;
+                     self.activeRuntimeReady = previousPath.length > 0;
+                     [self fail:@"The verified model was published, but the "
+                                @"durable index update failed."
+                           code:@"index_publication_failed"];
+                     return;
+                   }
+                   [NSFileManager.defaultManager removeItemAtURL:self.resumeURL
+                                                           error:nil];
+                   [NSFileManager.defaultManager
+                       removeItemAtPath:self.partialURL.path
+                                            .stringByDeletingLastPathComponent
+                                  error:nil];
+                   [self publishProgress:@"installed"
+                              downloaded:size
+                                   total:size];
+                   [self complete:@{
+                     @"ok" : @YES,
+                     @"modelKey" : @(FridayDefaultKey),
+                     @"message" :
+                         @"Parakeet TDT v3 is verified, warm, and active.",
+                     @"probe" : finalProbe
+                   }];
+                 }];
+               }];
 }
 
 - (void)verifyAndInstall {
@@ -590,55 +706,58 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                    }
                    NSString *idRoot = [self.modelsRoot
                        stringByAppendingPathComponent:FridayModelID];
-                   NSString *finalDirectory =
-                       [idRoot stringByAppendingPathComponent:FridayRevision];
-                   [NSFileManager.defaultManager createDirectoryAtPath:idRoot
-                                           withIntermediateDirectories:YES
-                                                            attributes:nil
-                                                                 error:nil];
-                   if ([NSFileManager.defaultManager
-                           fileExistsAtPath:finalDirectory]) {
-                     [NSFileManager.defaultManager removeItemAtPath:staging
-                                                              error:nil];
-                   } else if (rename(staging.fileSystemRepresentation,
-                                     finalDirectory.fileSystemRepresentation) !=
-                              0) {
-                     [NSFileManager.defaultManager removeItemAtPath:staging
-                                                              error:nil];
-                     [self fail:@"Atomic model publication failed."
-                           code:@"install_failed"];
+                   if (![NSFileManager.defaultManager
+                                 createDirectoryAtPath:idRoot
+                           withIntermediateDirectories:YES
+                                            attributes:nil
+                                                 error:nil]) {
+                     [self fail:@"The verified model root could not be created."
+                           code:@"publication_root_failed"];
                      return;
                    }
-                   [self fsyncDirectory:idRoot];
-                   [self fsyncDirectory:self.modelsRoot];
-                   NSString *finalModel = [finalDirectory
-                       stringByAppendingPathComponent:@"model.gguf"];
-                   NSMutableDictionary *record = [manifest mutableCopy];
-                   record[@"path"] = finalModel;
-                   NSMutableDictionary *old =
-                       [self modelForKey:FridayDefaultKey];
-                   if (old)
-                     [self.models removeObject:old];
-                   [self.models addObject:record];
-                   self.activeModelKey = FridayDefaultKey;
-                   self.activeModelPath = finalModel;
-                   [self saveIndexDurably];
-                   [NSFileManager.defaultManager removeItemAtURL:self.resumeURL
-                                                           error:nil];
-                   [NSFileManager.defaultManager
-                       removeItemAtPath:self.partialURL.path
-                                            .stringByDeletingLastPathComponent
-                                  error:nil];
-                   [self publishProgress:@"installed"
-                              downloaded:size
-                                   total:size];
-                   [self complete:@{
-                     @"ok" : @YES,
-                     @"modelKey" : @(FridayDefaultKey),
-                     @"message" :
-                         @"Parakeet TDT v3 is verified, warm, and active.",
-                     @"probe" : probe
-                   }];
+                   NSString *finalDirectory =
+                       [idRoot stringByAppendingPathComponent:FridayRevision];
+                   BOOL reuseExisting =
+                       [NSFileManager.defaultManager
+                           fileExistsAtPath:finalDirectory] &&
+                       [self validateDefaultDirectory:finalDirectory];
+                   if (reuseExisting) {
+                     [NSFileManager.defaultManager removeItemAtPath:staging
+                                                              error:nil];
+                   } else {
+                     if ([NSFileManager.defaultManager
+                             fileExistsAtPath:finalDirectory]) {
+                       finalDirectory = [idRoot
+                           stringByAppendingPathComponent:
+                               [NSString
+                                   stringWithFormat:@"%@-verified-%@",
+                                                    FridayRevision,
+                                                    NSUUID.UUID.UUIDString]];
+                     }
+                     if (rename(staging.fileSystemRepresentation,
+                                finalDirectory.fileSystemRepresentation) != 0) {
+                       [self fail:@"The verified staging model could not be "
+                                  @"atomically published; staging was retained."
+                             code:@"atomic_publication_failed"];
+                       return;
+                     }
+                   }
+                   if (![self fsyncDirectory:idRoot] ||
+                       ![self fsyncDirectory:self.modelsRoot]) {
+                     [self fail:@"The model directory publication could not be "
+                                @"made durable."
+                           code:@"publication_fsync_failed"];
+                     return;
+                   }
+                   if (![self validateDefaultDirectory:finalDirectory]) {
+                     [self fail:@"The published final model failed "
+                                @"manifest/size/SHA validation."
+                           code:@"published_model_invalid"];
+                     return;
+                   }
+                   [self finishPublicationAtDirectory:finalDirectory
+                                             manifest:manifest
+                                                 size:size];
                  }];
                }];
 }
@@ -753,7 +872,17 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                      [self.models addObject:record];
                      self.activeModelKey = key;
                      self.activeModelPath = path;
-                     [self saveIndexDurably];
+                     self.activeRuntimeReady = YES;
+                     if (![self saveIndexDurably]) {
+                       self.activeRuntimeReady = NO;
+                       dispatch_async(dispatch_get_main_queue(), ^{
+                         completion(@{
+                           @"ok" : @NO,
+                           @"code" : @"index_publication_failed"
+                         });
+                       });
+                       return;
+                     }
                      dispatch_async(dispatch_get_main_queue(), ^{
                        completion(@{
                          @"ok" : @YES,
@@ -790,7 +919,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   [self onQueue:^{
     NSMutableDictionary *model = [self modelForKey:key];
     NSString *path = model[@"path"];
-    if (!model || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+    BOOL valid = NO;
+    if ([model[@"managed"] boolValue])
+      valid = [self
+          validateDefaultDirectory:[path stringByDeletingLastPathComponent]];
+    else
+      valid = [self validatedLocalManifestForModel:path error:nil] != nil;
+    if (!model || !valid) {
+      self.activeRuntimeReady = NO;
       dispatch_async(dispatch_get_main_queue(), ^{
         completion(@{@"ok" : @NO, @"code" : @"model_unavailable"});
       });
@@ -808,7 +944,17 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                                   }
                                   self.activeModelKey = key;
                                   self.activeModelPath = path;
-                                  [self saveIndexDurably];
+                                  self.activeRuntimeReady = YES;
+                                  if (![self saveIndexDurably]) {
+                                    self.activeRuntimeReady = NO;
+                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                      completion(@{
+                                        @"ok" : @NO,
+                                        @"code" : @"index_publication_failed"
+                                      });
+                                    });
+                                    return;
+                                  }
                                   dispatch_async(dispatch_get_main_queue(), ^{
                                     completion(@{
                                       @"ok" : @YES,
@@ -852,6 +998,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     if (self.activeModelKey == key) {
       self.activeModelKey = 0;
       self.activeModelPath = nil;
+      self.activeRuntimeReady = NO;
     }
     [self saveIndexDurably];
     result = @{@"ok" : @YES};
@@ -912,14 +1059,86 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       stringByStandardizingPath];
   BOOL unsafeDeleteRejected =
       ![outside hasPrefix:[root stringByAppendingString:@"/"]];
+  NSString *dataRoot = [root stringByAppendingPathComponent:@"AppData"];
+  NSString *modelsRoot = [dataRoot stringByAppendingPathComponent:@"Models"];
+  [NSFileManager.defaultManager createDirectoryAtPath:modelsRoot
+                          withIntermediateDirectories:YES
+                                           attributes:nil
+                                                error:nil];
+  NSString *missingPath =
+      [modelsRoot stringByAppendingPathComponent:@"missing/model.gguf"];
+  NSDictionary *missingRecord = @{
+    @"modelKey" : @1,
+    @"path" : missingPath,
+    @"managed" : @YES,
+    @"engine" : @"nemo_speech_cpp",
+    @"family" : @"parakeet_tdt",
+    @"format" : @"gguf",
+    @"compatibility" : @"compatible"
+  };
+  NSDictionary *index = @{
+    @"schemaVersion" : @1,
+    @"activeModelKey" : @1,
+    @"models" : @[ missingRecord ]
+  };
+  NSData *indexData = [NSJSONSerialization dataWithJSONObject:index
+                                                      options:0
+                                                        error:nil];
+  [indexData
+      writeToFile:[modelsRoot stringByAppendingPathComponent:@"index.json"]
+          options:0
+            error:nil];
+  FridayNemoRecognizer *recognizer = [FridayNemoRecognizer new];
+  FridayModelRepository *repository = [[FridayModelRepository alloc]
+      initWithDataDirectory:dataRoot
+                 recognizer:recognizer
+                   progress:^(uint64_t operation, NSString *state,
+                              uint64_t downloaded, uint64_t total) {
+                     (void)operation;
+                     (void)state;
+                     (void)downloaded;
+                     (void)total;
+                   }];
+  NSDictionary *missingStatus = [repository status];
+  BOOL missingActiveReset =
+      [missingStatus[@"activeModelKey"] unsignedLongLongValue] == 0 &&
+      ![missingStatus[@"activeModelReady"] boolValue];
+  NSString *corruptDirectory =
+      [modelsRoot stringByAppendingPathComponent:@"corrupt-final"];
+  [NSFileManager.defaultManager createDirectoryAtPath:corruptDirectory
+                          withIntermediateDirectories:YES
+                                           attributes:nil
+                                                error:nil];
+  [data writeToFile:[corruptDirectory
+                        stringByAppendingPathComponent:@"model.gguf"]
+            options:0
+              error:nil];
+  NSDictionary *corruptManifest = @{
+    @"engine" : @"nemo_speech_cpp",
+    @"family" : @"parakeet_tdt",
+    @"format" : @"gguf",
+    @"revision" : FridayRevision,
+    @"sha256" : FridaySHA,
+    @"expectedBytes" : @(FridayBytes)
+  };
+  [[NSJSONSerialization dataWithJSONObject:corruptManifest options:0 error:nil]
+      writeToFile:[corruptDirectory
+                      stringByAppendingPathComponent:@"manifest.json"]
+          options:0
+            error:nil];
+  BOOL finalCollisionCorruptionRejected =
+      ![repository validateDefaultDirectory:corruptDirectory];
   [NSFileManager.defaultManager removeItemAtPath:root error:nil];
   return @{
-    @"ok" : @(resume == 4096 && malformed && shaFailed),
+    @"ok" : @(resume == 4096 && malformed && shaFailed && missingActiveReset &&
+              finalCollisionCorruptionRejected),
     @"resumeOffset" : @(resume),
     @"malformedRejected" : @(malformed),
     @"shaFailed" : @(shaFailed),
     @"sidecarRequired" : @YES,
-    @"managedDeleteBounded" : @(unsafeDeleteRejected)
+    @"managedDeleteBounded" : @(unsafeDeleteRejected),
+    @"missingActiveReset" : @(missingActiveReset),
+    @"finalCollisionCorruptionRejected" : @(finalCollisionCorruptionRejected)
   };
 }
 @end
