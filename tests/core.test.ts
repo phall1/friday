@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initialModel, migrate, update, type Model, type Msg } from "../src/core.ts";
+import { blockerText, commandMsg, initialModel, migrate, statusItem, update, type Model, type Msg } from "../src/core.ts";
 import type { Cmd } from "@native-sdk/core";
 
 type UpdateResult = Model | [Model, Cmd<Msg>];
@@ -198,4 +198,100 @@ test("persistence projection scrubs every transient and ambient field", () => {
   assert.equal(restored.hasImmediateResult, false);
   assert.equal(restored.microphonePermission, false);
   assert.equal(restored.modelReady, false);
+});
+
+test("menu-bar status exposes only legal workflow actions and exact destinations", () => {
+  const ready = readyModel();
+  const readyMenu = statusItem(ready);
+  const labels = readyMenu.items.map((item) => new TextDecoder().decode(item.label));
+  assert.equal(labels.includes("Start Recording"), true);
+  assert.equal(labels.includes("Stop Recording"), false);
+  assert.equal(labels.includes("Cancel"), false);
+  assert.equal(labels.includes("Settings…"), true);
+  assert.equal(labels.includes("Model Manager…"), true);
+  assert.equal(labels.includes("Permission Status…"), true);
+  assert.equal(labels.includes("Quit Friday"), true);
+
+  const recording: Model = {
+    ...ready,
+    workflow: { kind: "recording", control: "held", warnedDurationLimit: false },
+  };
+  const recordingLabels = statusItem(recording).items.map((item) => new TextDecoder().decode(item.label));
+  assert.equal(recordingLabels.includes("Start Recording"), false);
+  assert.equal(recordingLabels.includes("Stop Recording"), true);
+  assert.equal(recordingLabels.includes("Cancel"), true);
+
+  const transcribing: Model = {
+    ...ready,
+    workflow: { kind: "transcribing", retryAudioAvailable: false },
+  };
+  const transcribingLabels = statusItem(transcribing).items.map((item) => new TextDecoder().decode(item.label));
+  assert.equal(transcribingLabels.includes("Stop Recording"), false);
+  assert.equal(transcribingLabels.includes("Cancel"), true);
+  assert.deepEqual(commandMsg("friday.models"), { kind: "show_models" });
+  assert.equal(commandMsg("unknown"), null);
+});
+
+test("UI scene automation remains env-shaped and covers production surfaces", () => {
+  const [initial] = initialModel();
+  const onboarding = dispatch(initial, {
+    kind: "automation_scene_requested",
+    value: bytes("onboarding-light"),
+  });
+  assert.equal(onboarding.onboardingComplete, false);
+  assert.equal(onboarding.onboardingStep, 1);
+  assert.equal(onboarding.modelDownloadState, "downloading");
+  assert.equal(onboarding.accessibilityPermission, false);
+
+  const settings = dispatch(initial, {
+    kind: "automation_scene_requested",
+    value: bytes("settings-dark"),
+  });
+  assert.equal(settings.onboardingComplete, true);
+  assert.equal(settings.page, "settings");
+  assert.equal(settings.appearanceOverride, "dark");
+  assert.equal(settings.workflow.kind, "ready");
+
+  const error = dispatch(initial, {
+    kind: "automation_scene_requested",
+    value: bytes("error-light"),
+  });
+  assert.equal(error.workflow.kind, "failed");
+  assert.equal(new TextDecoder().decode(blockerText(onboarding)), "Input Monitoring is required for the global shortcut. Manual Start remains available in limited mode.");
+});
+
+test("launch-at-login result is authoritative and persisted only after host success", () => {
+  const ready = readyModel();
+  const requested = update(ready, { kind: "toggle_launch_at_login" });
+  assert.equal(modelOf(requested).loginStatus, "checking");
+  const command = commandOf(requested) as unknown as { op: string; name: string; payload: Uint8Array };
+  assert.equal(command.op, "request");
+  assert.equal(command.name, "friday.login.set");
+  assert.equal(new TextDecoder().decode(command.payload), "enabled");
+
+  const saved = modelOf(update(ready, {
+    kind: "login_setting_saved",
+    body: bytes('{"ok":true,"enabled":true,"requiresApproval":false}'),
+  }));
+  assert.equal(saved.launchAtLogin, true);
+  assert.equal(saved.workflow.kind, "booting");
+  const hydrated = dispatch(saved, {
+    kind: "login_status_loaded",
+    body: bytes('{"ok":true,"enabled":true,"requiresApproval":false}'),
+  });
+  assert.equal(hydrated.loginStatus, "enabled");
+});
+
+test("model manager parses and acts on every available model row", () => {
+  const ready = readyModel();
+  const body = bytes('{"ok":true,"activeModelKey":1,"activeModelReady":true,"models":[{"displayName":"Local Parakeet","sourceLabel":"Local file · reference only","modelKey":2,"license":"CC-BY-4.0","languageSummary":"1 language","sizeText":"700 MB","managed":false,"active":false}],"modelCount":2,"managedBytes":713975456,"activeModelName":"Parakeet TDT 0.6B v3","activeModelSource":"Hugging Face · managed by Friday","activeModelLicense":"CC-BY-4.0","activeModelLanguages":"25 languages","activeModelSizeText":"714 MB","managedModelSizeText":"714 MB","activeModelBytes":713975456,"downloadedBytes":713975456,"totalBytes":713975456}');
+  const loaded = dispatch(ready, { kind: "model_status_loaded", body });
+  assert.equal(loaded.modelRows.length, 1);
+  assert.equal(loaded.modelRows[0].modelKey, 2);
+  assert.equal(new TextDecoder().decode(loaded.modelRows[0].name), "Local Parakeet");
+  assert.equal(loaded.modelRows[0].managed, false);
+  const selecting = update(loaded, { kind: "select_model", rowKey: 2 });
+  const command = commandOf(selecting) as unknown as { op: string; payload: Uint8Array };
+  assert.equal(command.op, "request");
+  assert.equal(new TextDecoder().decode(command.payload), "modelKey=2;generation=0");
 });
