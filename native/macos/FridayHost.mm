@@ -514,10 +514,8 @@
     return [self.models removeKey:(uint64_t)[fields[@"modelKey"] longLongValue]
                     deleteManaged:[fields[@"delete"] boolValue]];
   }
-  if ([name isEqual:@"friday.model.cleanup"]) {
-    [self.models removeFailedDownloads];
-    return @{@"ok" : @YES};
-  }
+  if ([name isEqual:@"friday.model.cleanup"])
+    return [self.models removeFailedDownloads];
   if ([name isEqual:@"friday.diagnostics"])
     return [self safeDiagnostics];
   if ([name isEqual:@"friday.diagnostics.export"]) {

@@ -2,7 +2,7 @@
   <row padding="16" gap="12" cross="center" background="surface_subtle">
     <column grow="1" gap="2">
       <text size="heading">Friday</text>
-      <text foreground="text_muted">Private dictation, returned where you started.</text>
+      <text foreground="text_muted">Private dictation. Local transcription.</text>
     </column>
     <row gap="10" cross="center" padding="12" background="surface" radius="xl" border-color="border" max-width="400">
       <text foreground="accent"><span mono="true">{waveformGlyph}</span></text>
@@ -13,6 +13,14 @@
     </row>
   </row>
 
+  <if test="{showOverlayPreview}">
+    <column grow="1" cross="center">
+      <spacer grow="1"/>
+      <card width="600"><column padding="16" gap="12"><text foreground="text_muted">Recording capsule preview</text><row gap="12" cross="center"><text foreground="accent"><span mono="true">{waveformGlyph}</span></text><text grow="1"><span weight="medium">Locked · {elapsedLabel}</span></text><button on-press="stop_recording">Stop</button><button variant="ghost" on-press="dismiss_overlay_preview">Hide Capsule</button><button variant="destructive" on-press="cancel_active">Cancel</button></row><text foreground="text_muted" wrap="true">Hide Capsule removes only the overlay. Recording continues until Stop or Cancel.</text></column></card>
+      <spacer grow="1"/>
+    </column>
+  </if>
+  <else>
   <if test="{showOnboarding}">
     <scroll grow="1">
       <column padding="24" gap="20" max-width="680">
@@ -25,7 +33,7 @@
             <card>
               <column padding="16" gap="12">
                 <row gap="12" cross="center"><icon name="volume"/><text><span weight="medium">Microphone audio stays local</span></text></row>
-                <row gap="12" cross="center"><icon name="terminal"/><text><span weight="medium">Parakeet runs in process on Apple Silicon</span></text></row>
+                <row gap="12" cross="center"><icon name="terminal"/><text><span weight="medium">Transcription runs on this Mac</span></text></row>
                 <row gap="12" cross="center"><icon name="copy"/><text><span weight="medium">Paste falls back to an explicit clipboard result</span></text></row>
                 <text foreground="text_muted" wrap="true">Friday has no transcript history and no cloud speech service. Network access is used only for model downloads you can see and cancel.</text>
               </column>
@@ -38,18 +46,18 @@
           <column gap="16">
             <column gap="4"><text size="heading">Three permissions, three clear jobs</text><text foreground="text_muted" wrap="true">Each state changes live. Friday never labels a permission granted until macOS lets it use that capability.</text></column>
             <card><column padding="16" gap="10">
-              <row gap="12" cross="center"><icon name="volume"/><column grow="1" gap="2"><text><span weight="medium">Microphone</span></text><text foreground="text_muted">{permissionMicrophoneState}</text></column><badge>{permissionMicrophoneState}</badge><if test="{not microphonePermission}"><button on-press="request_microphone">Grant Microphone</button></if></row>
+              <row gap="12" cross="center"><icon name="volume"/><column grow="1" gap="2"><text><span weight="medium">Microphone</span></text><text foreground="text_muted">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button on-press="request_microphone">Grant Microphone</button></if></row>
               <separator/>
-              <row gap="12" cross="center"><icon name="edit"/><column grow="1" gap="2"><text><span weight="medium">Accessibility</span></text><text foreground="text_muted">Paste final text into the exact source app.</text></column><badge>{permissionAccessibilityState}</badge><if test="{not accessibilityPermission}"><button on-press="request_accessibility">Grant Accessibility</button></if></row>
+              <row gap="12" cross="center"><icon name="edit"/><column grow="1" gap="2"><text><span weight="medium">Accessibility</span></text><text foreground="text_muted">Paste final text into the exact source app.</text></column><if test="{not accessibilityPermission}"><button on-press="request_accessibility">Grant Accessibility</button></if></row>
               <separator/>
-              <row gap="12" cross="center"><icon name="terminal"/><column grow="1" gap="2"><text><span weight="medium">Input Monitoring</span></text><text foreground="text_muted">Hear the shortcut while another app is focused.</text></column><badge>{permissionInputState}</badge><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Grant Input Monitoring</button></if></row>
+              <row gap="12" cross="center"><icon name="terminal"/><column grow="1" gap="2"><text><span weight="medium">Input Monitoring</span></text><text foreground="text_muted">Hear the shortcut while another app is focused.</text></column><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Grant Input Monitoring</button></if></row>
             </column></card>
             <if test="{not inputMonitoringPermission or not accessibilityPermission}">
               <alert text="Continue with fewer capabilities">
                 <column padding="12" gap="8"><text wrap="true">Without Input Monitoring, Start remains available from Friday but the global shortcut is disabled. Without Accessibility, final text is copied instead of pasted.</text><button variant="outline" on-press="accept_limited_mode">I understand and want limited mode</button></column>
               </alert>
             </if>
-            <row gap="8"><button variant="ghost" on-press="onboarding_back">Back</button><spacer grow="1"/><button variant="primary" on-press="onboarding_next" disabled="{not microphonePermission or (not inputMonitoringPermission and not limitedModeAccepted)}">Continue</button></row>
+            <row gap="8"><button variant="ghost" on-press="onboarding_back">Back</button><spacer grow="1"/><button variant="primary" on-press="onboarding_next" disabled="{not microphonePermission or ((not inputMonitoringPermission or not accessibilityPermission) and not limitedModeAccepted)}">Continue</button></row>
           </column>
         </if>
 
@@ -67,15 +75,16 @@
 
         <if test="{onboardingStep == 3}">
           <column gap="16">
-            <column gap="4"><text size="heading">Local speech needs one local model</text><text foreground="text_muted" wrap="true">Friday uses the verified Parakeet TDT 0.6B v3 GGUF by default. The download starts automatically and becomes selectable only after integrity and runtime checks pass.</text></column>
+            <column gap="4"><text size="heading">Add the local speech model</text><text foreground="text_muted" wrap="true">Friday uses Parakeet for transcription on this Mac. It is about 714 MB, and you can cancel the download at any time.</text></column>
             <card><column padding="16" gap="10">
-              <row gap="12" cross="center"><icon name="download"/><column grow="1" gap="2"><text><span weight="medium">Parakeet TDT 0.6B v3</span></text><text foreground="text_muted">Hugging Face · CC-BY-4.0 · 25 languages · 713,975,456 bytes</text></column><badge>{modelDownloadState}</badge></row>
-              <if test="{modelDownloadActive}"><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Parakeet download progress"/><text foreground="text_muted">{thousands(round(modelDownloadedBytes))} of {thousands(round(modelTotalBytes))} bytes · {modelDownloadState}</text></if><button variant="outline" on-press="cancel_model_download">Cancel Download</button></if>
-              <if test="{modelDownloadFailed}"><text foreground="warning" wrap="true">Download paused or failed. Check the connection, retry when ready, or choose a manifest-backed local model.</text><row gap="8"><button variant="primary" on-press="retry_model_download">Retry Download</button><button on-press="choose_local_model">Choose Local GGUF…</button><button variant="ghost" on-press="cleanup_model_downloads">Remove Partial Download</button></row></if>
-              <if test="{modelReady}"><row gap="8" cross="center"><icon name="check-circle" foreground="success"/><text foreground="success">Verified, warm, and ready</text></row></if>
+              <row gap="12" cross="center"><icon name="download"/><column grow="1" gap="2"><text><span weight="medium">Parakeet TDT 0.6B v3</span></text><text foreground="text_muted">Local transcription · CC-BY-4.0 · about 714 MB</text></column><badge>{modelDownloadState}</badge></row>
+              <if test="{modelDownloadState == 'idle'}"><row gap="8"><button variant="primary" on-press="retry_model_download">Download Parakeet</button><button on-press="choose_local_model">Choose Local Model…</button></row></if>
+              <if test="{modelDownloadActive}"><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Parakeet download progress"/><text foreground="text_muted">{percent(modelDownloadedBytes / modelTotalBytes)} · about 714 MB total</text></if><button variant="outline" on-press="cancel_model_download">Cancel Download</button></if>
+              <if test="{modelDownloadFailed}"><text foreground="warning" wrap="true">Download paused or failed. Check the connection, retry when ready, or choose a local model.</text><row gap="8"><button variant="primary" on-press="retry_model_download">Retry Download</button><button on-press="choose_local_model">Choose Local Model…</button><button variant="ghost" on-press="cleanup_model_downloads" disabled="{modelDownloadActive}">Remove Partial Download</button></row></if>
+              <if test="{modelReady}"><row gap="8" cross="center"><icon name="check-circle" foreground="success"/><text foreground="success">Ready for local transcription</text></row></if>
               <text foreground="text_muted" wrap="true">{modelDownloadMessage}</text>
             </column></card>
-            <row gap="8"><button variant="ghost" on-press="onboarding_back">Back</button><spacer grow="1"/><button variant="primary" size="lg" on-press="complete_onboarding" disabled="{not canCompleteOnboarding}">Finish Setup</button></row>
+            <row gap="8"><button variant="ghost" on-press="onboarding_back" disabled="{modelDownloadActive}">Back</button><spacer grow="1"/><button variant="primary" size="lg" on-press="complete_onboarding" disabled="{not canCompleteOnboarding}">Finish Setup</button></row>
           </column>
         </if>
       </column>
@@ -93,7 +102,7 @@
       <scroll grow="1">
         <column padding="20" gap="16">
           <if test="{isFailed}">
-            <alert text="Friday needs attention"><column padding="12" gap="10"><text wrap="true">{failureDetail}</text><row gap="8"><if test="{canRetry}"><button variant="primary" on-press="retry_transcription">Retry Transcription</button></if><if test="{hasImmediateResult and immediateResultKind == 'shown'}"><button on-press="copy_immediate_result">Copy Final Text</button></if><button on-press="copy_diagnostics_fresh">Copy Diagnostics</button><button on-press="show_models">Change Model</button><button variant="ghost" on-press="dismiss_failure">Dismiss</button></row></column></alert>
+            <alert text="Friday needs attention"><column padding="12" gap="8"><text><span weight="medium">Model: {failureModelName}</span></text><text wrap="true">{failureDetail}</text><row gap="8"><if test="{canRetry}"><button variant="primary" on-press="retry_transcription">Retry Transcription</button></if><if test="{hasImmediateResult and immediateResultKind == 'shown'}"><button on-press="copy_immediate_result">Copy Final Text</button></if><button on-press="copy_diagnostics_fresh">Copy Diagnostics</button><button on-press="show_models">Change Model</button><button variant="ghost" on-press="dismiss_failure">Dismiss</button></row></column></alert>
           </if>
 
           <if test="{showSettings}">
@@ -116,12 +125,13 @@
           </if>
 
           <if test="{showModels}">
-            <column gap="16"><row gap="12" cross="center"><column grow="1" gap="3"><text size="heading">Model Manager</text><text foreground="text_muted">Only compatible, integrity-checked Parakeet TDT GGUF models can become active.</text></column><button on-press="choose_local_model" icon="folder-open">Add Local GGUF…</button></row>
-              <if test="{hasActiveModel}"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="check-circle" foreground="success"/><column grow="1" gap="2"><text><span weight="medium">{activeModelName}</span></text><text foreground="text_muted">Active · {activeModelSource}</text></column><badge>Active</badge></row><text>{activeModelLicense} · {activeModelLanguages} · {activeModelSizeText}</text><row gap="8"><button variant="outline" on-press="remove_model_reference">Remove from Friday</button><if test="{isDefaultModelActive}"><button variant="destructive" on-press="delete_managed_model">Delete Friday’s Copy</button></if></row><text foreground="text_muted" wrap="true">Removing a local model only removes Friday’s reference. Delete Friday’s Copy applies only to files Friday manages.</text></column></card></if><else><alert text="No active model"><column padding="12"><text>Select the verified default model or add a compatible local GGUF.</text></column></alert></else>
-              <for each="availableModels" key="modelKey" as="m"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="archive"/><column grow="1" gap="2"><text><span weight="medium">{m.name}</span></text><text foreground="text_muted">Available · {m.source}</text></column><button on-press="select_model:{m.modelKey}" disabled="{isBusy}">Select</button></row><text>{m.license} · {m.languages} · {m.size}</text><row gap="8"><button variant="outline" on-press="remove_model:{m.modelKey}">Remove from Friday</button><if test="{m.managed}"><button variant="destructive" on-press="delete_model:{m.modelKey}">Delete Friday’s Copy</button></if></row></column></card></for>
-              <if test="{not defaultModelInstalled}"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="download"/><column grow="1" gap="2"><text><span weight="medium">Parakeet TDT 0.6B v3</span></text><text foreground="text_muted">Hugging Face · CC-BY-4.0 · 25 languages · 713,975,456 bytes</text></column></row><if test="{modelDownloadState == 'idle'}"><button variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/><button on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadFailed}"><row gap="8"><button variant="primary" on-press="retry_model_download">Retry Download</button><button on-press="cleanup_model_downloads">Remove Failed Download</button></row></if></column></card></if>
-              <card><column padding="16" gap="8"><text><span weight="medium">Add from Hugging Face</span></text><text foreground="text_muted" wrap="true">v1 accepts only the pinned nvidia/parakeet-tdt-0.6b-v3 GGUF source. Arbitrary repositories are rejected.</text><row gap="8"><text-field grow="1" text="{hfDraft}" on-input="hf_draft_edit" placeholder="nvidia/parakeet-tdt-0.6b-v3" label="Hugging Face model identifier"/><button on-press="add_hugging_face_model">Add Verified Source</button></row></column></card>
-              <row gap="8"><text foreground="text_muted" grow="1">{round(modelCount)} {plural(round(modelCount), 'compatible model', 'compatible models')} · {managedModelSizeText} Friday-managed</text><button variant="ghost" on-press="cleanup_model_downloads">Clean Failed and Partial Downloads</button></row><text foreground="warning" wrap="true">{modelDownloadMessage}</text>
+            <column gap="16"><row gap="12" cross="center"><column grow="1" gap="3"><text size="heading">Model Manager</text><text foreground="text_muted" wrap="true">Friday accepts compatible Parakeet TDT GGUF models. A local model needs its matching Friday manifest sidecar; Friday references the original file and never deletes it automatically.</text></column><button on-press="choose_local_model" icon="folder-open">Add Local Model…</button></row>
+              <if test="{isBusy}"><alert text="Model changes are paused"><column padding="12"><text>Finish or cancel the active dictation before selecting, removing, or deleting a model.</text></column></alert></if>
+              <if test="{hasActiveModel}"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="check-circle" foreground="success"/><column grow="1" gap="2"><text><span weight="medium">{activeModelName}</span></text><text foreground="text_muted">Active · {activeModelSource}</text></column><badge>Active</badge></row><text>{activeModelLicense} · {activeModelLanguages} · {activeModelSizeText}</text><row gap="8"><button variant="outline" on-press="remove_model_reference" disabled="{isBusy}">Remove from Friday</button><if test="{isDefaultModelActive}"><button variant="destructive" on-press="delete_managed_model" disabled="{isBusy}">Delete Friday’s Copy</button></if></row><text foreground="text_muted" wrap="true">Removing a local model only removes Friday’s reference. Delete Friday’s Copy applies only to files Friday manages.</text></column></card></if><else><alert text="No active model"><column padding="12"><text>Select the verified default model or add a compatible local model.</text></column></alert></else>
+              <for each="availableModels" as="m"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="archive"/><column grow="1" gap="2"><text><span weight="medium">{m.name}</span></text><text foreground="text_muted">Available · {m.source}</text></column><button on-press="select_model:{m.modelKey}" disabled="{isBusy}">Select</button></row><text>{m.license} · {m.languages} · {m.size}</text><row gap="8"><button variant="outline" on-press="remove_model:{m.modelKey}" disabled="{isBusy}">Remove from Friday</button><if test="{m.managed}"><button variant="destructive" on-press="delete_model:{m.modelKey}" disabled="{isBusy}">Delete Friday’s Copy</button></if></row></column></card></for>
+              <if test="{not defaultModelInstalled}"><card><column padding="16" gap="10"><row gap="12" cross="center"><icon name="download"/><column grow="1" gap="2"><text><span weight="medium">Parakeet TDT 0.6B v3</span></text><text foreground="text_muted">Hugging Face · CC-BY-4.0 · 25 languages · 714 MB</text></column></row><if test="{modelDownloadState == 'idle'}"><button variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/></if><button on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadFailed}"><row gap="8"><button variant="primary" on-press="retry_model_download">Retry Download</button><button on-press="cleanup_model_downloads" disabled="{modelDownloadActive}">Remove Failed Download</button></row></if></column></card></if>
+              <card><column padding="16" gap="8"><text><span weight="medium">Add the verified Hugging Face source</span></text><text foreground="text_muted" wrap="true">Friday accepts only the pinned immutable nvidia/parakeet-tdt-0.6b-v3 source. Continuing contacts Hugging Face, uses the network, downloads about 714 MB, and installs a CC-BY-4.0 model managed by Friday.</text><text-field text="{hfDraft}" on-input="hf_draft_edit" placeholder="nvidia/parakeet-tdt-0.6b-v3" label="Hugging Face model identifier"/><switch checked="{hfSourceConfirmed}" on-toggle="toggle_hf_source_confirmation">I confirm the hosting, network download, CC-BY-4.0 license, and immutable pinned source</switch><button variant="primary" on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Download Confirmed Source</button></column></card>
+              <row gap="8"><text foreground="text_muted" grow="1">{round(modelCount)} {plural(round(modelCount), 'compatible model', 'compatible models')} · {managedModelSizeText} Friday-managed</text><button variant="ghost" on-press="cleanup_model_downloads" disabled="{modelDownloadActive}">Clean Failed and Partial Downloads</button></row><if test="{modelDownloadActive}"><text foreground="warning">Cancel the active download before cleaning partial files.</text></if><text foreground="text_muted" wrap="true">{modelDownloadMessage}</text>
             </column>
           </if>
 
@@ -133,5 +143,6 @@
         </column>
       </scroll>
     </column>
+  </else>
   </else>
 </column>

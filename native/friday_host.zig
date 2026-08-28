@@ -328,10 +328,14 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"missingActiveReset\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"finalCollisionCorruptionRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"cleanupTruthful\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"loginStatusKnown\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"audioInput\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"statesComplete\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"positionAutosave\":\"FridayOverlayPosition\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"dismissContract\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"appearanceContract\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"reducedMotionContract\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"copyOnlyDelivery\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"kind\":\"clipboard\"") != null);
 }

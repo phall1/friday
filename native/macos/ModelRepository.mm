@@ -272,9 +272,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     @"displayName" : model[@"displayName"] ?: @"Model",
     @"source" : model[@"source"] ?: @"local",
     @"sourceLabel" : sourceLabel,
-    @"languageSummary" :
-        [NSString stringWithFormat:@"%lu languages",
-                                   (unsigned long)languages.count],
+    @"languageSummary" : [NSString
+        stringWithFormat:@"%lu languages", (unsigned long)languages.count],
     @"sizeText" : sizeText,
     @"managed" : model[@"managed"] ?: @NO,
     @"installedBytes" : model[@"installedBytes"] ?: @0,
@@ -1047,17 +1046,68 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   return result;
 }
 
-- (void)removeFailedDownloads {
-  [self onQueue:^{
-    if (self.task)
+- (NSDictionary *)removeFailedDownloads {
+  __block NSDictionary *result = nil;
+  dispatch_block_t mutation = ^{
+    if (self.task) {
+      result = @{
+        @"ok" : @NO,
+        @"code" : @"download_active",
+        @"message" :
+            @"Cancel the active download before cleaning partial files."
+      };
       return;
-    [NSFileManager.defaultManager removeItemAtPath:self.downloadsRoot
-                                             error:nil];
-    [NSFileManager.defaultManager createDirectoryAtPath:self.downloadsRoot
-                            withIntermediateDirectories:YES
-                                             attributes:nil
-                                                  error:nil];
-  }];
+    }
+    NSError *error = nil;
+    NSArray *entries = [NSFileManager.defaultManager
+        contentsOfDirectoryAtPath:self.downloadsRoot
+                            error:&error];
+    if (error) {
+      result = @{
+        @"ok" : @NO,
+        @"code" : @"cleanup_failed",
+        @"message" : error.localizedDescription
+            ?: @"Friday could not inspect partial downloads."
+      };
+      return;
+    }
+    BOOL removed = entries.count > 0;
+    if (removed &&
+        ![NSFileManager.defaultManager removeItemAtPath:self.downloadsRoot
+                                                  error:&error]) {
+      result = @{
+        @"ok" : @NO,
+        @"code" : @"cleanup_failed",
+        @"message" : error.localizedDescription
+            ?: @"Friday could not remove partial downloads."
+      };
+      return;
+    }
+    if (removed &&
+        ![NSFileManager.defaultManager createDirectoryAtPath:self.downloadsRoot
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:&error]) {
+      result = @{
+        @"ok" : @NO,
+        @"code" : @"cleanup_failed",
+        @"message" : error.localizedDescription
+            ?: @"Friday could not prepare the download folder."
+      };
+      return;
+    }
+    result = @{
+      @"ok" : @YES,
+      @"removed" : @(removed),
+      @"message" : removed ? @"Failed and partial downloads removed."
+                           : @"No failed or partial downloads were present."
+    };
+  };
+  if (dispatch_get_specific(FridayRepositoryQueueKey))
+    mutation();
+  else
+    dispatch_sync(self.queue, mutation);
+  return result;
 }
 
 + (NSDictionary *)runRepositoryProbes {
@@ -1165,17 +1215,30 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
             error:nil];
   BOOL finalCollisionCorruptionRejected =
       ![repository validateDefaultDirectory:corruptDirectory];
+  NSDictionary *emptyCleanup = [repository removeFailedDownloads];
+  NSString *cleanupMarker =
+      [[repository downloadsRoot] stringByAppendingPathComponent:@"partial"];
+  [@"partial" writeToFile:cleanupMarker
+               atomically:YES
+                 encoding:NSUTF8StringEncoding
+                    error:nil];
+  NSDictionary *removedCleanup = [repository removeFailedDownloads];
+  BOOL cleanupTruthful = [emptyCleanup[@"ok"] boolValue] &&
+                         ![emptyCleanup[@"removed"] boolValue] &&
+                         [removedCleanup[@"ok"] boolValue] &&
+                         [removedCleanup[@"removed"] boolValue];
   [NSFileManager.defaultManager removeItemAtPath:root error:nil];
   return @{
     @"ok" : @(resume == 4096 && malformed && shaFailed && missingActiveReset &&
-              finalCollisionCorruptionRejected),
+              finalCollisionCorruptionRejected && cleanupTruthful),
     @"resumeOffset" : @(resume),
     @"malformedRejected" : @(malformed),
     @"shaFailed" : @(shaFailed),
     @"sidecarRequired" : @YES,
     @"managedDeleteBounded" : @(unsafeDeleteRejected),
     @"missingActiveReset" : @(missingActiveReset),
-    @"finalCollisionCorruptionRejected" : @(finalCollisionCorruptionRejected)
+    @"finalCollisionCorruptionRejected" : @(finalCollisionCorruptionRejected),
+    @"cleanupTruthful" : @(cleanupTruthful)
   };
 }
 @end

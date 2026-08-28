@@ -20,6 +20,7 @@
 @property(nonatomic, strong) NSView *statusDot;
 @property(nonatomic, strong) NSArray<NSView *> *bars;
 @property(nonatomic, strong) NSButton *stop;
+@property(nonatomic, strong) NSButton *dismiss;
 @property(nonatomic, strong) NSButton *cancel;
 @property(nonatomic, strong) NSTimer *elapsedTimer;
 @property(nonatomic, copy) NSString *mode;
@@ -47,7 +48,7 @@
 
 - (void)build {
   self.panel = [[FridayPanel alloc]
-      initWithContentRect:NSMakeRect(0, 0, 232, 52)
+      initWithContentRect:NSMakeRect(0, 0, 264, 52)
                 styleMask:NSWindowStyleMaskBorderless |
                           NSWindowStyleMaskNonactivatingPanel
                   backing:NSBackingStoreBuffered
@@ -118,13 +119,23 @@
   self.stop.accessibilityLabel = @"Stop recording";
   [view addSubview:self.stop];
 
+  self.dismiss = [NSButton buttonWithTitle:@"–"
+                                    target:self
+                                    action:@selector(dismiss:)];
+  self.dismiss.bezelStyle = NSBezelStyleInline;
+  self.dismiss.refusesFirstResponder = YES;
+  self.dismiss.font = [NSFont systemFontOfSize:16 weight:NSFontWeightMedium];
+  self.dismiss.frame = NSMakeRect(206, 12, 26, 28);
+  self.dismiss.accessibilityLabel = @"Hide recording capsule";
+  [view addSubview:self.dismiss];
+
   self.cancel = [NSButton buttonWithTitle:@"×"
                                    target:self
                                    action:@selector(cancel:)];
   self.cancel.bezelStyle = NSBezelStyleInline;
   self.cancel.refusesFirstResponder = YES;
   self.cancel.font = [NSFont systemFontOfSize:16 weight:NSFontWeightMedium];
-  self.cancel.frame = NSMakeRect(204, 12, 24, 28);
+  self.cancel.frame = NSMakeRect(234, 12, 26, 28);
   self.cancel.accessibilityLabel = @"Cancel dictation";
   [view addSubview:self.cancel];
   [self updateVisualStyle];
@@ -184,6 +195,7 @@
   self.mode = locked ? @"locked" : @"held";
   self.stop.hidden = !locked;
   self.cancel.hidden = NO;
+  self.dismiss.hidden = NO;
   self.elapsedSeed = elapsed;
   self.shownAt = [NSDate date];
   [self updateElapsed:elapsed];
@@ -245,6 +257,7 @@
   self.mode = @"transcribing";
   self.stop.hidden = YES;
   self.cancel.hidden = NO;
+  self.dismiss.hidden = NO;
   self.label.stringValue = @"Transcribing";
   self.label.accessibilityValue = @"Transcribing locally";
   [self applyMeterLevel:1];
@@ -261,6 +274,13 @@
   (void)sender;
   self.lastAction = @"stop";
   self.handler(@"overlay_stop");
+}
+
+- (void)dismiss:(id)sender {
+  (void)sender;
+  self.lastAction = @"dismiss";
+  [self hide];
+  self.handler(@"overlay_dismiss");
 }
 
 - (void)cancel:(id)sender {
@@ -285,8 +305,22 @@
   NSString *meterLabel = self.label.stringValue;
   [self showTranscribing];
   NSString *transcribingLabel = self.label.stringValue;
-  BOOL controlsCorrect = self.stop.hidden && !self.cancel.hidden;
-  [self hide];
+  BOOL controlsCorrect =
+      self.stop.hidden && !self.cancel.hidden && !self.dismiss.hidden;
+  BOOL reducedMotionContract = self.elapsedTimer == nil;
+  NSVisualEffectView *view = (NSVisualEffectView *)self.panel.contentView;
+  BOOL reduceTransparency =
+      NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
+  BOOL increaseContrast =
+      NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
+  BOOL appearanceContract =
+      view.material == (reduceTransparency
+                            ? NSVisualEffectMaterialWindowBackground
+                            : NSVisualEffectMaterialHUDWindow) &&
+      view.layer.borderWidth == (increaseContrast ? 1.5 : .5);
+  [self dismiss:nil];
+  BOOL dismissContract =
+      !self.panel.visible && [self.lastAction isEqual:@"dismiss"];
   return @{
     @"ok" : @(ok),
     @"sourcePid" : @(before),
@@ -299,6 +333,9 @@
         @([lockedLabel hasPrefix:@"Locked"] &&
           [meterLabel isEqual:@"Locked 0:04"] &&
           [transcribingLabel isEqual:@"Transcribing"] && controlsCorrect),
+    @"dismissContract" : @(dismissContract),
+    @"appearanceContract" : @(appearanceContract),
+    @"reducedMotionContract" : @(reducedMotionContract),
     @"buttonRect" : @{
       @"x" : @(buttonRect.origin.x),
       @"y" : @(buttonRect.origin.y),

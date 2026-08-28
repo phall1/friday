@@ -17,9 +17,8 @@ export type MeterLevel = "quiet" | "low" | "medium" | "high";
 export type AppearanceChoice = "system" | "light" | "dark";
 export type SystemColorScheme = "light" | "dark";
 
-
 export interface ModelRow {
-  readonly modelKey: number;
+  readonly modelKey: Uint8Array;
   readonly name: Uint8Array;
   readonly source: Uint8Array;
   readonly license: Uint8Array;
@@ -87,6 +86,7 @@ export interface Model {
   readonly managedModelSizeText: Uint8Array;
   readonly activeModelBytes: number;
   readonly hfDraft: Uint8Array;
+  readonly hfSourceConfirmed: boolean;
   readonly modelRows: readonly ModelRow[];
   readonly diagnostics: Uint8Array;
   readonly diagnosticsExported: boolean;
@@ -99,6 +99,7 @@ export interface Model {
   readonly systemColorScheme: SystemColorScheme;
   readonly reduceMotion: boolean;
   readonly automationSceneActive: boolean;
+  readonly automationOverlayPreview: boolean;
   readonly highContrast: boolean;
 }
 
@@ -159,10 +160,10 @@ export type Msg =
   | { readonly kind: "local_model_added"; readonly body: Uint8Array }
   | { readonly kind: "local_model_failed"; readonly error: Uint8Array }
   | { readonly kind: "hf_draft_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "toggle_hf_source_confirmation" }
   | { readonly kind: "add_hugging_face_model" }
   | { readonly kind: "hf_model_added"; readonly body: Uint8Array }
   | { readonly kind: "hf_model_failed"; readonly error: Uint8Array }
-  | { readonly kind: "select_default_model" }
   | { readonly kind: "model_selected"; readonly body: Uint8Array }
   | { readonly kind: "model_select_failed"; readonly error: Uint8Array }
   | { readonly kind: "remove_model_reference" }
@@ -170,11 +171,13 @@ export type Msg =
   | { readonly kind: "model_removed"; readonly body: Uint8Array }
   | { readonly kind: "model_remove_failed"; readonly error: Uint8Array }
   | { readonly kind: "cleanup_model_downloads" }
+  | { readonly kind: "model_cleanup_finished"; readonly body: Uint8Array }
+  | { readonly kind: "model_cleanup_failed"; readonly error: Uint8Array }
   | { readonly kind: "refresh_microphone" }
+  | { readonly kind: "select_model"; readonly rowKey: Uint8Array }
   | { readonly kind: "microphone_loaded"; readonly body: Uint8Array }
-  | { readonly kind: "select_model"; readonly rowKey: number }
-  | { readonly kind: "remove_model"; readonly rowKey: number }
-  | { readonly kind: "delete_model"; readonly rowKey: number }
+  | { readonly kind: "remove_model"; readonly rowKey: Uint8Array }
+  | { readonly kind: "delete_model"; readonly rowKey: Uint8Array }
   | { readonly kind: "microphone_failed"; readonly error: Uint8Array }
   | { readonly kind: "refresh_diagnostics" }
   | { readonly kind: "diagnostics_loaded"; readonly body: Uint8Array }
@@ -200,6 +203,7 @@ export type Msg =
   | { readonly kind: "debug_fixture_finished"; readonly body: Uint8Array }
   | { readonly kind: "debug_fixture_failed"; readonly error: Uint8Array }
   | { readonly kind: "copy_immediate_result" }
+  | { readonly kind: "dismiss_overlay_preview" }
   | { readonly kind: "dismiss_result" };
 
 export const envMsgs = [
@@ -214,7 +218,7 @@ export const viewUnbound = [
   "restored", "fresh_boot", "restore_failed", "source_captured", "source_capture_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
   "audio_started", "audio_start_failed", "transcript_ready", "transcription_failed",
   "delivery_finished", "delivery_failed", "debug_fixture_requested", "debug_fixture_finished", "debug_fixture_failed",
-  "local_model_added", "local_model_failed", "hf_model_added", "hf_model_failed", "model_selected", "model_select_failed", "model_removed", "model_remove_failed",
+  "local_model_added", "local_model_failed", "hf_model_added", "hf_model_failed", "model_selected", "model_select_failed", "model_removed", "model_remove_failed", "model_cleanup_finished", "model_cleanup_failed",
   "microphone_loaded", "microphone_failed", "diagnostics_loaded", "diagnostics_failed", "diagnostics_copy_loaded", "diagnostics_copy_failed", "diagnostics_exported", "diagnostics_export_failed",
   "login_status_loaded", "login_status_failed", "login_setting_saved", "login_setting_failed", "appearance_changed",
   "automation_scene_requested", "automation_login_requested", "automation_login_finished", "automation_login_failed", "automationSceneActive", "systemColorScheme", "reduceMotion", "highContrast", "sessionSourceToken", "workflowMessage",
@@ -281,8 +285,8 @@ function parseModelRows(bytes: Uint8Array): readonly ModelRow[] {
     while (end < bytes.length && bytes[end] !== 125) end += 1;
     const object = bytes.slice(start, end);
     const key = jsonInteger(object, token);
-    if (key > 0) rows[rows.length] = {
-      modelKey: key / 1,
+    if (key === 1 || key >= 1000) rows[rows.length] = {
+      modelKey: utf8Bytes(`${key}`),
       name: jsonString(object, asciiBytes("\"displayName\":\"")),
       source: jsonString(object, asciiBytes("\"sourceLabel\":\"")),
       license: jsonString(object, asciiBytes("\"license\":\"")),
@@ -381,6 +385,7 @@ function defaultModel(): Model {
     activeModelLanguages: asciiBytes(""),
     activeModelBytes: 0 / 1,
     hfDraft: asciiBytes(""),
+    hfSourceConfirmed: false,
     activeModelSizeText: asciiBytes(""),
     managedModelSizeText: asciiBytes(""),
     diagnosticsExported: false,
@@ -395,6 +400,7 @@ function defaultModel(): Model {
     reduceMotion: false,
     automationSceneActive: false,
     highContrast: false,
+    automationOverlayPreview: false,
   };
 }
 
@@ -449,6 +455,7 @@ function durableModel(model: Model): Model {
     activeModelBytes: 0 / 1,
     hfDraft: asciiBytes(""),
     diagnosticsExported: false,
+    hfSourceConfirmed: false,
     activeModelSizeText: asciiBytes(""),
     managedModelSizeText: asciiBytes(""),
     diagnostics: utf8Bytes("Diagnostics have not been collected."),
@@ -462,6 +469,7 @@ function durableModel(model: Model): Model {
     reduceMotion: false,
     automationSceneActive: false,
     highContrast: false,
+    automationOverlayPreview: false,
   };
 }
 
@@ -535,7 +543,7 @@ export function showSettings(model: Model): boolean { return model.onboardingCom
 export function showModels(model: Model): boolean { return model.onboardingComplete && model.page === "models"; }
 export function availableModels(model: Model): readonly ModelRow[] { return model.modelRows.filter((row) => !row.active); }
 export function defaultModelInstalled(model: Model): boolean {
-  for (let index = 0; index < model.modelRows.length; index += 1) if (model.modelRows[index].modelKey === 1) return true;
+  for (let index = 0; index < model.modelRows.length; index += 1) if (byteEquals(model.modelRows[index].modelKey, asciiBytes("1"))) return true;
   return false;
 }
 export function showPermissions(model: Model): boolean { return model.onboardingComplete && model.page === "permissions"; }
@@ -546,7 +554,7 @@ export function hasActiveModel(model: Model): boolean { return model.selectedMod
 export function isDefaultModelActive(model: Model): boolean { return model.selectedModelKey === 1; }
 export function canCompleteOnboarding(model: Model): boolean {
   return model.microphonePermission && model.modelReady &&
-    ((model.inputMonitoringPermission && model.hotkeyConfirmed) || model.limitedModeAccepted);
+    ((model.accessibilityPermission && model.inputMonitoringPermission && model.hotkeyConfirmed) || model.limitedModeAccepted);
 }
 export function onboardingProgress(model: Model): Uint8Array {
   if (model.onboardingStep === 0) return utf8Bytes("Step 1 of 4 · Privacy");
@@ -555,7 +563,7 @@ export function onboardingProgress(model: Model): Uint8Array {
   return utf8Bytes("Step 4 of 4 · Local model");
 }
 export function permissionMicrophoneState(model: Model): Uint8Array { return model.microphonePermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required to record"); }
-export function permissionAccessibilityState(model: Model): Uint8Array { return model.accessibilityPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Optional — completed text will be copied"); }
+export function permissionAccessibilityState(model: Model): Uint8Array { return model.accessibilityPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Accessibility missing — completed text will be copied"); }
 export function permissionInputState(model: Model): Uint8Array { return model.inputMonitoringPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required for the global shortcut"); }
 export function hotkeyLabel(model: Model): Uint8Array { return model.hotkeyChoice === "command_shift" ? utf8Bytes("Command + Shift") : utf8Bytes("Control + Option"); }
 export function waveformGlyph(model: Model): Uint8Array {
@@ -575,12 +583,20 @@ export function loginStatusText(model: Model): Uint8Array {
   if (model.loginStatus === "unavailable") return utf8Bytes("Unavailable — try again from Applications");
   return utf8Bytes("Checking…");
 }
+function nativeReason(bytes: Uint8Array, fallback: Uint8Array): Uint8Array {
+  const reason = jsonString(bytes, asciiBytes("\"message\":\""));
+  return reason.length > 0 ? reason : fallback;
+}
+
+export function failureModelName(model: Model): Uint8Array {
+  return model.activeModelName.length > 0 ? model.activeModelName : utf8Bytes("Active local model");
+}
 export function failureDetail(model: Model): Uint8Array {
   if (model.workflow.kind !== "failed") return asciiBytes("");
-  if (model.workflow.stage === "capture") return utf8Bytes("Friday lost microphone input. Check the selected microphone, then try again.");
-  if (model.workflow.stage === "model") return utf8Bytes("The active model is unavailable. Select or download a compatible model.");
-  if (model.workflow.stage === "transcription") return utf8Bytes("Local transcription did not finish. Retry the retained recording or change model.");
-  return utf8Bytes("Friday could not return the final text. The transcript remains available for manual copy when possible.");
+  if (model.workflow.stage === "capture") return nativeReason(model.workflowMessage, utf8Bytes("Friday lost microphone input. Check the selected microphone, then try again."));
+  if (model.workflow.stage === "model") return nativeReason(model.workflowMessage, utf8Bytes("The active model is unavailable. Select or download a compatible model."));
+  if (model.workflow.stage === "transcription") return nativeReason(model.workflowMessage, utf8Bytes("Local transcription did not finish. Retry the retained recording or change model."));
+  return nativeReason(model.workflowMessage, utf8Bytes("Friday could not return the final text. Copy it manually when available."));
 }
 
 export function elapsedLabel(model: Model): Uint8Array {
@@ -589,6 +605,7 @@ export function elapsedLabel(model: Model): Uint8Array {
   return seconds < 10 ? utf8Bytes(`${minutes}:0${seconds}`) : utf8Bytes(`${minutes}:${seconds}`);
 }
 export function hasDiagnosticsExport(model: Model): boolean { return model.diagnosticsExported; }
+export function showOverlayPreview(model: Model): boolean { return model.automationSceneActive && model.automationOverlayPreview; }
 export function themeState(model: Model): ThemeState {
   return { pack: "house", colorScheme: model.appearanceOverride, accent: "#e7685f" };
 }
@@ -600,7 +617,7 @@ function statusRow(id: number, label: Uint8Array, command: Uint8Array, enabled: 
 
 export function statusItem(model: Model): StatusItemState {
   const items: StatusItemMenuItem[] = [];
-  items[items.length] = statusRow(1, workflowName(model), asciiBytes(""), false, blockerText(model), "info");
+  items[items.length] = statusRow(1, workflowName(model), asciiBytes(""), false, model.workflow.kind === "not_ready" || model.workflow.kind === "booting" ? blockerText(model) : workflowDetail(model), "info");
   if (model.workflow.kind === "ready") items[items.length] = statusRow(10, utf8Bytes("Start Recording"), asciiBytes("friday.start"), true, asciiBytes(""), "command");
   if (model.workflow.kind === "recording") items[items.length] = statusRow(11, utf8Bytes("Stop Recording"), asciiBytes("friday.stop"), true, asciiBytes(""), "command");
   if (isBusy(model)) items[items.length] = statusRow(12, utf8Bytes("Cancel"), asciiBytes("friday.cancel"), true, asciiBytes(""), "command");
@@ -660,12 +677,14 @@ function automationScene(model: Model, value: Uint8Array): Model {
     activeModelLanguages: utf8Bytes("25 European languages"),
     activeModelBytes: 713975456 / 1,
     automationSceneActive: true,
+    automationOverlayPreview: false,
+    hfSourceConfirmed: false,
     managedModelBytes: 713975456 / 1,
     modelCount: 1 / 1,
     modelDownloadState: "installed",
     modelDownloadedBytes: 713975456 / 1,
     modelRows: [{
-      modelKey: 1 / 1,
+      modelKey: asciiBytes("1"),
       name: utf8Bytes("Parakeet TDT 0.6B v3"),
       source: utf8Bytes("Hugging Face · managed by Friday"),
       license: utf8Bytes("CC-BY-4.0"),
@@ -692,11 +711,13 @@ function automationScene(model: Model, value: Uint8Array): Model {
     modelReady: false,
     selectedModelKey: 0 / 1,
     activeModelName: asciiBytes(""),
-    modelDownloadState: "downloading",
-    modelDownloadedBytes: 302000000 / 1,
-    modelTotalBytes: 713975456 / 1,
+    modelDownloadState: "idle",
+    modelDownloadedBytes: 0 / 1,
+    modelTotalBytes: 0 / 1,
     workflow: { kind: "not_ready" },
   };
+  if (contains(value, asciiBytes("overlay-preview"))) return { ...base, automationOverlayPreview: true, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
+  if (contains(value, asciiBytes("accessibility"))) return { ...base, page: "permissions", accessibilityPermission: false };
   if (contains(value, asciiBytes("model"))) return { ...base, page: "models" };
   if (contains(value, asciiBytes("error"))) return { ...base, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true }, workflowMessage: utf8Bytes("Local transcription stopped before a final result.") };
   if (contains(value, asciiBytes("recording"))) return { ...base, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
@@ -715,6 +736,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, ambientDetail: msg.body };
     case "automation_login_failed":
       return { ...model, ambientDetail: msg.error };
+    case "dismiss_overlay_preview":
+      return model.automationSceneActive ? { ...model, automationOverlayPreview: false } : model;
     case "show_settings":
       return [{ ...model, page: "settings" }, Cmd.showWindow("main")];
     case "show_models":
@@ -727,10 +750,16 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.quitApp()];
     case "onboarding_next":
       if (model.onboardingStep === 0) return { ...model, onboardingStep: 1 / 1 };
-      if (model.onboardingStep === 1 && model.microphonePermission && (model.inputMonitoringPermission || model.limitedModeAccepted)) return { ...model, onboardingStep: 2 / 1 };
-      if (model.onboardingStep === 2 && (model.hotkeyConfirmed || model.limitedModeAccepted)) return { ...model, onboardingStep: 3 / 1 };
+      if (model.onboardingStep === 1 && model.microphonePermission && ((model.accessibilityPermission && model.inputMonitoringPermission) || model.limitedModeAccepted)) return { ...model, onboardingStep: 2 / 1 };
+      if (model.onboardingStep === 2 && (model.hotkeyConfirmed || model.limitedModeAccepted)) {
+        const next = { ...model, onboardingStep: 3 / 1 };
+        if (!model.modelReady && model.modelDownloadState === "idle")
+          return [{ ...next, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading Parakeet for local transcription…") }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
+        return next;
+      }
       return model;
     case "onboarding_back":
+      if (model.onboardingStep === 3 && modelDownloadActive(model)) return { ...model, modelDownloadMessage: utf8Bytes("Cancel the download before leaving model setup.") };
       return { ...model, onboardingStep: model.onboardingStep > 0 ? (model.onboardingStep - 1) / 1 : 0 / 1 };
     case "accept_limited_mode":
       return { ...model, limitedModeAccepted: true };
@@ -745,42 +774,46 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "set_double_tap_deliberate":
       return [durableModel({ ...model, doubleTapWindowMs: 400 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
     case "select_model": {
-      if (isBusy(model)) return model;
-      const candidate = msg.rowKey + 0.0;
-      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
-      if (key === 0) return model;
+      if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before changing models.") };
+      const key = parseUnsigned(msg.rowKey, 0, msg.rowKey.length);
+      if (key !== 1 && key < 1000) return { ...model, modelDownloadMessage: utf8Bytes("That model is no longer available.") };
       return [model, Cmd.request("friday.model.select", utf8Bytes(`modelKey=${key};generation=0`), { key: "model-select", ok: "model_selected", err: "model_select_failed" })];
     }
     case "remove_model": {
-      if (isBusy(model)) return model;
-      const candidate = msg.rowKey + 0.0;
-      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
-      if (key === 0) return model;
+      if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before removing models.") };
+      const key = parseUnsigned(msg.rowKey, 0, msg.rowKey.length);
+      if (key !== 1 && key < 1000) return { ...model, modelDownloadMessage: utf8Bytes("That model is no longer available.") };
       return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${key};delete=0`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
     }
     case "delete_model": {
-      if (isBusy(model)) return model;
-      const candidate = msg.rowKey + 0.0;
-      const key = Number.isFinite(candidate) && candidate > 0 ? Math.trunc(candidate) : 0;
-      if (key === 0) return model;
+      if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before deleting model files.") };
+      const key = parseUnsigned(msg.rowKey, 0, msg.rowKey.length);
+      if (key !== 1 && key < 1000) return { ...model, modelDownloadMessage: utf8Bytes("That model is no longer available.") };
       return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${key};delete=1`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
     }
     case "cancel_model_download":
-      return [{ ...model, modelDownloadState: "cancelled", modelDownloadUserCancelled: true, modelDownloadMessage: utf8Bytes("Download cancelled. The partial download is retained for an explicit retry.") }, Cmd.cancel("model-download")];
+      return [{ ...model, modelDownloadState: "cancelled", modelDownloadUserCancelled: true, modelDownloadMessage: utf8Bytes("Download cancelled. Retry when you are ready.") }, Cmd.cancel("model-download")];
     case "retry_model_download":
-      return [{ ...model, modelDownloadState: "downloading", modelDownloadUserCancelled: false, modelDownloadMessage: utf8Bytes("Downloading Parakeet TDT 0.6B v3…") }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadUserCancelled: false, modelDownloadMessage: utf8Bytes("Downloading Parakeet for local transcription…") }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
     case "choose_local_model":
       return [model, Cmd.request("friday.model.pick_local", asciiBytes(""), { key: "model-local-picker", ok: "local_model_added", err: "local_model_failed" })];
     case "local_model_added":
+      return [{ ...model, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Local model added and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "hf_model_added":
+      return [{ ...model, hfSourceConfirmed: false, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Verified Parakeet source downloaded and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "model_selected":
+      return [{ ...model, modelDownloadMessage: utf8Bytes("Active model changed.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "model_removed":
-      return [{ ...model, modelDownloadMessage: msg.body }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
+      return [{ ...model, modelDownloadMessage: utf8Bytes("Model removed from Friday.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "local_model_failed":
+      if (contains(msg.error, asciiBytes("\"code\":\"user_cancelled\""))) return { ...model, modelDownloadMessage: utf8Bytes("No local model selected.") };
+      return { ...model, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not add that local model. Choose a compatible model and its matching manifest sidecar.")) };
     case "hf_model_failed":
+      return { ...model, hfSourceConfirmed: false, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not download that verified model source.")) };
     case "model_select_failed":
+      return { ...model, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not make that model active.")) };
     case "model_remove_failed":
-      return { ...model, modelDownloadState: "failed", modelDownloadMessage: msg.error };
+      return { ...model, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not remove that model.")) };
     case "hf_draft_edit":
       if (msg.edit.kind === "insert_text") {
         const room = model.hfDraft.length < 160 ? 160 - model.hfDraft.length : 0;
@@ -788,25 +821,32 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const next = new Uint8Array(model.hfDraft.length + addition.length);
         next.set(model.hfDraft, 0);
         next.set(addition, model.hfDraft.length);
-        return { ...model, hfDraft: next };
+        return { ...model, hfDraft: next, hfSourceConfirmed: false };
       }
-      if (msg.edit.kind === "delete_backward" && model.hfDraft.length > 0) return { ...model, hfDraft: model.hfDraft.slice(0, model.hfDraft.length - 1) };
-      if (msg.edit.kind === "clear") return { ...model, hfDraft: asciiBytes("") };
+      if (msg.edit.kind === "delete_backward" && model.hfDraft.length > 0) return { ...model, hfDraft: model.hfDraft.slice(0, model.hfDraft.length - 1), hfSourceConfirmed: false };
+      if (msg.edit.kind === "clear") return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false };
       return model;
+    case "toggle_hf_source_confirmation":
+      return { ...model, hfSourceConfirmed: !model.hfSourceConfirmed };
     case "add_hugging_face_model":
-      if (model.hfDraft.length === 0) return model;
-      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Resolving the constrained Parakeet source…") }, Cmd.request("friday.model.add_hf_ui", model.hfDraft, { key: "model-hf", ok: "hf_model_added", err: "hf_model_failed" })];
-    case "select_default_model":
-      if (isBusy(model)) return model;
-      return [model, Cmd.request("friday.model.select", asciiBytes("modelKey=1;generation=0"), { key: "model-select", ok: "model_selected", err: "model_select_failed" })];
+      if (model.hfDraft.length === 0) return { ...model, modelDownloadMessage: utf8Bytes("Enter the verified Hugging Face identifier first.") };
+      if (!model.hfSourceConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Confirm the hosting, network, license, and immutable source details before downloading.") };
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading the confirmed Parakeet source…") }, Cmd.request("friday.model.add_hf_ui", model.hfDraft, { key: "model-hf", ok: "hf_model_added", err: "hf_model_failed" })];
     case "remove_model_reference":
-      if (isBusy(model) || model.selectedModelKey === 0) return model;
+      if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before removing the active model.") };
+      if (model.selectedModelKey === 0) return { ...model, modelDownloadMessage: utf8Bytes("No active model is available to remove.") };
       return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${model.selectedModelKey};delete=0`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
     case "delete_managed_model":
-      if (isBusy(model) || model.selectedModelKey === 0) return model;
+      if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before deleting the active model.") };
+      if (model.selectedModelKey === 0) return { ...model, modelDownloadMessage: utf8Bytes("No active managed model is available to delete.") };
       return [model, Cmd.request("friday.model.remove", utf8Bytes(`modelKey=${model.selectedModelKey};delete=1`), { key: "model-remove", ok: "model_removed", err: "model_remove_failed" })];
     case "cleanup_model_downloads":
-      return [{ ...model, modelDownloadState: "idle", modelDownloadedBytes: 0 / 1, modelTotalBytes: 0 / 1, modelDownloadMessage: utf8Bytes("Failed and partial managed downloads removed.") }, Cmd.host("friday.model.cleanup", asciiBytes(""))];
+      if (modelDownloadActive(model)) return { ...model, modelDownloadMessage: utf8Bytes("Cancel the active download before cleaning partial files.") };
+      return [model, Cmd.request("friday.model.cleanup", asciiBytes(""), { key: "model-cleanup", ok: "model_cleanup_finished", err: "model_cleanup_failed" })];
+    case "model_cleanup_finished":
+      return { ...model, modelDownloadState: "idle", modelDownloadedBytes: 0 / 1, modelTotalBytes: 0 / 1, modelDownloadMessage: contains(msg.body, asciiBytes("\"removed\":true")) ? utf8Bytes("Failed and partial downloads removed.") : utf8Bytes("No failed or partial downloads were present.") };
+    case "model_cleanup_failed":
+      return { ...model, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not clean failed and partial downloads.")) };
     case "refresh_microphone":
       return [model, Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" })];
     case "microphone_loaded":
@@ -960,17 +1000,21 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         modelRows: parseModelRows(msg.body),
         ambientDetail: msg.body,
       };
-      if (!ready && !model.onboardingComplete && !model.modelDownloadUserCancelled && model.modelDownloadState === "idle") return [{ ...next, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading Parakeet TDT 0.6B v3…"), workflow: readiness(next) }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
       if (model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready") return { ...next, workflow: readiness(next) };
       return next;
     }
-    case "model_status_failed":
-      return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, modelDownloadState: "failed", modelDownloadMessage: msg.error, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "model_status_failed": {
+      const reason = nativeReason(msg.error, utf8Bytes("Friday could not read the local model library."));
+      return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, modelDownloadState: "failed", modelDownloadMessage: reason, workflowMessage: reason, ambientDetail: reason };
+    }
     case "model_downloaded": {
-      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1 / 1, modelDownloadState: "installed" as ModelDownloadState, modelDownloadMessage: utf8Bytes("Parakeet is verified and ready."), ambientDetail: msg.body };
+      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1 / 1, modelDownloadState: "installed" as ModelDownloadState, modelDownloadMessage: utf8Bytes("Parakeet is ready for local transcription."), ambientDetail: utf8Bytes("Parakeet is ready for local transcription.") };
       return [next, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     }
-    case "model_download_failed": return { ...model, modelsLoaded: true, modelReady: false, modelDownloadState: "failed", modelDownloadMessage: msg.error, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "model_download_failed": {
+      const reason = contains(msg.error, asciiBytes("\"code\":\"cancelled\"")) ? utf8Bytes("Download cancelled. Retry when you are ready.") : nativeReason(msg.error, utf8Bytes("Parakeet could not be downloaded. Check the connection and retry."));
+      return { ...model, modelsLoaded: true, modelReady: false, modelDownloadState: contains(msg.error, asciiBytes("\"code\":\"cancelled\"")) ? "cancelled" : "failed", modelDownloadMessage: reason, workflow: { kind: "not_ready" }, workflowMessage: reason, ambientDetail: reason };
+    }
     case "confirm_hotkey":
       if (model.hotkeyChoice === "control_option") return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
       return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
@@ -1202,6 +1246,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       if (hasPrefix(msg.bytes, asciiBytes("hotkey_cancel|")) || hasPrefix(msg.bytes, asciiBytes("overlay_cancel|"))) return update(model, { kind: "cancel_active" });
       if (hasPrefix(msg.bytes, asciiBytes("overlay_stop|"))) return update(model, { kind: "stop_recording" });
+      if (hasPrefix(msg.bytes, asciiBytes("overlay_dismiss|"))) return model;
       if (eventMatches(msg.bytes, asciiBytes("duration_warning|"), model) &&
           model.workflow.kind === "recording")
         return { ...model, workflow: { ...model.workflow, warnedDurationLimit: true } };

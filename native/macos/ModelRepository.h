@@ -27,7 +27,7 @@ typedef void (^FridayModelProgressHandler)(uint64_t operationID,
        completion:(void (^)(NSDictionary *result))completion;
 - (NSDictionary<NSString *, id> *)removeKey:(uint64_t)key
                               deleteManaged:(BOOL)deleteManaged;
-- (void)removeFailedDownloads;
+- (NSDictionary<NSString *, id> *)removeFailedDownloads;
 + (NSDictionary<NSString *, id> *)runRepositoryProbes;
 @end
 NS_ASSUME_NONNULL_END
