@@ -149,6 +149,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     self.progress(operation, state, downloaded, total);
   });
 }
+- (BOOL)isPinnedDefaultIdentity:(NSDictionary *)manifest {
+  return [manifest[@"id"] isEqual:FridayModelID] &&
+         [manifest[@"revision"] isEqual:FridayRevision] &&
+         [manifest[@"sha256"] isEqual:FridaySHA] &&
+         [manifest[@"expectedBytes"] unsignedLongLongValue] == FridayBytes &&
+         [manifest[@"modelKey"] unsignedLongLongValue] == FridayDefaultKey;
+}
+
 - (BOOL)validateManagedDirectory:(NSString *)directory
                         expected:(nullable NSDictionary *)expected {
   NSString *modelPath =
@@ -165,8 +173,13 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       [[[NSFileManager.defaultManager attributesOfItemAtPath:modelPath
                                                        error:nil]
           objectForKey:NSFileSize] unsignedLongLongValue];
+  BOOL verifiedFamily = [manifest[@"family"] isEqual:@"parakeet_tdt"] ||
+                        [manifest[@"family"] isEqual:@"runtime_verified_asr"];
+  BOOL verifiedCompatibility =
+      [manifest[@"compatibility"] isEqual:@"compatible"] ||
+      [self isPinnedDefaultIdentity:manifest];
   BOOL shape = [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
-               [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
+               verifiedFamily && verifiedCompatibility &&
                [manifest[@"format"] isEqual:@"gguf"] &&
                [manifest[@"managed"] boolValue] &&
                [self isLowerHex:manifest[@"revision"] length:40] &&
@@ -206,9 +219,16 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       if (![path isKindOfClass:NSString.class])
         continue;
       NSMutableDictionary *recordCopy = [record mutableCopy];
+      BOOL verifiedFamily =
+          [recordCopy[@"family"] isEqual:@"parakeet_tdt"] ||
+          [recordCopy[@"family"] isEqual:@"runtime_verified_asr"];
+      BOOL verifiedCompatibility =
+          [recordCopy[@"compatibility"] isEqual:@"compatible"] ||
+          [self isPinnedDefaultIdentity:recordCopy];
       if ([recordCopy[@"engine"] isEqual:@"nemo_speech_cpp"] &&
-          [recordCopy[@"family"] isEqual:@"parakeet_tdt"] &&
-          [recordCopy[@"format"] isEqual:@"gguf"]) {
+          verifiedFamily &&
+          [recordCopy[@"format"] isEqual:@"gguf"] &&
+          verifiedCompatibility) {
         recordCopy[@"compatibility"] = @"compatible";
         if (!recordCopy[@"languages"])
           recordCopy[@"languages"] = @[];
@@ -638,9 +658,16 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                                                            error:nil]
               objectForKey:NSFileSize] unsignedLongLongValue];
       uint64_t expected = [manifest[@"expectedBytes"] unsignedLongLongValue];
-      BOOL valid =
+      BOOL verifiedShape =
           [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
-          [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
+          ([manifest[@"family"] isEqual:@"parakeet_tdt"] ||
+           [manifest[@"family"] isEqual:@"runtime_verified_asr"]) &&
+          [manifest[@"compatibility"] isEqual:@"compatible"];
+      BOOL candidateShape =
+          [manifest[@"engine"] isEqual:@"unverified"] &&
+          [manifest[@"family"] isEqual:@"unverified"] &&
+          [manifest[@"compatibility"] isEqual:@"unverified_candidate"];
+      BOOL valid = (verifiedShape || candidateShape) &&
           [manifest[@"format"] isEqual:@"gguf"] &&
           [manifest[@"managed"] boolValue] &&
           [self isLowerHex:manifest[@"revision"] length:40] &&
@@ -806,6 +833,32 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     [hex appendFormat:@"%02x", digest[index]];
   return hex;
 }
+- (nullable NSString *)boundedGGUFFamilyHint:(NSString *)path {
+  NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+  if (!handle)
+    return nil;
+  NSData *header = [handle readDataOfLength:24];
+  [handle closeFile];
+  if (header.length != 24 || memcmp(header.bytes, "GGUF", 4) != 0)
+    return nil;
+  const uint8_t *bytes = static_cast<const uint8_t *>(header.bytes);
+  uint32_t version = (uint32_t)bytes[4] | ((uint32_t)bytes[5] << 8) |
+                     ((uint32_t)bytes[6] << 16) |
+                     ((uint32_t)bytes[7] << 24);
+  uint64_t tensorCount = 0;
+  uint64_t metadataCount = 0;
+  for (NSUInteger index = 0; index < 8; ++index) {
+    tensorCount |= ((uint64_t)bytes[8 + index]) << (index * 8);
+    metadataCount |= ((uint64_t)bytes[16 + index]) << (index * 8);
+  }
+  if ((version != 2 && version != 3) || tensorCount == 0 ||
+      tensorCount > 1000000 || metadataCount == 0 ||
+      metadataCount > 100000)
+    return nil;
+  // A valid GGUF header does not prove an ASR architecture. The successful
+  // runtime probe below proves usability, but the family remains generic.
+  return @"runtime_verified_asr";
+}
 - (void)finishPublicationAtDirectory:(NSString *)directory
                             manifest:(NSDictionary *)manifest
                                 size:(uint64_t)size {
@@ -883,6 +936,13 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
           code:@"integrity_failed"];
     return;
   }
+  NSString *boundedFamilyHint =
+      [self boundedGGUFFamilyHint:self.partialURL.path];
+  if (!boundedFamilyHint) {
+    [self fail:@"The artifact is not a bounded, readable GGUF candidate."
+          code:@"gguf_metadata_invalid"];
+    return;
+  }
   NSString *staging = [self.modelsRoot
       stringByAppendingPathComponent:[NSString
                                          stringWithFormat:@".install-%@",
@@ -930,6 +990,38 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                                     ?: @"The model failed its runtime probe."
                            code:@"model_probe_failed"];
                      return;
+                   }
+                   if ([manifest[@"compatibility"]
+                           isEqual:@"unverified_candidate"]) {
+                     manifest[@"engine"] = @"nemo_speech_cpp";
+                     manifest[@"family"] = boundedFamilyHint;
+                     manifest[@"compatibility"] = @"compatible";
+                     manifest[@"verification"] =
+                         @"exact_integrity_and_runtime_probe";
+                     NSData *verifiedManifestData =
+                         [NSJSONSerialization
+                             dataWithJSONObject:manifest
+                                        options:NSJSONWritingPrettyPrinted
+                                          error:nil];
+                     if (!verifiedManifestData ||
+                         ![verifiedManifestData writeToFile:manifestPath
+                                                    options:0
+                                                      error:nil]) {
+                       [NSFileManager.defaultManager
+                           removeItemAtPath:staging
+                                      error:nil];
+                       [self fail:@"The runtime-verified manifest could not be "
+                                  @"written durably."
+                             code:@"verified_manifest_write_failed"];
+                       return;
+                     }
+                     int descriptor =
+                         open(manifestPath.fileSystemRepresentation, O_RDONLY);
+                     if (descriptor >= 0) {
+                       fsync(descriptor);
+                       close(descriptor);
+                     }
+                     [self fsyncDirectory:staging];
                    }
                    NSString *idRoot = [self.modelsRoot
                        stringByAppendingPathComponent:manifest[@"id"]];
@@ -1155,20 +1247,27 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     manifestFromHuggingFaceMetadata:(NSDictionary *)metadata
                          identifier:(NSString *)identifier
                               error:(NSString **)error {
-  if ([metadata[@"private"] boolValue]) {
+  id privateValue = metadata[@"private"];
+  if ([privateValue isKindOfClass:NSNumber.class] &&
+      [(NSNumber *)privateValue boolValue]) {
     if (error)
       *error = @"That Hugging Face repository is private.";
     return nil;
   }
   id gated = metadata[@"gated"];
-  if ([gated boolValue] || ([gated isKindOfClass:NSString.class] &&
+  if (([gated isKindOfClass:NSNumber.class] &&
+       [(NSNumber *)gated boolValue]) ||
+      ([gated isKindOfClass:NSString.class] &&
                             ![(NSString *)gated isEqual:@"false"] &&
                             [(NSString *)gated length] > 0)) {
     if (error)
       *error = @"That Hugging Face repository requires gated access.";
     return nil;
   }
-  NSString *revision = [metadata[@"sha"] lowercaseString];
+  id rawRevision = metadata[@"sha"];
+  NSString *revision = [rawRevision isKindOfClass:NSString.class]
+                           ? [(NSString *)rawRevision lowercaseString]
+                           : @"";
   if (![self isLowerHex:revision length:40]) {
     if (error)
       *error = @"Hugging Face did not return an immutable revision.";
@@ -1176,7 +1275,6 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   }
   NSArray *tags =
       [metadata[@"tags"] isKindOfClass:NSArray.class] ? metadata[@"tags"] : @[];
-  BOOL parakeet = [identifier.lowercaseString containsString:@"parakeet"];
   BOOL asr =
       [metadata[@"pipeline_tag"] isEqual:@"automatic-speech-recognition"];
   NSString *license = nil;
@@ -1184,8 +1282,6 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     if (![value isKindOfClass:NSString.class])
       continue;
     NSString *tag = [(NSString *)value lowercaseString];
-    if ([tag containsString:@"parakeet"])
-      parakeet = YES;
     if ([tag isEqual:@"automatic-speech-recognition"])
       asr = YES;
     if ([tag hasPrefix:@"license:"])
@@ -1197,10 +1293,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
           : @{};
   if ([cardData[@"license"] isKindOfClass:NSString.class])
     license = cardData[@"license"];
-  if (!parakeet || !asr) {
+  if (!asr) {
     if (error)
-      *error = @"The repository is not identified as compatible Parakeet "
-               @"speech recognition.";
+      *error = @"The repository does not advertise speech-recognition metadata.";
     return nil;
   }
   if (license.length == 0 || license.length > 64) {
@@ -1215,7 +1310,10 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   for (id value in siblings) {
     if (![value isKindOfClass:NSDictionary.class])
       continue;
-    NSString *name = value[@"rfilename"];
+    id rawName = value[@"rfilename"];
+    if (![rawName isKindOfClass:NSString.class])
+      continue;
+    NSString *name = rawName;
     if ([name.pathExtension.lowercaseString isEqual:@"gguf"] &&
         [name isEqual:name.lastPathComponent] && name.length <= 256)
       [gguf addObject:value];
@@ -1223,22 +1321,28 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   if (gguf.count != 1) {
     if (error)
       *error = gguf.count == 0
-                   ? @"The repository has no compatible GGUF artifact."
-                   : @"The repository has multiple GGUF artifacts; choose an "
-                     @"unambiguous source.";
+                   ? @"The repository has no top-level GGUF candidate."
+                   : @"The repository has multiple top-level GGUF artifacts; "
+                     @"choose an unambiguous source.";
     return nil;
   }
   NSDictionary *sibling = gguf.firstObject;
   NSDictionary *lfs = [sibling[@"lfs"] isKindOfClass:NSDictionary.class]
                           ? sibling[@"lfs"]
                           : @{};
-  NSString *sha = [lfs[@"sha256"] lowercaseString] ?: @"";
+  id rawSHA = lfs[@"sha256"];
+  NSString *sha = [rawSHA isKindOfClass:NSString.class]
+                      ? [(NSString *)rawSHA lowercaseString]
+                      : @"";
   if (!sha.length && [lfs[@"oid"] isKindOfClass:NSString.class]) {
     sha = [lfs[@"oid"] lowercaseString];
     if ([sha hasPrefix:@"sha256:"])
       sha = [sha substringFromIndex:7];
   }
-  uint64_t expected = [lfs[@"size"] unsignedLongLongValue];
+  id rawSize = lfs[@"size"];
+  uint64_t expected = [rawSize isKindOfClass:NSNumber.class]
+                          ? [(NSNumber *)rawSize unsignedLongLongValue]
+                          : 0;
   if (![self isLowerHex:sha length:64] || expected < 1024 * 1024 ||
       expected > 8ULL * 1024 * 1024 * 1024) {
     if (error)
@@ -1249,9 +1353,12 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   NSString *encodedID =
       [identifier stringByAddingPercentEncodingWithAllowedCharacters:
                       NSCharacterSet.URLPathAllowedCharacterSet];
+  NSMutableCharacterSet *artifactAllowed =
+      [NSCharacterSet.alphanumericCharacterSet mutableCopy];
+  [artifactAllowed addCharactersInString:@"-._~"];
   NSString *encodedArtifact =
       [artifact stringByAddingPercentEncodingWithAllowedCharacters:
-                    NSCharacterSet.URLPathAllowedCharacterSet];
+                    artifactAllowed];
   NSString *downloadURL =
       [NSString stringWithFormat:@"https://huggingface.co/%@/resolve/%@/%@",
                                  encodedID, revision, encodedArtifact];
@@ -1264,7 +1371,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     @"schemaVersion" : @1,
     @"modelKey" : @([self modelKeyForIdentifier:identifier]),
     @"id" : identifier,
-    @"displayName" : metadata[@"modelId"] ?: identifier.lastPathComponent,
+    @"displayName" : [metadata[@"modelId"] isKindOfClass:NSString.class]
+        ? metadata[@"modelId"]
+        : identifier.lastPathComponent,
     @"repository" : identifier,
     @"revision" : revision,
     @"artifact" : artifact,
@@ -1272,17 +1381,19 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     @"expectedBytes" : @(expected),
     @"installedBytes" : @0,
     @"downloadURL" : downloadURL,
-    @"engine" : @"nemo_speech_cpp",
-    @"family" : @"parakeet_tdt",
+    @"engine" : @"unverified",
+    @"family" : @"unverified",
     @"format" : @"gguf",
     @"languages" : languageList,
     @"license" : license,
     @"provider" : @"Hugging Face",
-    @"attribution" : metadata[@"author"]
-        ?: [[identifier componentsSeparatedByString:@"/"] firstObject],
+    @"attribution" : [metadata[@"author"] isKindOfClass:NSString.class]
+        ? metadata[@"author"]
+        : [[identifier componentsSeparatedByString:@"/"] firstObject],
     @"source" : @"hugging_face",
     @"managed" : @YES,
-    @"compatibility" : @"compatible"
+    @"compatibility" : @"unverified_candidate",
+    @"candidateHints" : @[ @"automatic-speech-recognition", @"gguf" ]
   } mutableCopy];
 }
 
@@ -1366,10 +1477,11 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                 });
                 return;
               }
+              id parsed = [NSJSONSerialization JSONObjectWithData:data
+                                                           options:0
+                                                             error:nil];
               NSDictionary *metadata =
-                  [NSJSONSerialization JSONObjectWithData:data
-                                                  options:0
-                                                    error:nil];
+                  [parsed isKindOfClass:NSDictionary.class] ? parsed : nil;
               NSString *validationError = nil;
               NSMutableDictionary *manifest =
                   [strongSelf manifestFromHuggingFaceMetadata:metadata
@@ -1379,9 +1491,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                 dispatch_async(dispatch_get_main_queue(), ^{
                   done(@{
                     @"ok" : @NO,
-                    @"code" : @"incompatible_repository",
+                    @"code" : @"metadata_candidate_rejected",
                     @"message" : validationError
-                        ?: @"The repository is incompatible."
+                        ?: @"The repository is not a safe download candidate."
                   });
                 });
                 return;
@@ -1400,7 +1512,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                   @"sizeText" : sizeText,
                   @"license" : manifest[@"license"],
                   @"provider" : manifest[@"provider"],
-                  @"attribution" : manifest[@"attribution"]
+                  @"attribution" : manifest[@"attribution"],
+                  @"verificationStatus" : @"unverified_candidate"
                 });
               });
             }];
@@ -1727,10 +1840,32 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     } ]
   };
   NSString *metadataError = nil;
-  NSDictionary *compatibleHF =
+  NSDictionary *candidateHF =
       [repository manifestFromHuggingFaceMetadata:compatibleMetadata
                                        identifier:@"community/parakeet-tdt-gguf"
                                             error:&metadataError];
+  BOOL candidateUnverified =
+      [candidateHF[@"compatibility"] isEqual:@"unverified_candidate"] &&
+      [candidateHF[@"family"] isEqual:@"unverified"] &&
+      ![candidateHF[@"compatibility"] isEqual:@"compatible"];
+  NSMutableDictionary *maliciousMetadata = [compatibleMetadata mutableCopy];
+  maliciousMetadata[@"modelId"] = @"attacker/parakeet-asr";
+  maliciousMetadata[@"siblings"] = @[ @{
+    @"rfilename" : @"unrelated.gguf",
+    @"lfs" : @{@"sha256" : FridaySHA, @"size" : @(FridayBytes)}
+  } ];
+  NSDictionary *maliciousCandidate =
+      [repository manifestFromHuggingFaceMetadata:maliciousMetadata
+                                       identifier:@"attacker/parakeet-asr"
+                                            error:&metadataError];
+  BOOL maliciousCandidateUnverified =
+      [maliciousCandidate[@"compatibility"] isEqual:@"unverified_candidate"] &&
+      [maliciousCandidate[@"family"] isEqual:@"unverified"] &&
+      ![maliciousCandidate[@"family"] isEqual:@"parakeet_tdt"];
+  BOOL maliciousPublicationRejected =
+      maliciousCandidateUnverified &&
+      ![repository validateManagedDirectory:corruptDirectory
+                                    expected:maliciousCandidate];
   NSMutableDictionary *privateMetadata = [compatibleMetadata mutableCopy];
   privateMetadata[@"private"] = @YES;
   BOOL privateRejected =
@@ -1805,13 +1940,27 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
           data.length &&
       [pendingStatus[@"pendingTotalBytes"] unsignedLongLongValue] ==
           FridayBytes;
+  uint8_t ggufHeader[24] = {'G', 'G', 'U', 'F', 3, 0, 0, 0,
+                            1,   0,   0,   0,   0, 0, 0, 0,
+                            1,   0,   0,   0,   0, 0, 0, 0};
+  NSString *genericGGUF = [root stringByAppendingPathComponent:@"generic.gguf"];
+  [[NSData dataWithBytes:ggufHeader length:sizeof(ggufHeader)]
+      writeToFile:genericGGUF
+          options:0
+            error:nil];
+  BOOL unknownFamilyFallback =
+      [[repository boundedGGUFFamilyHint:genericGGUF]
+          isEqual:@"runtime_verified_asr"] &&
+      [repository boundedGGUFFamilyHint:bad] == nil;
   [NSFileManager.defaultManager removeItemAtPath:root error:nil];
   return @{
     @"ok" : @(resume == 4096 && malformed && shaFailed && missingActiveReset &&
               finalCollisionCorruptionRejected && cleanupTruthful &&
-              compatibleHF != nil && privateRejected && ambiguousRejected &&
-              noHashRejected && incompatibleRejected && identifierValidation &&
-              pendingResumeHydrated),
+              candidateUnverified && maliciousCandidateUnverified &&
+              maliciousPublicationRejected && privateRejected &&
+              ambiguousRejected && noHashRejected && incompatibleRejected &&
+              identifierValidation && pendingResumeHydrated &&
+              unknownFamilyFallback),
     @"resumeOffset" : @(resume),
     @"malformedRejected" : @(malformed),
     @"shaFailed" : @(shaFailed),
@@ -1820,7 +1969,12 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     @"missingActiveReset" : @(missingActiveReset),
     @"finalCollisionCorruptionRejected" : @(finalCollisionCorruptionRejected),
     @"cleanupTruthful" : @(cleanupTruthful),
-    @"hfCompatibleFixture" : @(compatibleHF != nil),
+    @"hfCandidateFixture" : @(candidateHF != nil),
+    @"hfCandidateUnverified" : @(candidateUnverified),
+    @"hfMaliciousCandidateUnverified" : @(maliciousCandidateUnverified),
+    @"hfMaliciousPublicationRejected" : @(maliciousPublicationRejected),
+    @"hfRuntimeProbeRequired" : @YES,
+    @"hfUnknownFamilyFallback" : @(unknownFamilyFallback),
     @"hfPrivateRejected" : @(privateRejected),
     @"hfAmbiguousRejected" : @(ambiguousRejected),
     @"hfNoHashRejected" : @(noHashRejected),

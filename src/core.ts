@@ -194,6 +194,7 @@ export type Msg =
   | { readonly kind: "hf_resolve_failed"; readonly error: Uint8Array }
   | { readonly kind: "toggle_hf_download_confirmation" }
   | { readonly kind: "download_resolved_hf" }
+  | { readonly kind: "clear_hf_candidate" }
   | { readonly kind: "choose_local_model" }
   | { readonly kind: "local_model_added"; readonly body: Uint8Array }
   | { readonly kind: "local_model_failed"; readonly error: Uint8Array }
@@ -689,6 +690,11 @@ export function onboardingProgress(model: Model): Uint8Array {
   if (model.onboardingStep === 2) return utf8Bytes("Step 3 of 4 · Shortcut");
   return utf8Bytes("Step 4 of 4 · Local model");
 }
+export function microphoneDisplayName(model: Model): Uint8Array {
+  return contains(model.microphoneName, asciiBytes("System default microphone"))
+    ? utf8Bytes("Default microphone")
+    : model.microphoneName;
+}
 export function permissionMicrophoneState(model: Model): Uint8Array { return model.microphonePermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required to record"); }
 export function onboardingStepLabel(model: Model): Uint8Array { return utf8Bytes(`STEP ${Math.min(4, Math.max(1, Math.trunc(model.onboardingStep) + 1))} / 4`); }
 export function hasHotkeyCandidate(model: Model): boolean { return model.hotkeyCandidateDisplay.length > 0; }
@@ -1140,15 +1146,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         hfResolvedAttribution: jsonString(msg.body, asciiBytes("\"attribution\":\"")),
         hfResolvedConfirmed: false,
         modelDownloadState: "idle",
-        modelDownloadMessage: utf8Bytes("Compatible immutable model metadata resolved. Review it before downloading."),
+        modelDownloadMessage: utf8Bytes("Unverified immutable candidate resolved. Download to verify locally before it can become compatible or active."),
       };
     case "hf_resolve_failed":
-      return { ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not resolve a compatible public Hugging Face model.")) };
+      return { ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not resolve a safe public Hugging Face download candidate.")) };
     case "toggle_hf_download_confirmation":
       return model.hfResolved ? { ...model, hfResolvedConfirmed: !model.hfResolvedConfirmed } : model;
+    case "clear_hf_candidate":
+      return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: asciiBytes("") };
     case "download_resolved_hf":
-      if (!model.hfResolved || !model.hfResolvedConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Resolve and confirm the model metadata before downloading.") };
-      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading the confirmed immutable model…") }, Cmd.request("friday.model.download_hf", model.hfResolvedIdentifier, { key: "model-hf-download", ok: "hf_model_added", err: "hf_model_failed" })];
+      if (!model.hfResolved || !model.hfResolvedConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Resolve the candidate and authorize its exact download for local verification.") };
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading the immutable candidate for exact local verification…") }, Cmd.request("friday.model.download_hf", model.hfResolvedIdentifier, { key: "model-hf-download", ok: "hf_model_added", err: "hf_model_failed" })];
     case "hf_model_added":
       return [{ ...model, hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Verified Hugging Face model downloaded and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "model_selected":
@@ -1159,7 +1167,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (contains(msg.error, asciiBytes("\"code\":\"user_cancelled\""))) return { ...model, modelDownloadMessage: utf8Bytes("No local model selected.") };
       return { ...model, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not add that local model. Choose a compatible model and its matching manifest sidecar.")) };
     case "hf_model_failed":
-      return { ...model, hfSourceConfirmed: false, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not download that verified model source.")) };
+      return { ...model, hfSourceConfirmed: false, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not verify and install that Hugging Face candidate.")) };
     case "model_select_failed":
       return { ...model, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not make that model active.")) };
     case "model_remove_failed":
@@ -1182,7 +1190,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.hfDraft.length === 0) return { ...model, modelDownloadMessage: utf8Bytes("Enter a public Hugging Face identifier first.") };
       if (!model.hfSourceConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Confirm that Friday may contact Hugging Face to resolve public metadata.") };
       if (!model.platformSupported) return model;
-      return [{ ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: utf8Bytes("Resolving immutable model metadata from Hugging Face…") }, Cmd.request("friday.model.resolve_hf", model.hfDraft, { key: "model-hf-resolve", ok: "hf_model_resolved", err: "hf_resolve_failed" })];
+      return [{ ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: utf8Bytes("Resolving immutable download-candidate metadata from Hugging Face…") }, Cmd.request("friday.model.resolve_hf", model.hfDraft, { key: "model-hf-resolve", ok: "hf_model_resolved", err: "hf_resolve_failed" })];
     case "remove_model_reference":
       if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before removing the active model.") };
       if (model.selectedModelKey === 0) return { ...model, modelDownloadMessage: utf8Bytes("No active model is available to remove.") };

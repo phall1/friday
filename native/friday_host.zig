@@ -331,7 +331,12 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"missingActiveReset\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"finalCollisionCorruptionRejected\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfCompatibleFixture\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfCandidateFixture\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfCandidateUnverified\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfMaliciousCandidateUnverified\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfMaliciousPublicationRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfRuntimeProbeRequired\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfUnknownFamilyFallback\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"hfPrivateRejected\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"hfAmbiguousRejected\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"hfNoHashRejected\":true") != null);

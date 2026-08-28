@@ -31,7 +31,7 @@ On first setup Friday offers its pinned, verified default model automatically wh
 Model Manager also supports:
 
 - **Local model** — select a compatible Parakeet TDT GGUF plus its matching Friday manifest sidecar. Friday references the original file and never deletes it.
-- **Public Hugging Face identifier** — enter `owner/repository`; Friday resolves public metadata and accepts only one unambiguous compatible GGUF with an immutable revision, LFS SHA/size, license, and attribution. Network resolution and the exact download require separate confirmations.
+- **Public Hugging Face identifier** — enter `owner/repository`; Friday may resolve only an **unverified immutable candidate** when the public metadata has an exact revision, exactly one top-level GGUF, ASR/GGUF hints, LFS SHA/size, license, and attribution. That metadata never proves compatibility. A separately authorized download must pass exact integrity, bounded GGUF inspection, and the real local NeMo create/destroy probe before Friday publishes, lists, selects, or calls it compatible.
 
 After a verified model is installed and active, recording and transcription work offline. Network access is limited to explicit model metadata/download actions. Remove from Friday drops a reference. Delete Friday’s Copy is shown only for Friday-managed files. Failed/partial downloads can be cleaned without deleting installed models.
 

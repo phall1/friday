@@ -607,7 +607,7 @@ test("pending partial status hydrates paused bytes and Resume command", () => {
   assert.equal(command.name, "friday.model.resume");
 });
 
-test("HF identifier flow resolves immutable metadata before download confirmation", () => {
+test("HF identifier flow resolves an unverified immutable candidate before local verification", () => {
   let model = readyModel();
   model = dispatch(model, { kind: "hf_draft_edit", edit: { kind: "insert_text", text: bytes("community/parakeet-tdt-gguf") } });
   model = dispatch(model, { kind: "toggle_hf_source_confirmation" });
@@ -619,10 +619,15 @@ test("HF identifier flow resolves immutable metadata before download confirmatio
     body: bytes('{"ok":true,"identifier":"community/parakeet-tdt-gguf","revision":"0123456789abcdef0123456789abcdef01234567","artifact":"parakeet-q8.gguf","sizeText":"702 MB","license":"cc-by-4.0","provider":"Hugging Face","attribution":"community"}'),
   });
   assert.equal(model.hfResolved, true);
+  const candidateMessage = new TextDecoder().decode(model.modelDownloadMessage);
+  assert.equal(candidateMessage.includes("Unverified"), true);
+  assert.equal(candidateMessage.includes("before it can become compatible or active"), true);
   assert.equal(commandOf(update(model, { kind: "download_resolved_hf" })), null);
   model = dispatch(model, { kind: "toggle_hf_download_confirmation" });
   const download = update(model, { kind: "download_resolved_hf" });
   const downloadCommand = commandOf(download) as unknown as { name: string; payload: Uint8Array };
   assert.equal(downloadCommand.name, "friday.model.download_hf");
   assert.equal(new TextDecoder().decode(downloadCommand.payload), "community/parakeet-tdt-gguf");
+  const cleared = dispatch(model, { kind: "clear_hf_candidate" });
+  assert.equal(cleared.hfResolved, false);
 });

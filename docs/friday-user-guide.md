@@ -84,15 +84,15 @@ Choose **Add Local Model…** and select a compatible Parakeet TDT GGUF with its
 
 ### Public Hugging Face model
 
-Enter a public `owner/repository` identifier. Friday first asks permission to contact Hugging Face for public metadata. It accepts only a repository that resolves to:
+Enter a public `owner/repository` identifier. Friday first asks permission to contact Hugging Face for public metadata. Resolution can produce only an **Unverified candidate**, and only when metadata establishes:
 
-- an immutable 40-hex revision,
-- one unambiguous compatible Parakeet ASR GGUF,
+- a public, ungated repository and immutable 40-hex revision,
+- exactly one top-level `.gguf` artifact,
+- ASR/GGUF hints,
 - LFS SHA-256 and exact byte size,
-- a declared license and attribution,
-- no private or gated access.
+- bounded license and attribution.
 
-Friday then shows the exact provider, revision, artifact, size, license, and attribution and requires a second confirmation before download. Private, gated, ambiguous, incompatible, unhashed, malformed, or unsupported-family repositories are rejected.
+Repository names, tags, and claims do not prove model family or compatibility. Friday shows the exact candidate metadata and asks whether to download those bytes for local verification. The download must pass size/SHA, bounded GGUF metadata inspection, and the real local NeMo recognizer create/destroy probe. Only then does Friday publish and select it as compatible. When bounded GGUF metadata does not prove Parakeet TDT but the supported final-ASR runtime probe succeeds, Friday records the truthful family `runtime_verified_asr` rather than inventing a Parakeet label. Private, gated, ambiguous, unhashed, malformed, non-ASR-hinted, or runtime-rejected candidates never become selectable.
 
 ### Offline use, storage, and removal
 

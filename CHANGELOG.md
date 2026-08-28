@@ -8,7 +8,7 @@ All notable changes to Friday are documented here.
 
 - Apple Silicon/macOS 14 launch probe with non-dismissible unsupported-hardware/system UI and a Quit-only unsupported status menu.
 - Recorded custom key/function-key shortcuts, explicit candidate confirmation, reserved/unreliable shortcut warnings, and safe modifier-only conveniences.
-- Verified public Hugging Face `owner/repository` resolution with immutable revision, single compatible GGUF, LFS SHA/size, license, attribution, two-stage confirmation, resumable download, runtime probe, and atomic install.
+- Safe public Hugging Face `owner/repository` candidate resolution with immutable revision, one top-level GGUF, ASR/GGUF hints, LFS SHA/size, license, attribution, explicit download-for-verification authorization, resumable transfer, bounded GGUF inspection, real runtime probe, and atomic publication only after verification.
 - Visible paused/resumable model downloads with exact downloaded/total byte labels after relaunch.
 - Explicit recording → stop/drain → visible transcribing → local ASR sequencing and persistent 10-minute-limit outcome copy.
 - State-preserving signed packaged E2E, packaged negative probes, PRODUCT 1–154 coverage matrix, and measured p95 performance harness.
