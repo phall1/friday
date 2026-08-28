@@ -528,11 +528,11 @@ static CGEventRef FridayTap(CGEventTapProxy proxy, CGEventType type,
   for (NSInteger tap = 0; tap < 2; tap++) {
     CGEventRef d = CGEventCreateKeyboardEvent(NULL, 56, true);
     CGEventSetFlags(d, kCGEventFlagMaskCommand | kCGEventFlagMaskShift);
-    CGEventPost(kCGHIDEventTap, d);
+    [self handleType:kCGEventFlagsChanged event:d];
     CFRelease(d);
     CGEventRef u = CGEventCreateKeyboardEvent(NULL, 56, false);
     CGEventSetFlags(u, 0);
-    CGEventPost(kCGHIDEventTap, u);
+    [self handleType:kCGEventFlagsChanged event:u];
     CFRelease(u);
   }
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];

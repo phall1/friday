@@ -139,6 +139,7 @@ pub const FridayHost = struct {
     fn isAsync(name: []const u8) bool {
         return std.mem.eql(u8, name, "friday.hotkey.capture") or std.mem.eql(u8, name, "friday.audio.start") or
             std.mem.eql(u8, name, "friday.audio.stop") or std.mem.eql(u8, name, "friday.audio.finish") or
+            std.mem.eql(u8, name, "friday.debug.contracts") or std.mem.eql(u8, name, "friday.debug.performance") or
             std.mem.eql(u8, name, "friday.nemo.transcribe_capture") or std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.debug.fixture_delivery") or
             std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
             std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.resume") or std.mem.eql(u8, name, "friday.model.pick_local") or
@@ -324,6 +325,7 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"droppedFrameFailure\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"tempRemoved\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"activeCleared\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"reasonMatched\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"malformedRejected\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"shaFailed\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
@@ -342,6 +344,7 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"positionAutosave\":\"FridayOverlayPosition\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"dismissContract\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"currentPlatformSupported\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"processTranslated\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"architecture\":\"arm64\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"reservedRejected\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"bareTypingRejected\":true") != null);

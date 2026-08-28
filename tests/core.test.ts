@@ -274,6 +274,42 @@ test("UI scene automation remains env-shaped and covers production surfaces", ()
   assert.equal(new TextDecoder().decode(blockerText(onboarding)), "Input Monitoring is required for the global shortcut. Manual Start remains available in limited mode.");
 });
 
+test("packaged contract and performance routes remain automation-only effects", () => {
+  const ready = readyModel();
+  const contracts = update(ready, { kind: "automation_contracts_requested", value: bytes("1") });
+  const contractsCommand = commandOf(contracts) as unknown as { name: string };
+  assert.equal(contractsCommand.name, "friday.debug.contracts");
+  const contractResult = dispatch(modelOf(contracts), {
+    kind: "automation_contracts_finished",
+    body: bytes('{"ok":true,"shaFailed":true,"routeChange":{"reasonMatched":true}}'),
+  });
+  assert.equal(contractResult.hasImmediateResult, true);
+  assert.equal(new TextDecoder().decode(contractResult.immediateResultMessage).includes("reasonMatched"), true);
+
+  const performance = update(ready, {
+    kind: "performance_fixture_requested",
+    value: bytes("20|fixture.f32|performance.json"),
+  });
+  const performanceCommand = commandOf(performance) as unknown as { name: string };
+  assert.equal(performanceCommand.name, "friday.debug.performance");
+  const result = dispatch(modelOf(performance), {
+    kind: "performance_fixture_finished",
+    body: bytes('{"ok":true,"iterations":20,"transcriptIncluded":false,"fixturePathIncluded":false}'),
+  });
+  assert.equal(new TextDecoder().decode(result.ambientDetail).includes("fixturePathIncluded"), true);
+  assert.equal(result.hasImmediateResult, false);
+
+  const hotkeyProbe = update(ready, {
+    kind: "automation_hotkey_probe_requested",
+    value: bytes("1"),
+  });
+  const hotkeyCommand = commandOf(hotkeyProbe) as unknown as { name: string };
+  assert.equal(hotkeyCommand.name, "friday.hotkey.probe");
+  const hotkeyNow = update(ready, { kind: "automation_hotkey_probe_now" });
+  assert.equal(modelOf(hotkeyNow).workflow.kind, "starting");
+  assert.equal(commandOf(hotkeyNow)?.op, "batch");
+});
+
 test("launch-at-login result is authoritative and persisted only after host success", () => {
   const ready = readyModel();
   const requested = update(ready, { kind: "toggle_launch_at_login" });
@@ -456,6 +492,12 @@ test("platform gate blocks Intel and old macOS without onboarding or network", (
   });
   assert.equal(showUnsupported(old), true);
   assert.equal(new TextDecoder().decode(blockerText(old)), "Friday requires macOS 14 or later.");
+  const translated = dispatch(initial, {
+    kind: "platform_loaded",
+    body: bytes('{"ok":true,"supported":false,"architecture":"x86_64 (Rosetta)","processTranslated":true,"osVersion":"14.6","message":"Friday cannot run through Rosetta."}'),
+  });
+  assert.equal(showUnsupported(translated), true);
+  assert.equal(new TextDecoder().decode(blockerText(translated)), "Friday cannot run through Rosetta.");
   const current = dispatch(initial, {
     kind: "platform_loaded",
     body: bytes('{"ok":true,"supported":true,"architecture":"arm64","osVersion":"14.0","message":"Apple Silicon and macOS 14 or later detected."}'),

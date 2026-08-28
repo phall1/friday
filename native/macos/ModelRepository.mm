@@ -1660,7 +1660,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       writeToFile:[modelsRoot stringByAppendingPathComponent:@"index.json"]
           options:0
             error:nil];
-  FridayNemoRecognizer *recognizer = [FridayNemoRecognizer new];
+  FridayNemoRecognizer *recognizer = nil;
   FridayModelRepository *repository = [[FridayModelRepository alloc]
       initWithDataDirectory:dataRoot
                  recognizer:recognizer

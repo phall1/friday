@@ -42,6 +42,15 @@
 @property(nonatomic) uint64_t lastInferenceDurationMs;
 @property(nonatomic) uint64_t lastAudioDurationMs;
 @property(nonatomic, copy) NSString *lastErrorCode;
+@property(nonatomic) uint64_t lastHotkeyReceivedAtMs;
+@property(nonatomic) uint64_t lastStopRequestedAtMs;
+@property(nonatomic) uint64_t lastResidentBytes;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *hotkeyToFirstSampleMs;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *stopToDrainMs;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *stopToTextMs;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *textToDeliveryMs;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *droppedFrames;
+@property(nonatomic, copy) NSString *performanceOutputPath;
 - (instancetype)initWithDataDirectory:(NSString *)directory
                              callback:(friday_host_event_callback)callback
                               context:(void *)context;
@@ -73,6 +82,13 @@
     _transcripts = [NSMutableDictionary dictionary];
     _audioGenerations = [NSMutableDictionary dictionary];
     _asyncCompletions = [NSMutableDictionary dictionary];
+    _hotkeyToFirstSampleMs = [NSMutableArray array];
+    _stopToDrainMs = [NSMutableArray array];
+    _stopToTextMs = [NSMutableArray array];
+    _textToDeliveryMs = [NSMutableArray array];
+    _droppedFrames = [NSMutableArray array];
+    _performanceOutputPath =
+        NSProcessInfo.processInfo.environment[@"FRIDAY_AUTOMATION_METRICS_OUTPUT"];
     _delivery = [FridayTextDelivery new];
     _recognizer = [FridayNemoRecognizer new];
     __weak FridayHostController *weak = self;
@@ -121,6 +137,8 @@
       if (!strong)
         return;
       if ([event isEqual:@"hotkey_down"]) {
+        strong.lastHotkeyReceivedAtMs =
+            (uint64_t)llround(NSDate.date.timeIntervalSince1970 * 1000.0);
         strong.generation += 1;
         FridaySourceTarget *source = [strong.delivery captureFrontmostSource];
         source.token = payload[@"token"];
@@ -170,6 +188,38 @@
              object:nil];
   }
   return self;
+}
+- (uint64_t)nowMs {
+  return (uint64_t)llround(NSDate.date.timeIntervalSince1970 * 1000.0);
+}
+- (void)appendSample:(uint64_t)value
+                  to:(NSMutableArray<NSNumber *> *)samples {
+  if (samples.count >= 64)
+    [samples removeObjectAtIndex:0];
+  [samples addObject:@(value)];
+  [self writePerformanceSnapshot];
+}
+- (void)writePerformanceSnapshot {
+  if (!self.performanceOutputPath.length)
+    return;
+  NSDictionary *performance = @{
+    @"hotkeyToFirstSampleMs" : self.hotkeyToFirstSampleMs.copy,
+    @"stopToDrainMs" : self.stopToDrainMs.copy,
+    @"stopToTextMs" : self.stopToTextMs.copy,
+    @"textToDeliveryMs" : self.textToDeliveryMs.copy,
+    @"droppedFrames" : self.droppedFrames.copy,
+    @"residentBytes" : @(self.lastResidentBytes),
+    @"transcriptIncluded" : @NO,
+    @"audioIncluded" : @NO,
+    @"rawPathsIncluded" : @NO
+  };
+  NSData *data = [NSJSONSerialization dataWithJSONObject:performance
+                                                 options:0
+                                                   error:nil];
+  if (data)
+    [data writeToFile:self.performanceOutputPath
+              options:NSDataWritingAtomic
+                error:nil];
 }
 - (void)dealloc {
   [self.input stop];
@@ -267,10 +317,17 @@
     arm64 = 1;
 #endif
   }
+  int translated = 0;
+  size_t translatedSize = sizeof(translated);
+  if (sysctlbyname("sysctl.proc_translated", &translated, &translatedSize,
+                   NULL, 0) != 0)
+    translated = 0;
   NSOperatingSystemVersion version =
       NSProcessInfo.processInfo.operatingSystemVersion;
-  BOOL supported = arm64 == 1 && version.majorVersion >= 14;
-  NSString *architecture = arm64 == 1 ? @"arm64" : @"x86_64";
+  BOOL supported =
+      arm64 == 1 && translated == 0 && version.majorVersion >= 14;
+  NSString *architecture =
+      translated == 1 ? @"x86_64 (Rosetta)" : arm64 == 1 ? @"arm64" : @"x86_64";
   NSString *osVersion = [NSString
       stringWithFormat:@"%ld.%ld.%ld", (long)version.majorVersion,
                        (long)version.minorVersion, (long)version.patchVersion];
@@ -278,11 +335,13 @@
     @"ok" : @YES,
     @"supported" : @(supported),
     @"architecture" : architecture,
+    @"processTranslated" : @(translated == 1),
     @"osVersion" : osVersion,
     @"minimumOS" : @"14.0",
     @"message" : supported ? @"Apple Silicon and macOS 14 or later detected."
-    : arm64 != 1           ? @"Friday requires an Apple Silicon Mac."
-                           : @"Friday requires macOS 14 or later."
+    : translated == 1       ? @"Friday cannot run through Rosetta."
+    : arm64 != 1            ? @"Friday requires an Apple Silicon Mac."
+                            : @"Friday requires macOS 14 or later."
   };
 }
 
@@ -337,6 +396,14 @@
     @"managedModelBytes" : model[@"managedBytes"] ?: @0,
     @"lastAudioDurationMs" : @(self.lastAudioDurationMs),
     @"lastInferenceDurationMs" : @(self.lastInferenceDurationMs),
+    @"performance" : @{
+      @"hotkeyToFirstSampleMs" : self.hotkeyToFirstSampleMs.copy,
+      @"stopToDrainMs" : self.stopToDrainMs.copy,
+      @"stopToTextMs" : self.stopToTextMs.copy,
+      @"textToDeliveryMs" : self.textToDeliveryMs.copy,
+      @"droppedFrames" : self.droppedFrames.copy,
+      @"residentBytes" : @(self.lastResidentBytes)
+    },
     @"lastErrorCode" : self.lastErrorCode ?: @"",
     @"transcriptIncluded" : @NO,
     @"audioIncluded" : @NO,
@@ -413,6 +480,10 @@
   }
   if ([name isEqual:@"friday.hotkey.probe"])
     return [self.input runSyntheticProbe];
+  if ([name isEqual:@"friday.performance.mark_hotkey"]) {
+    self.lastHotkeyReceivedAtMs = [self nowMs];
+    return @{@"ok" : @YES, @"marked" : @YES};
+  }
   if ([name isEqual:@"friday.source.capture"]) {
     self.generation += 1;
     FridaySourceTarget *source = [self.delivery captureFrontmostSource];
@@ -495,10 +566,13 @@
         @"message" : @"The final transcript or exact source is stale."
       };
     }
+    uint64_t deliveryStartedAtMs = [self nowMs];
     NSMutableDictionary *delivery =
         [[self.delivery deliverText:text
                            toSource:source
                  pasteAutomatically:pasteAutomatically] mutableCopy];
+    [self appendSample:[self nowMs] - deliveryStartedAtMs
+                    to:self.textToDeliveryMs];
     delivery[@"sessionId"] = @(session);
     delivery[@"generation"] = @(generation);
     if (![delivery[@"ok"] boolValue] || [delivery[@"kind"] isEqual:@"shown"])
@@ -611,6 +685,17 @@
     [self.input beginShortcutCapture:finish];
     return;
   }
+  if ([name isEqual:@"friday.debug.contracts"]) {
+    finish(@{
+      @"ok" : @YES,
+      @"platform" : [self platformStatus],
+      @"audio" : [FridayAudioSession runStorageProbe],
+      @"converterFailure" : [FridayAudioSession runFailureCleanupProbe],
+      @"routeChange" : [FridayAudioSession runRouteChangeProbe],
+      @"models" : [FridayModelRepository runRepositoryProbes],
+    });
+    return;
+  }
   if ([name isEqual:@"friday.audio.start"]) {
     uint64_t session = [fields[@"session"] longLongValue];
     if (session == 0)
@@ -619,19 +704,24 @@
     self.currentAudioGeneration = generation;
     self.asyncSessions[@(key)] = @(session);
     self.audioGenerations[@(session)] = @(generation);
-    NSError *error = nil;
-    NSDictionary *result = [self.audio startSession:session error:&error];
-    finish(result ?: @{
-      @"ok" : @NO,
-      @"generation" : @(generation),
-      @"message" : error.localizedDescription ?: @"Capture failed."
-    });
+    [self.audio
+        startSessionAsync:session
+                 completion:^(NSDictionary *result, NSError *error) {
+                   finish(result ?: @{
+                     @"ok" : @NO,
+                     @"generation" : @(generation),
+                     @"message" :
+                         error.localizedDescription ?: @"Capture failed."
+                   });
+                 }];
     return;
   }
   if ([name isEqual:@"friday.audio.stop"]) {
     uint64_t session = [fields[@"session"] longLongValue];
     if (session == 0)
       session = self.currentAudioSession;
+    uint64_t stopRequestedAtMs = [self nowMs];
+    self.lastStopRequestedAtMs = stopRequestedAtMs;
     if (![fields[@"generation"] longLongValue])
       generation = self.currentAudioGeneration;
     self.asyncSessions[@(key)] = @(session);
@@ -639,9 +729,24 @@
                  completion:^(NSDictionary *capture) {
                    NSMutableDictionary *result = [capture mutableCopy];
                    result[@"generation"] = @(generation);
-                   if ([capture[@"ok"] boolValue])
+                   if ([capture[@"ok"] boolValue]) {
                      self.lastAudioDurationMs =
                          [capture[@"audioDurationMs"] unsignedLongLongValue];
+                     uint64_t firstAudioAtMs =
+                         [capture[@"firstAudioAtMs"] unsignedLongLongValue];
+                     if (self.lastHotkeyReceivedAtMs > 0 &&
+                         firstAudioAtMs >= self.lastHotkeyReceivedAtMs &&
+                         firstAudioAtMs - self.lastHotkeyReceivedAtMs < 10000)
+                       [self appendSample:firstAudioAtMs -
+                                              self.lastHotkeyReceivedAtMs
+                                       to:self.hotkeyToFirstSampleMs];
+                     self.lastHotkeyReceivedAtMs = 0;
+                     [self appendSample:[self nowMs] - stopRequestedAtMs
+                                     to:self.stopToDrainMs];
+                     [self appendSample:
+                               [capture[@"droppedFrames"] unsignedLongLongValue]
+                                     to:self.droppedFrames];
+                   }
                    finish(result);
                  }];
     return;
@@ -673,6 +778,14 @@
                   completion:^(NSDictionary *result) {
                     self.lastInferenceDurationMs =
                         [result[@"latencyMs"] unsignedLongLongValue];
+                    self.lastResidentBytes =
+                        [result[@"residentBytes"] unsignedLongLongValue];
+                    if (self.lastStopRequestedAtMs > 0) {
+                      [self appendSample:[self nowMs] -
+                                             self.lastStopRequestedAtMs
+                                      to:self.stopToTextMs];
+                      self.lastStopRequestedAtMs = 0;
+                    }
                     self.lastErrorCode =
                         [result[@"ok"] boolValue]
                             ? @""
@@ -852,10 +965,131 @@
                                    NSMutableDictionary *delivery = [[self
                                        request:@"friday.deliver_session"
                                        payload:deliveryPayload] mutableCopy];
-                                   delivery[@"fixture"] = payload;
-                                   delivery[@"recognizedText"] = text;
                                    finish(delivery);
                                  }];
+                 }];
+    return;
+  }
+  if ([name isEqual:@"friday.debug.performance"]) {
+    NSArray<NSString *> *components =
+        [payload componentsSeparatedByString:@"|"];
+    NSUInteger iterations =
+        components.count == 3 ? (NSUInteger)components[0].integerValue : 0;
+    NSString *fixturePath = components.count == 3 ? components[1] : @"";
+    NSString *outputPath = components.count == 3 ? components[2] : @"";
+    NSString *modelPath = self.models.activeModelPath;
+    if (!modelPath.length || !fixturePath.length || !outputPath.length ||
+        iterations < 5 || iterations > 50) {
+      finish(@{
+        @"ok" : @NO,
+        @"code" : @"performance_prerequisite_missing",
+        @"message" :
+            @"Use <iterations>|<raw-f32-path>|<output-json-path> with 5–50 iterations and an active model."
+      });
+      return;
+    }
+    self.generation += 1;
+    generation = self.generation;
+    [self.recognizer
+        activateModelAtPath:modelPath
+                 generation:generation
+                 completion:^(NSDictionary *activation) {
+                   if (![activation[@"ok"] boolValue]) {
+                     finish(activation);
+                     return;
+                   }
+                   __block NSUInteger completed = 0;
+                   NSMutableArray<NSNumber *> *inference =
+                       [NSMutableArray arrayWithCapacity:iterations];
+                   NSMutableArray<NSNumber *> *stopToText =
+                       [NSMutableArray arrayWithCapacity:iterations];
+                   NSMutableArray<NSNumber *> *deliverySamples =
+                       [NSMutableArray arrayWithCapacity:iterations];
+                   NSMutableArray<NSNumber *> *resident =
+                       [NSMutableArray arrayWithCapacity:iterations];
+                   __block void (^runNext)(void);
+                   runNext = ^{
+                     if (completed >= iterations) {
+                       NSDictionary *evidence = @{
+                         @"ok" : @YES,
+                         @"iterations" : @(iterations),
+                         @"inferenceMs" : inference,
+                         @"warmFiveSecondStopToTextMs" : stopToText,
+                         @"textToDeliveryMs" : deliverySamples,
+                         @"residentBytes" : resident,
+                         @"presentationFenceMs" : @250,
+                         @"transcriptIncluded" : @NO,
+                         @"fixturePathIncluded" : @NO
+                       };
+                       NSData *evidenceData =
+                           [NSJSONSerialization dataWithJSONObject:evidence
+                                                           options:0
+                                                             error:nil];
+                       BOOL wrote =
+                           evidenceData &&
+                           [evidenceData writeToFile:outputPath
+                                           options:NSDataWritingAtomic
+                                             error:nil];
+                       finish(wrote ? evidence
+                                    : @{
+                                        @"ok" : @NO,
+                                        @"code" :
+                                            @"performance_evidence_write_failed"
+                                      });
+                       runNext = nil;
+                       return;
+                     }
+                     uint64_t sampleGeneration = generation + completed + 1;
+                     [self.recognizer
+                         transcribeAudioAtURL:
+                             [NSURL fileURLWithPath:fixturePath]
+                                    sessionID:sampleGeneration
+                                   generation:sampleGeneration
+                                   completion:^(NSDictionary *result) {
+                                     if (![result[@"ok"] boolValue] ||
+                                         [result[@"silence"] boolValue] ||
+                                         ![result[@"text"] length]) {
+                                       finish(result);
+                                       runNext = nil;
+                                       return;
+                                     }
+                                     uint64_t latency =
+                                         [result[@"latencyMs"]
+                                             unsignedLongLongValue];
+                                     [inference addObject:@(latency)];
+                                     [stopToText addObject:@(latency + 250)];
+                                     [resident
+                                         addObject:result[@"residentBytes"]
+                                                       ?: @0];
+                                     FridaySourceTarget *copyOnly =
+                                         [FridaySourceTarget new];
+                                     copyOnly.token = NSUUID.UUID.UUIDString;
+                                     copyOnly.capturedAt = NSDate.date;
+                                     uint64_t deliveryStarted = [self nowMs];
+                                     NSDictionary *delivery =
+                                         [self.delivery
+                                                     deliverText:result[@"text"]
+                                                        toSource:copyOnly
+                                              pasteAutomatically:NO];
+                                     [deliverySamples
+                                         addObject:@([self nowMs] -
+                                                     deliveryStarted)];
+                                     if (![delivery[@"ok"] boolValue] ||
+                                         ![delivery[@"kind"]
+                                             isEqual:@"clipboard"]) {
+                                       finish(@{
+                                         @"ok" : @NO,
+                                         @"code" :
+                                             @"performance_delivery_failed"
+                                       });
+                                       runNext = nil;
+                                       return;
+                                     }
+                                     completed += 1;
+                                     runNext();
+                                   }];
+                   };
+                   runNext();
                  }];
     return;
   }
@@ -1079,17 +1313,25 @@ extern "C" size_t friday_host_native_contract_probes(uint8_t *output,
     int arm64 = 0;
     size_t architectureSize = sizeof(arm64);
     sysctlbyname("hw.optional.arm64", &arm64, &architectureSize, NULL, 0);
+    int translated = 0;
+    size_t translatedSize = sizeof(translated);
+    if (sysctlbyname("sysctl.proc_translated", &translated, &translatedSize,
+                     NULL, 0) != 0)
+      translated = 0;
     NSOperatingSystemVersion os =
         NSProcessInfo.processInfo.operatingSystemVersion;
-    BOOL currentPlatformSupported = arm64 == 1 && os.majorVersion >= 14;
+    BOOL currentPlatformSupported =
+        arm64 == 1 && translated == 0 && os.majorVersion >= 14;
     NSDictionary *result = @{
       @"audio" : [FridayAudioSession runStorageProbe],
       @"audioInput" : [FridayAudioSession inputStatus],
       @"converterFailure" : [FridayAudioSession runFailureCleanupProbe],
+      @"routeChange" : [FridayAudioSession runRouteChangeProbe],
       @"models" : [FridayModelRepository runRepositoryProbes],
       @"hotkey" : [FridayGlobalInputMonitor runShortcutContractProbes],
       @"currentPlatformSupported" : @(currentPlatformSupported),
       @"architecture" : arm64 == 1 ? @"arm64" : @"x86_64",
+      @"processTranslated" : @(translated == 1),
       @"osMajor" : @(os.majorVersion),
       @"overlay" : overlayProbe,
       @"copyOnlyDelivery" : copyOnly,

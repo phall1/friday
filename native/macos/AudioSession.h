@@ -10,6 +10,9 @@ typedef void (^FridayAudioEventHandler)(NSString *event,
 - (instancetype)initWithEventHandler:(FridayAudioEventHandler)handler;
 - (nullable NSDictionary<NSString *, id> *)startSession:(uint64_t)sessionID
                                                   error:(NSError **)error;
+- (void)startSessionAsync:(uint64_t)sessionID
+               completion:(void (^)(NSDictionary<NSString *, id> * _Nullable result,
+                                    NSError * _Nullable error))completion;
 - (void)stopSession:(uint64_t)sessionID
          completion:(void (^)(NSDictionary<NSString *, id> *result))completion;
 - (void)cancelSession:(uint64_t)sessionID;
@@ -19,6 +22,7 @@ typedef void (^FridayAudioEventHandler)(NSString *event,
 + (NSDictionary<NSString *, id> *)inputStatus;
 + (NSDictionary<NSString *, id> *)runStorageProbe;
 + (NSDictionary<NSString *, id> *)runFailureCleanupProbe;
++ (NSDictionary<NSString *, id> *)runRouteChangeProbe;
 @end
 
 NS_ASSUME_NONNULL_END

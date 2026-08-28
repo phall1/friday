@@ -121,6 +121,7 @@ struct FridayRealtimeCapture {
 @property(nonatomic) uint64_t lastMeterAtMs;
 @property(nonatomic) float meterRMS;
 @property(nonatomic) float meterPeak;
+- (BOOL)prepareGraph:(NSError **)error;
 @end
 
 @implementation FridayAudioSession {
@@ -144,6 +145,7 @@ struct FridayRealtimeCapture {
            selector:@selector(configurationChanged:)
                name:AVAudioEngineConfigurationChangeNotification
              object:nil];
+    [self prepareGraph:nil];
   }
   return self;
 }
@@ -156,6 +158,65 @@ struct FridayRealtimeCapture {
 
 - (uint64_t)now {
   return (uint64_t)llround(NSDate.date.timeIntervalSince1970 * 1000);
+}
+
+- (BOOL)prepareGraph:(NSError **)error {
+  if (self.engine && self.sink && self.converter && _realtime)
+    return YES;
+  self.engine = [AVAudioEngine new];
+  AVAudioInputNode *input = self.engine.inputNode;
+  AVAudioFormat *hardware = [input outputFormatForBus:0];
+  if (hardware.commonFormat != AVAudioPCMFormatFloat32 ||
+      hardware.sampleRate < 8000 || hardware.sampleRate > 96000 ||
+      hardware.channelCount == 0) {
+    self.engine = nil;
+    if (error)
+      *error = [NSError
+          errorWithDomain:@"com.phall.friday.audio"
+                     code:3
+                 userInfo:@{
+                   NSLocalizedDescriptionKey :
+                       @"The microphone format cannot be converted safely."
+                 }];
+    return NO;
+  }
+  self.converterInputFormat = [[AVAudioFormat alloc]
+      initStandardFormatWithSampleRate:hardware.sampleRate
+                              channels:1];
+  self.converterOutputFormat =
+      [[AVAudioFormat alloc] initStandardFormatWithSampleRate:kFridayRate
+                                                     channels:1];
+  self.converter =
+      [[AVAudioConverter alloc] initFromFormat:self.converterInputFormat
+                                      toFormat:self.converterOutputFormat];
+  if (!self.converter) {
+    self.engine = nil;
+    if (error)
+      *error =
+          [NSError errorWithDomain:@"com.phall.friday.audio"
+                              code:4
+                          userInfo:@{
+                            NSLocalizedDescriptionKey :
+                                @"Friday could not create the audio converter."
+                          }];
+    return NO;
+  }
+  self.converter.sampleRateConverterQuality = AVAudioQualityMax;
+  _realtime = std::make_unique<FridayRealtimeCapture>(
+      static_cast<size_t>(hardware.sampleRate * 4), hardware.channelCount,
+      hardware.interleaved);
+  FridayRealtimeCapture *realtime = _realtime.get();
+  self.sink = [[AVAudioSinkNode alloc]
+      initWithReceiverBlock:^OSStatus(const AudioTimeStamp *timestamp,
+                                      AVAudioFrameCount frameCount,
+                                      const AudioBufferList *audioData) {
+        (void)timestamp;
+        realtime->push(audioData, frameCount);
+        return noErr;
+      }];
+  [self.engine attachNode:self.sink];
+  [self.engine connect:input to:self.sink format:hardware];
+  return YES;
 }
 
 - (NSDictionary *)startSession:(uint64_t)sessionID error:(NSError **)error {
@@ -193,66 +254,15 @@ struct FridayRealtimeCapture {
     return nil;
   }
 
-  self.engine = [AVAudioEngine new];
+  if (![self prepareGraph:error]) {
+    fclose(self.file);
+    self.file = NULL;
+    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+    return nil;
+  }
   AVAudioInputNode *input = self.engine.inputNode;
-  AVAudioFormat *hardware = [input outputFormatForBus:0];
-  if (hardware.commonFormat != AVAudioPCMFormatFloat32 ||
-      hardware.sampleRate < 8000 || hardware.sampleRate > 96000 ||
-      hardware.channelCount == 0) {
-    fclose(self.file);
-    self.file = NULL;
-    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
-    if (error)
-      *error = [NSError
-          errorWithDomain:@"com.phall.friday.audio"
-                     code:3
-                 userInfo:@{
-                   NSLocalizedDescriptionKey :
-                       @"The microphone format cannot be converted safely."
-                 }];
-    return nil;
-  }
-
-  self.converterInputFormat = [[AVAudioFormat alloc]
-      initStandardFormatWithSampleRate:hardware.sampleRate
-                              channels:1];
-  self.converterOutputFormat =
-      [[AVAudioFormat alloc] initStandardFormatWithSampleRate:kFridayRate
-                                                     channels:1];
-  self.converter =
-      [[AVAudioConverter alloc] initFromFormat:self.converterInputFormat
-                                      toFormat:self.converterOutputFormat];
-  if (!self.converter) {
-    fclose(self.file);
-    self.file = NULL;
-    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
-    if (error)
-      *error =
-          [NSError errorWithDomain:@"com.phall.friday.audio"
-                              code:4
-                          userInfo:@{
-                            NSLocalizedDescriptionKey :
-                                @"Friday could not create the audio converter."
-                          }];
-    return nil;
-  }
-  self.converter.sampleRateConverterQuality = AVAudioQualityMax;
-
-  _realtime = std::make_unique<FridayRealtimeCapture>(
-      static_cast<size_t>(hardware.sampleRate * 4), hardware.channelCount,
-      hardware.interleaved);
   FridayRealtimeCapture *realtime = _realtime.get();
-  self.sink = [[AVAudioSinkNode alloc]
-      initWithReceiverBlock:^OSStatus(const AudioTimeStamp *timestamp,
-                                      AVAudioFrameCount frameCount,
-                                      const AudioBufferList *audioData) {
-        (void)timestamp;
-        realtime->push(audioData, frameCount);
-        return noErr;
-      }];
-  [self.engine attachNode:self.sink];
-  [self.engine connect:input to:self.sink format:hardware];
-
+  realtime->accepting.store(true, std::memory_order_release);
   self.sessionID = sessionID;
   self.startedAtMs = [self now];
   self.firstAudioAtMs = 0;
@@ -299,6 +309,16 @@ struct FridayRealtimeCapture {
     @"channels" : @1
   };
 }
+- (void)startSessionAsync:(uint64_t)sessionID
+               completion:(void (^)(NSDictionary *, NSError *))completion {
+  dispatch_async(self.queue, ^{
+    NSError *error = nil;
+    NSDictionary *result = [self startSession:sessionID error:&error];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result, error);
+    });
+  });
+}
 
 - (void)failConversion:(NSError *)error {
   if (_conversionFailure.exchange(true, std::memory_order_acq_rel))
@@ -326,6 +346,12 @@ struct FridayRealtimeCapture {
       self.retryAudioURL = nil;
       self->_realtime.reset();
       dispatch_async(dispatch_get_main_queue(), ^{
+        self.sink = nil;
+        self.converter = nil;
+        self.converterInputFormat = nil;
+        self.converterOutputFormat = nil;
+        self.engine = nil;
+        [self prepareGraph:nil];
         self.handler(
             @"audio_interrupted",
             @{@"sessionId" : @(session),
@@ -488,6 +514,12 @@ struct FridayRealtimeCapture {
       @"retryAudioAvailable" : @(retry)
     };
     dispatch_async(dispatch_get_main_queue(), ^{
+      self.sink = nil;
+      self.converter = nil;
+      self.converterInputFormat = nil;
+      self.converterOutputFormat = nil;
+      self.engine = nil;
+      [self prepareGraph:nil];
       completion(result);
     });
   });
@@ -547,6 +579,12 @@ struct FridayRealtimeCapture {
     self->_realtime.reset();
   });
   [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+  self.sink = nil;
+  self.converter = nil;
+  self.converterInputFormat = nil;
+  self.converterOutputFormat = nil;
+  self.engine = nil;
+  [self prepareGraph:nil];
 }
 
 - (void)discardRetryAudio {
@@ -591,8 +629,21 @@ struct FridayRealtimeCapture {
 
 - (void)configurationChanged:(NSNotification *)note {
   (void)note;
-  if (!self.active)
+  if (!self.active) {
+    [self.engine stop];
+    if (self.engine && self.sink) {
+      [self.engine disconnectNodeOutput:self.engine.inputNode];
+      [self.engine detachNode:self.sink];
+    }
+    self.sink = nil;
+    self.converter = nil;
+    self.converterInputFormat = nil;
+    self.converterOutputFormat = nil;
+    self.engine = nil;
+    _realtime.reset();
+    [self prepareGraph:nil];
     return;
+  }
   const uint64_t session = self.sessionID;
   [self cancelSession:session];
   self.handler(@"audio_interrupted", @{
@@ -661,6 +712,34 @@ struct FridayRealtimeCapture {
     @"eventReceived" : @(eventReceived),
     @"tempRemoved" : @(removed),
     @"activeCleared" : @(!session.active)
+  };
+}
++ (NSDictionary *)runRouteChangeProbe {
+  NSString *path = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:@"friday-route-change-probe.f32"];
+  __block NSString *observedReason = @"";
+  FridayAudioSession *session = [[FridayAudioSession alloc]
+      initWithEventHandler:^(NSString *event, NSDictionary *payload) {
+        if ([event isEqual:@"audio_interrupted"])
+          observedReason = payload[@"reason"] ?: @"";
+      }];
+  session.url = [NSURL fileURLWithPath:path];
+  session.file = fopen(path.fileSystemRepresentation, "wb");
+  session->_realtime =
+      std::make_unique<FridayRealtimeCapture>(4, 1, false);
+  session.sessionID = 43;
+  session.active = YES;
+  [session configurationChanged:
+               [NSNotification notificationWithName:@"FridayRouteProbe"
+                                             object:nil]];
+  BOOL removed = ![NSFileManager.defaultManager fileExistsAtPath:path];
+  BOOL reasonMatched =
+      [observedReason isEqual:@"The microphone route changed during recording."];
+  return @{
+    @"ok" : @(!session.active && removed && reasonMatched),
+    @"activeCleared" : @(!session.active),
+    @"tempRemoved" : @(removed),
+    @"reasonMatched" : @(reasonMatched)
   };
 }
 @end

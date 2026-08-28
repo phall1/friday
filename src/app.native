@@ -169,6 +169,7 @@
                   <separator/>
                   <text foreground="text_muted" wrap="true">Audio and transcription stay on this Mac. Network is used only for model actions you start. Friday stores no transcript history.</text>
                   <if test="{hasImmediateResult}"><column padding="12" gap="8" background="surface_subtle"><text foreground="text_muted"><span mono="true">LATEST RESULT</span></text><text wrap="true">{immediateResultMessage}</text><row gap="8"><if test="{immediateResultKind == 'shown'}"><button on-press="copy_immediate_result">Copy Final Text</button></if><button variant="ghost" on-press="dismiss_result">Dismiss</button></row></column></if>
+                  <if test="{automationSceneActive}"><button variant="ghost" on-press="automation_hotkey_probe_now">Run Automation Hotkey Probe</button></if>
                 </if>
 
                 <if test="{showPermissions}">
