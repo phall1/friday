@@ -14,14 +14,20 @@ typedef void (^FridayModelProgressHandler)(uint64_t operationID,
 - (NSDictionary<NSString *, id> *)status;
 - (void)downloadDefaultOperation:(uint64_t)operationID
                       completion:(void (^)(NSDictionary *result))completion;
+- (void)resumePendingOperation:(uint64_t)operationID
+                    completion:(void (^)(NSDictionary *result))completion;
 - (void)cancelOperation:(uint64_t)operationID;
 - (void)addLocalPath:(NSString *)path
                  key:(uint64_t)key
           generation:(uint64_t)generation
           completion:(void (^)(NSDictionary *result))completion;
-- (void)addHuggingFaceID:(NSString *)identifier
-               operation:(uint64_t)operation
-              completion:(void (^)(NSDictionary *result))completion;
+- (void)resolveHuggingFaceID:(NSString *)identifier
+                   operation:(uint64_t)operation
+                  completion:(void (^)(NSDictionary *result))completion;
+- (void)downloadResolvedHuggingFaceID:(NSString *)identifier
+                            operation:(uint64_t)operation
+                           completion:
+                               (void (^)(NSDictionary *result))completion;
 - (void)selectKey:(uint64_t)key
        generation:(uint64_t)generation
        completion:(void (^)(NSDictionary *result))completion;

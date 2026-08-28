@@ -9,6 +9,7 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <ServiceManagement/ServiceManagement.h>
+#include <sys/sysctl.h>
 
 @interface FridayHostController : NSObject
 @property(nonatomic) friday_host_event_callback eventCallback;
@@ -258,6 +259,33 @@
                            generation:(uint64_t)generation {
   return [NSString stringWithFormat:@"%llu:%llu", generation, session];
 }
+- (NSDictionary *)platformStatus {
+  int arm64 = 0;
+  size_t size = sizeof(arm64);
+  if (sysctlbyname("hw.optional.arm64", &arm64, &size, NULL, 0) != 0) {
+#if defined(__arm64__) || defined(__aarch64__)
+    arm64 = 1;
+#endif
+  }
+  NSOperatingSystemVersion version =
+      NSProcessInfo.processInfo.operatingSystemVersion;
+  BOOL supported = arm64 == 1 && version.majorVersion >= 14;
+  NSString *architecture = arm64 == 1 ? @"arm64" : @"x86_64";
+  NSString *osVersion = [NSString
+      stringWithFormat:@"%ld.%ld.%ld", (long)version.majorVersion,
+                       (long)version.minorVersion, (long)version.patchVersion];
+  return @{
+    @"ok" : @YES,
+    @"supported" : @(supported),
+    @"architecture" : architecture,
+    @"osVersion" : osVersion,
+    @"minimumOS" : @"14.0",
+    @"message" : supported ? @"Apple Silicon and macOS 14 or later detected."
+    : arm64 != 1           ? @"Friday requires an Apple Silicon Mac."
+                           : @"Friday requires macOS 14 or later."
+  };
+}
+
 - (NSDictionary *)loginStatus {
   SMAppServiceStatus status = SMAppService.mainAppService.status;
   return @{
@@ -297,7 +325,7 @@
         ?: @"0.1.0",
     @"nativeSdkVersion" : @"0.10.1",
     @"nemoVersion" : @"0.1.0",
-    @"platform" : @"macOS 14+ · Apple Silicon",
+    @"platform" : [self platformStatus],
     @"permissions" : [self permissions],
     @"hotkeyRunning" : @(self.input.running),
     @"sourceTargetsRetained" : @(self.sources.count),
@@ -325,6 +353,8 @@
           ?: @"unbundled",
       @"permissions" : [self permissions]
     };
+  if ([name isEqual:@"friday.platform"])
+    return [self platformStatus];
   if ([name isEqual:@"friday.permissions"])
     return [self permissions];
   if ([name isEqual:@"friday.permissions.request"]) {
@@ -577,6 +607,10 @@
     completion(result);
   };
   self.asyncCompletions[@(key)] = [finish copy];
+  if ([name isEqual:@"friday.hotkey.capture"]) {
+    [self.input beginShortcutCapture:finish];
+    return;
+  }
   if ([name isEqual:@"friday.audio.start"]) {
     uint64_t session = [fields[@"session"] longLongValue];
     if (session == 0)
@@ -592,6 +626,70 @@
       @"generation" : @(generation),
       @"message" : error.localizedDescription ?: @"Capture failed."
     });
+    return;
+  }
+  if ([name isEqual:@"friday.audio.stop"]) {
+    uint64_t session = [fields[@"session"] longLongValue];
+    if (session == 0)
+      session = self.currentAudioSession;
+    if (![fields[@"generation"] longLongValue])
+      generation = self.currentAudioGeneration;
+    self.asyncSessions[@(key)] = @(session);
+    [self.audio stopSession:session
+                 completion:^(NSDictionary *capture) {
+                   NSMutableDictionary *result = [capture mutableCopy];
+                   result[@"generation"] = @(generation);
+                   if ([capture[@"ok"] boolValue])
+                     self.lastAudioDurationMs =
+                         [capture[@"audioDurationMs"] unsignedLongLongValue];
+                   finish(result);
+                 }];
+    return;
+  }
+  if ([name isEqual:@"friday.nemo.transcribe_capture"]) {
+    uint64_t session = [fields[@"session"] longLongValue];
+    if (session == 0)
+      session = self.currentAudioSession;
+    if (![fields[@"generation"] longLongValue])
+      generation = self.currentAudioGeneration;
+    self.asyncSessions[@(key)] = @(session);
+    NSURL *audioURL = self.audio.retryAudioURL;
+    if (!audioURL || !self.models.activeModelPath) {
+      finish(@{
+        @"ok" : @NO,
+        @"sessionId" : @(session),
+        @"generation" : @(generation),
+        @"code" : audioURL ? @"model_unavailable" : @"audio_unavailable",
+        @"message" : audioURL ? @"The active model is unavailable."
+                              : @"Captured audio is unavailable.",
+        @"retryAudioAvailable" : @(audioURL != nil)
+      });
+      return;
+    }
+    [self.recognizer
+        transcribeAudioAtURL:audioURL
+                   sessionID:session
+                  generation:generation
+                  completion:^(NSDictionary *result) {
+                    self.lastInferenceDurationMs =
+                        [result[@"latencyMs"] unsignedLongLongValue];
+                    self.lastErrorCode =
+                        [result[@"ok"] boolValue]
+                            ? @""
+                            : result[@"code"] ?: @"transcription_failed";
+                    if ([result[@"ok"] boolValue]) {
+                      NSString *text = result[@"text"];
+                      if (![result[@"silence"] boolValue] && text.length > 0) {
+                        NSString *transcriptKey =
+                            [self transcriptKeyForSession:session
+                                               generation:generation];
+                        self.transcripts[transcriptKey] = text;
+                      }
+                      [self.audio discardRetryAudio];
+                    }
+                    [self.audioGenerations removeObjectForKey:@(session)];
+                    finish(result);
+                  }];
     return;
   }
   if ([name isEqual:@"friday.audio.finish"]) {
@@ -800,12 +898,22 @@
                    completion:finish];
     return;
   }
-  if ([name isEqual:@"friday.model.add_hf_ui"]) {
-    [self.models addHuggingFaceID:payload operation:key completion:finish];
+  if ([name isEqual:@"friday.model.resolve_hf"]) {
+    [self.models resolveHuggingFaceID:payload operation:key completion:finish];
+    return;
+  }
+  if ([name isEqual:@"friday.model.download_hf"]) {
+    [self.models downloadResolvedHuggingFaceID:payload
+                                     operation:key
+                                    completion:finish];
     return;
   }
   if ([name isEqual:@"friday.model.download"]) {
     [self.models downloadDefaultOperation:key completion:finish];
+    return;
+  }
+  if ([name isEqual:@"friday.model.resume"]) {
+    [self.models resumePendingOperation:key completion:finish];
     return;
   }
   if ([name isEqual:@"friday.model.add_local"]) {
@@ -816,9 +924,9 @@
     return;
   }
   if ([name isEqual:@"friday.model.add_hf"]) {
-    [self.models addHuggingFaceID:[self fromB64:fields[@"id"] ?: @""]
-                        operation:key
-                       completion:finish];
+    [self.models resolveHuggingFaceID:[self fromB64:fields[@"id"] ?: @""]
+                            operation:key
+                           completion:finish];
     return;
   }
   if ([name isEqual:@"friday.model.select"]) {
@@ -835,6 +943,7 @@
     return;
   uint64_t generation = [self.asyncGenerations[@(key)] unsignedLongLongValue];
   uint64_t session = [self.asyncSessions[@(key)] unsignedLongLongValue];
+  [self.input cancelShortcutCapture];
   [self.recognizer cancelGeneration:generation];
   [self.models cancelOperation:key];
   [self.audio cancelSession:session];
@@ -967,11 +1076,21 @@ extern "C" size_t friday_host_native_contract_probes(uint8_t *output,
           (void)action;
         }];
     NSDictionary *overlayProbe = [overlay runInteractionProbe];
+    int arm64 = 0;
+    size_t architectureSize = sizeof(arm64);
+    sysctlbyname("hw.optional.arm64", &arm64, &architectureSize, NULL, 0);
+    NSOperatingSystemVersion os =
+        NSProcessInfo.processInfo.operatingSystemVersion;
+    BOOL currentPlatformSupported = arm64 == 1 && os.majorVersion >= 14;
     NSDictionary *result = @{
       @"audio" : [FridayAudioSession runStorageProbe],
       @"audioInput" : [FridayAudioSession inputStatus],
       @"converterFailure" : [FridayAudioSession runFailureCleanupProbe],
       @"models" : [FridayModelRepository runRepositoryProbes],
+      @"hotkey" : [FridayGlobalInputMonitor runShortcutContractProbes],
+      @"currentPlatformSupported" : @(currentPlatformSupported),
+      @"architecture" : arm64 == 1 ? @"arm64" : @"x86_64",
+      @"osMajor" : @(os.majorVersion),
       @"overlay" : overlayProbe,
       @"copyOnlyDelivery" : copyOnly,
       @"loginStatusKnown" :

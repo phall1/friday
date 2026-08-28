@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockerText, commandMsg, failureDetail, failureModelName, initialModel, migrate, statusItem, themeState, update, type Model, type Msg } from "../src/core.ts";
+import { blockerText, commandMsg, failureDetail, failureModelName, initialModel, migrate, showUnsupported, statusItem, themeState, update, workflowDetail, type Model, type Msg } from "../src/core.ts";
 import type { Cmd } from "@native-sdk/core";
 
 type UpdateResult = Model | [Model, Cmd<Msg>];
@@ -12,7 +12,8 @@ const dispatch = (model: Model, msg: Msg): Model => modelOf(update(model, msg));
 
 function readyModel(): Model {
   const [initial] = initialModel();
-  let model = dispatch(initial, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
+  let model = dispatch(initial, { kind: "platform_loaded", body: bytes('{"ok":true,"supported":true,"architecture":"arm64","osVersion":"14.0","message":"Apple Silicon and macOS 14 or later detected."}') });
+  model = dispatch(model, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
   model = dispatch(model, { kind: "model_status_loaded", body: bytes('{"activeModelKey":1,"activeModelReady":true,"compatibility":"compatible"}') });
   model = dispatch(model, { kind: "hotkey_configured", body: bytes('{"ok":true}') });
   model = dispatch(model, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
@@ -66,7 +67,7 @@ test("short modifier tap seeds lock and second tap locks without long-hold seedi
 
 test("new hotkey cancels transcribing generation and stale results are ignored", () => {
   let model = readyModel();
-  model = { ...model, workflow: { kind: "transcribing", retryAudioAvailable: true }, sessionId: 10, generation: 10, sessionSourceToken: bytes("old") };
+  model = { ...model, workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" }, sessionId: 10, generation: 10, sessionSourceToken: bytes("old") };
   const restarted = update(model, hostEvent("hotkey_down|11|5000|bmV3|1||"));
   const next = modelOf(restarted);
   assert.equal(next.workflow.kind, "starting");
@@ -83,9 +84,16 @@ test("silence, duration warning, duration limit, retry, and dismiss are exhausti
   assert.equal(model.workflow.kind === "recording" && model.workflow.warnedDurationLimit, true);
   model = dispatch(model, hostEvent("duration_limit|7|7|e30="));
   assert.equal(model.workflow.kind, "stopping");
+  const drained = update(model, { kind: "audio_stopped", body: bytes('{"ok":true,"sessionId":7,"generation":7,"audioDurationMs":600000}') });
+  model = modelOf(drained);
+  assert.equal(model.workflow.kind, "transcribing");
+  assert.equal(model.workflow.kind === "transcribing" && model.workflow.disposition, "duration_limit");
+  assert.equal(new TextDecoder().decode(workflowDetail(model)), "10-minute limit reached. Transcribing captured audio locally.");
+  assert.equal(commandOf(drained)?.op, "batch");
   model = dispatch(model, { kind: "transcript_ready", body: bytes('{"ok":true,"sessionId":7,"generation":7,"silence":true}') });
   assert.equal(model.workflow.kind, "ready");
   assert.equal(model.hasImmediateResult, true);
+  assert.equal(new TextDecoder().decode(model.immediateResultMessage).startsWith("10-minute limit reached."), true);
 
   model = { ...model, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true }, sessionId: 8, generation: 8 };
   model = dispatch(model, { kind: "retry_transcription" });
@@ -106,7 +114,7 @@ test("non-silence transcript carries exact delivery identity and paste preferenc
   let model = readyModel();
   model = {
     ...model,
-    workflow: { kind: "stopping", disposition: "transcribe" },
+    workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" },
     sessionId: 42,
     generation: 77,
     sessionSourceToken: bytes("opaque"),
@@ -229,7 +237,7 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
 
   const transcribing: Model = {
     ...ready,
-    workflow: { kind: "transcribing", retryAudioAvailable: false },
+    workflow: { kind: "transcribing", retryAudioAvailable: false, disposition: "transcribe" },
   };
   const transcribingLabels = statusItem(transcribing).items.map((item) => new TextDecoder().decode(item.label));
   assert.equal(transcribingLabels.includes("Stop Recording"), false);
@@ -311,6 +319,8 @@ test("default model download starts only on visible model step", () => {
   assert.equal(commandOf(status), null);
   const stepThree: Model = {
     ...modelOf(status),
+    platformLoaded: true,
+    platformSupported: true,
     workflow: { kind: "not_ready" },
     onboardingStep: 2,
     permissionsLoaded: true,
@@ -332,6 +342,8 @@ test("every missing degraded permission requires limited-mode acknowledgement", 
   const [initial] = initialModel();
   const permissionsStep: Model = {
     ...initial,
+    platformLoaded: true,
+    platformSupported: true,
     onboardingStep: 1,
     microphonePermission: true,
     accessibilityPermission: false,
@@ -380,7 +392,7 @@ test("Hugging Face add requires explicit source confirmation", () => {
   const drafted = dispatch(ready, { kind: "hf_draft_edit", edit: { kind: "insert_text", text: bytes("nvidia/parakeet-tdt-0.6b-v3") } });
   const blocked = update(drafted, { kind: "add_hugging_face_model" });
   assert.equal(commandOf(blocked), null);
-  assert.equal(new TextDecoder().decode(modelOf(blocked).modelDownloadMessage).includes("Confirm the hosting"), true);
+  assert.equal(new TextDecoder().decode(modelOf(blocked).modelDownloadMessage).includes("contact Hugging Face"), true);
   const confirmed = dispatch(drafted, { kind: "toggle_hf_source_confirmation" });
   const requested = update(confirmed, { kind: "add_hugging_face_model" });
   assert.equal(commandOf(requested)?.op, "request");
@@ -388,7 +400,7 @@ test("Hugging Face add requires explicit source confirmation", () => {
 
 test("busy model actions explain why they cannot run", () => {
   const ready = readyModel();
-  const busy: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: false } };
+  const busy: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: false, disposition: "transcribe" } };
   const result = update(busy, { kind: "remove_model_reference" });
   assert.equal(commandOf(result), null);
   assert.equal(new TextDecoder().decode(modelOf(result).modelDownloadMessage).includes("Finish or cancel"), true);
@@ -422,4 +434,153 @@ test("appearance and overlay-preview contracts retain accessibility state", () =
   const dismissed = dispatch(preview, { kind: "dismiss_overlay_preview" });
   assert.equal(dismissed.automationOverlayPreview, false);
   assert.equal(dismissed.workflow.kind, "recording");
+});
+
+test("platform gate blocks Intel and old macOS without onboarding or network", () => {
+  const [initial] = initialModel();
+  const intel = dispatch(initial, {
+    kind: "platform_loaded",
+    body: bytes('{"ok":true,"supported":false,"architecture":"x86_64","osVersion":"14.6","message":"Friday requires an Apple Silicon Mac."}'),
+  });
+  assert.equal(showUnsupported(intel), true);
+  assert.equal(new TextDecoder().decode(blockerText(intel)), "Friday requires an Apple Silicon Mac.");
+  const intelItems = statusItem(intel).items.map((item) => new TextDecoder().decode(item.label));
+  assert.deepEqual(intelItems.filter(Boolean), ["unsupported", "Quit Friday"]);
+  assert.equal(commandOf(update(intel, { kind: "onboarding_next" })), null);
+  assert.equal(commandOf(update(intel, { kind: "retry_model_download" })), null);
+  assert.equal(commandOf(update(intel, { kind: "start_recording" })), null);
+
+  const old = dispatch(initial, {
+    kind: "platform_loaded",
+    body: bytes('{"ok":true,"supported":false,"architecture":"arm64","osVersion":"13.6","message":"Friday requires macOS 14 or later."}'),
+  });
+  assert.equal(showUnsupported(old), true);
+  assert.equal(new TextDecoder().decode(blockerText(old)), "Friday requires macOS 14 or later.");
+  const current = dispatch(initial, {
+    kind: "platform_loaded",
+    body: bytes('{"ok":true,"supported":true,"architecture":"arm64","osVersion":"14.0","message":"Apple Silicon and macOS 14 or later detected."}'),
+  });
+  assert.equal(showUnsupported(current), false);
+});
+
+test("captured shortcuts warn before explicit save and persist safe key/F-key candidates", () => {
+  const ready = readyModel();
+  const reserved = dispatch(ready, {
+    kind: "hotkey_candidate",
+    body: bytes('{"ok":true,"valid":false,"config":"key=49;command=1;shift=0;option=0;control=0;fn=0","display":"Command + Space","warning":"That shortcut is reserved by macOS."}'),
+  });
+  assert.equal(reserved.hotkeyCandidateValid, false);
+  assert.equal(commandOf(update(reserved, { kind: "confirm_hotkey_candidate" })), null);
+
+  const keyCandidate = dispatch(ready, {
+    kind: "hotkey_candidate",
+    body: bytes('{"ok":true,"valid":true,"config":"key=0;command=1;shift=1;option=0;control=0;fn=0","display":"Shift + Command + A","warning":""}'),
+  });
+  const keySave = update(keyCandidate, { kind: "confirm_hotkey_candidate" });
+  const keyCommand = commandOf(keySave) as unknown as { op: string; payload: Uint8Array };
+  assert.equal(keyCommand.op, "request");
+  assert.equal(new TextDecoder().decode(keyCommand.payload), "key=0;command=1;shift=1;option=0;control=0;fn=0");
+  const promoted = modelOf(update(keyCandidate, { kind: "hotkey_configured", body: bytes('{"ok":true}') }));
+  assert.equal(new TextDecoder().decode(promoted.hotkeyConfig), "key=0;command=1;shift=1;option=0;control=0;fn=0");
+  assert.equal(new TextDecoder().decode(promoted.hotkeyDisplay), "Shift + Command + A");
+
+  const functionCandidate = dispatch(ready, {
+    kind: "hotkey_candidate",
+    body: bytes('{"ok":true,"valid":true,"config":"key=96;command=0;shift=0;option=0;control=0;fn=0","display":"F5","warning":""}'),
+  });
+  assert.equal(functionCandidate.hotkeyCandidateValid, true);
+  const preset = update(ready, { kind: "choose_control_option" });
+  assert.equal(commandOf(preset), null);
+  assert.equal(modelOf(preset).hotkeyCandidateValid, true);
+});
+
+test("schema migration seeds a safe confirmed-shortcut candidate model", () => {
+  const migrated = migrate(bytes("unreleased-v10"), 10);
+  assert.equal(new TextDecoder().decode(migrated.hotkeyConfig), "key=-1;command=1;shift=1;option=0;control=0;fn=0");
+  assert.equal(new TextDecoder().decode(migrated.hotkeyDisplay), "Command + Shift");
+  assert.equal(migrated.hotkeyCandidateValid, false);
+});
+
+test("normal stop drains before entering real transcribing state", () => {
+  const recording: Model = {
+    ...readyModel(),
+    workflow: { kind: "recording", control: "held", warnedDurationLimit: false },
+    sessionId: 51,
+    generation: 51,
+  };
+  const stopping = update(recording, { kind: "stop_recording" });
+  assert.equal(modelOf(stopping).workflow.kind, "stopping");
+  const stopCommand = commandOf(stopping) as unknown as { op: string; name: string };
+  assert.equal(stopCommand.name, "friday.audio.stop");
+  const transcribing = update(modelOf(stopping), {
+    kind: "audio_stopped",
+    body: bytes('{"ok":true,"sessionId":51,"generation":51,"audioDurationMs":1200}'),
+  });
+  assert.equal(modelOf(transcribing).workflow.kind, "transcribing");
+  assert.equal(new TextDecoder().decode(workflowDetail(modelOf(transcribing))), "Transcribing locally with the active Parakeet model.");
+  assert.equal(commandOf(transcribing)?.op, "batch");
+  const inference = update(modelOf(transcribing), { kind: "begin_transcription", at: 250 });
+  const inferenceCommand = commandOf(inference) as unknown as { op: string; name: string };
+  assert.equal(inferenceCommand.name, "friday.nemo.transcribe_capture");
+  const labels = statusItem(modelOf(transcribing)).items.map((item) => new TextDecoder().decode(item.label));
+  assert.equal(labels.includes("Cancel"), true);
+});
+
+test("duration-limit disposition survives delivery until acknowledgement", () => {
+  let model: Model = {
+    ...readyModel(),
+    workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "duration_limit" },
+    durationLimitReached: true,
+    sessionId: 61,
+    generation: 61,
+  };
+  model = modelOf(update(model, {
+    kind: "transcript_ready",
+    body: bytes('{"ok":true,"sessionId":61,"generation":61,"silence":false}'),
+  }));
+  assert.equal(model.workflow.kind === "delivering" && model.workflow.disposition, "duration_limit");
+  model = dispatch(model, {
+    kind: "delivery_finished",
+    body: bytes('{"ok":true,"sessionId":61,"generation":61,"kind":"clipboard"}'),
+  });
+  assert.equal(new TextDecoder().decode(model.immediateResultMessage), "10-minute limit reached. Final text was copied to the clipboard.");
+  assert.equal(model.durationLimitReached, true);
+  model = dispatch(model, { kind: "dismiss_result" });
+  assert.equal(model.durationLimitReached, false);
+});
+
+test("pending partial status hydrates paused bytes and Resume command", () => {
+  const ready = readyModel();
+  const paused = dispatch(ready, {
+    kind: "model_status_loaded",
+    body: bytes('{"ok":true,"activeModelKey":0,"activeModelReady":false,"downloadActive":false,"pendingResumeAvailable":true,"pendingDownloadedBytes":321000000,"pendingTotalBytes":713975456,"models":[]}'),
+  });
+  assert.equal(paused.modelDownloadState, "paused");
+  assert.equal(paused.modelDownloadedBytes, 321000000);
+  assert.equal(paused.modelTotalBytes, 713975456);
+  assert.equal(new TextDecoder().decode(paused.modelDownloadedBytesLabel), "321,000,000");
+  assert.equal(new TextDecoder().decode(paused.modelTotalBytesLabel), "713,975,456");
+  const resume = update(paused, { kind: "retry_model_download" });
+  const command = commandOf(resume) as unknown as { op: string; name: string };
+  assert.equal(command.name, "friday.model.resume");
+});
+
+test("HF identifier flow resolves immutable metadata before download confirmation", () => {
+  let model = readyModel();
+  model = dispatch(model, { kind: "hf_draft_edit", edit: { kind: "insert_text", text: bytes("community/parakeet-tdt-gguf") } });
+  model = dispatch(model, { kind: "toggle_hf_source_confirmation" });
+  const resolve = update(model, { kind: "add_hugging_face_model" });
+  const resolveCommand = commandOf(resolve) as unknown as { name: string };
+  assert.equal(resolveCommand.name, "friday.model.resolve_hf");
+  model = dispatch(modelOf(resolve), {
+    kind: "hf_model_resolved",
+    body: bytes('{"ok":true,"identifier":"community/parakeet-tdt-gguf","revision":"0123456789abcdef0123456789abcdef01234567","artifact":"parakeet-q8.gguf","sizeText":"702 MB","license":"cc-by-4.0","provider":"Hugging Face","attribution":"community"}'),
+  });
+  assert.equal(model.hfResolved, true);
+  assert.equal(commandOf(update(model, { kind: "download_resolved_hf" })), null);
+  model = dispatch(model, { kind: "toggle_hf_download_confirmation" });
+  const download = update(model, { kind: "download_resolved_hf" });
+  const downloadCommand = commandOf(download) as unknown as { name: string; payload: Uint8Array };
+  assert.equal(downloadCommand.name, "friday.model.download_hf");
+  assert.equal(new TextDecoder().decode(downloadCommand.payload), "community/parakeet-tdt-gguf");
 });

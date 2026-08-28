@@ -39,6 +39,12 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 @property(nonatomic) BOOL cancelled;
 @property(nonatomic) BOOL responseValid;
 @property(nonatomic, copy, nullable) void (^completion)(NSDictionary *);
+@property(nonatomic, strong, nullable) NSMutableDictionary *downloadManifest;
+@property(nonatomic, strong)
+    NSMutableDictionary<NSString *, NSMutableDictionary *> *pendingHFManifests;
+@property(nonatomic, strong, nullable) NSURLSessionDataTask *metadataTask;
+@property(nonatomic) uint64_t metadataOperation;
+@property(nonatomic, copy, nullable) void (^metadataCompletion)(NSDictionary *);
 @end
 
 @implementation FridayModelRepository
@@ -52,6 +58,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     _recognizer = recognizer;
     _progress = [progress copy];
     _models = [NSMutableArray array];
+    _pendingHFManifests = [NSMutableDictionary dictionary];
     _queue =
         dispatch_queue_create("com.phall.friday.models", DISPATCH_QUEUE_SERIAL);
     dispatch_queue_set_specific(_queue, FridayRepositoryQueueKey,
@@ -89,6 +96,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 
 - (void)dealloc {
   [self.task cancel];
+  [self.metadataTask cancel];
   [self.session invalidateAndCancel];
 }
 
@@ -141,7 +149,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     self.progress(operation, state, downloaded, total);
   });
 }
-- (BOOL)validateDefaultDirectory:(NSString *)directory {
+- (BOOL)validateManagedDirectory:(NSString *)directory
+                        expected:(nullable NSDictionary *)expected {
   NSString *modelPath =
       [directory stringByAppendingPathComponent:@"model.gguf"];
   NSString *manifestPath =
@@ -156,13 +165,31 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       [[[NSFileManager.defaultManager attributesOfItemAtPath:modelPath
                                                        error:nil]
           objectForKey:NSFileSize] unsignedLongLongValue];
-  return [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
-         [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
-         [manifest[@"format"] isEqual:@"gguf"] &&
-         [manifest[@"revision"] isEqual:FridayRevision] &&
-         [manifest[@"sha256"] isEqual:FridaySHA] &&
-         [manifest[@"expectedBytes"] unsignedLongLongValue] == FridayBytes &&
-         size == FridayBytes && [[self sha256:modelPath] isEqual:FridaySHA];
+  BOOL shape = [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
+               [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
+               [manifest[@"format"] isEqual:@"gguf"] &&
+               [manifest[@"managed"] boolValue] &&
+               [self isLowerHex:manifest[@"revision"] length:40] &&
+               [self isLowerHex:manifest[@"sha256"] length:64] &&
+               [manifest[@"expectedBytes"] unsignedLongLongValue] > 0 &&
+               size == [manifest[@"expectedBytes"] unsignedLongLongValue] &&
+               [[self sha256:modelPath] isEqual:manifest[@"sha256"]];
+  if (!shape)
+    return NO;
+  if (!expected)
+    return YES;
+  return [manifest[@"id"] isEqual:expected[@"id"]] &&
+         [manifest[@"revision"] isEqual:expected[@"revision"]] &&
+         [manifest[@"sha256"] isEqual:expected[@"sha256"]] &&
+         [manifest[@"expectedBytes"] unsignedLongLongValue] ==
+             [expected[@"expectedBytes"] unsignedLongLongValue] &&
+         [manifest[@"modelKey"] unsignedLongLongValue] ==
+             [expected[@"modelKey"] unsignedLongLongValue];
+}
+
+- (BOOL)validateDefaultDirectory:(NSString *)directory {
+  return [self validateManagedDirectory:directory
+                               expected:[self defaultManifest:0]];
 }
 
 - (void)loadIndex {
@@ -194,9 +221,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   NSString *activePath = active[@"path"];
   BOOL activeValid = NO;
   if ([active[@"managed"] boolValue]) {
-    activeValid =
-        [self validateDefaultDirectory:[activePath
-                                           stringByDeletingLastPathComponent]];
+    activeValid = [self
+        validateManagedDirectory:[activePath stringByDeletingLastPathComponent]
+                        expected:active];
   } else if (activePath.length) {
     activeValid = [self validatedLocalManifestForModel:activePath
                                                  error:nil] != nil;
@@ -285,6 +312,71 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   };
 }
 
+- (BOOL)isLowerHex:(NSString *)value length:(NSUInteger)length {
+  if (value.length != length)
+    return NO;
+  NSCharacterSet *invalid = [[NSCharacterSet
+      characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
+  return [value rangeOfCharacterFromSet:invalid].location == NSNotFound;
+}
+
+- (NSDictionary *)pendingResumeStatus {
+  NSArray<NSString *> *directories =
+      [NSFileManager.defaultManager contentsOfDirectoryAtPath:self.downloadsRoot
+                                                        error:nil]
+          ?: @[];
+  NSUInteger inspected = 0;
+  for (NSString *directoryName in directories) {
+    if (inspected >= 32)
+      break;
+    inspected += 1;
+    NSString *directory =
+        [self.downloadsRoot stringByAppendingPathComponent:directoryName];
+    NSString *resumePath =
+        [directory stringByAppendingPathComponent:@"resume.json"];
+    NSString *partialPath =
+        [directory stringByAppendingPathComponent:@"download.partial"];
+    NSData *data = [NSData dataWithContentsOfFile:resumePath];
+    NSDictionary *resume = data ? [NSJSONSerialization JSONObjectWithData:data
+                                                                  options:0
+                                                                    error:nil]
+                                : nil;
+    uint64_t partialBytes =
+        [[[NSFileManager.defaultManager attributesOfItemAtPath:partialPath
+                                                         error:nil]
+            objectForKey:NSFileSize] unsignedLongLongValue];
+    uint64_t expected = [resume[@"expectedBytes"] unsignedLongLongValue];
+    NSString *url = resume[@"url"];
+    NSString *revision = resume[@"revision"];
+    NSString *artifact = resume[@"artifact"];
+    NSString *sha = resume[@"sha256"];
+    BOOL safeArtifact = artifact.length > 0 && artifact.length <= 256 &&
+                        [artifact isEqual:artifact.lastPathComponent];
+    BOOL valid =
+        [resume isKindOfClass:NSDictionary.class] &&
+        [url hasPrefix:@"https://huggingface.co/"] &&
+        [self isLowerHex:revision length:40] &&
+        [self isLowerHex:sha length:64] && safeArtifact && expected > 0 &&
+        expected <= 8ULL * 1024 * 1024 * 1024 && partialBytes > 0 &&
+        partialBytes < expected &&
+        [resume[@"partialBytes"] unsignedLongLongValue] == partialBytes;
+    if (valid)
+      return @{
+        @"available" : @YES,
+        @"downloadedBytes" : @(partialBytes),
+        @"totalBytes" : @(expected),
+        @"modelName" : resume[@"displayName"] ?: @"Parakeet model",
+        @"repository" : resume[@"repository"] ?: @""
+      };
+  }
+  return @{
+    @"available" : @NO,
+    @"downloadedBytes" : @0,
+    @"totalBytes" : @0,
+    @"modelName" : @""
+  };
+}
+
 - (NSDictionary *)status {
   __block NSDictionary *status;
   dispatch_block_t read = ^{
@@ -309,6 +401,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     NSString *managedSize = [NSByteCountFormatter
         stringFromByteCount:(long long)usage
                  countStyle:NSByteCountFormatterCountStyleFile];
+    NSDictionary *pending = [self pendingResumeStatus];
     status = @{
       @"ok" : @YES,
       @"activeModelKey" : @(self.activeModelKey),
@@ -330,7 +423,11 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       @"managedBytes" : @(usage),
       @"downloadActive" : @(self.task != nil),
       @"downloadedBytes" : @(self.downloaded),
-      @"totalBytes" : @(self.total)
+      @"totalBytes" : @(self.total),
+      @"pendingResumeAvailable" : pending[@"available"],
+      @"pendingDownloadedBytes" : pending[@"downloadedBytes"],
+      @"pendingTotalBytes" : pending[@"totalBytes"],
+      @"pendingModelName" : pending[@"modelName"]
     };
   };
   if (dispatch_get_specific(FridayRepositoryQueueKey))
@@ -342,6 +439,9 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 
 - (NSDictionary *)defaultManifest:(uint64_t)installedBytes {
   return @{
+    @"downloadURL" : FridayURL,
+    @"provider" : @"Hugging Face",
+    @"attribution" : @"NVIDIA Parakeet TDT 0.6B v3",
     @"schemaVersion" : @1,
     @"modelKey" : @(FridayDefaultKey),
     @"id" : FridayModelID,
@@ -378,12 +478,16 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                                                        error:nil]
           objectForKey:NSFileSize] unsignedLongLongValue];
   BOOL valid =
-      [resume[@"url"] isEqual:FridayURL] &&
-      [resume[@"revision"] isEqual:FridayRevision] &&
-      [resume[@"artifact"] isEqual:FridayArtifact] &&
-      [resume[@"expectedBytes"] unsignedLongLongValue] == FridayBytes &&
+      [resume[@"url"] isEqual:self.downloadManifest[@"downloadURL"]] &&
+      [resume[@"revision"] isEqual:self.downloadManifest[@"revision"]] &&
+      [resume[@"artifact"] isEqual:self.downloadManifest[@"artifact"]] &&
+      [resume[@"sha256"] isEqual:self.downloadManifest[@"sha256"]] &&
+      [resume[@"repository"] isEqual:self.downloadManifest[@"repository"]] &&
+      [resume[@"expectedBytes"] unsignedLongLongValue] ==
+          [self.downloadManifest[@"expectedBytes"] unsignedLongLongValue] &&
       [resume[@"partialBytes"] unsignedLongLongValue] == partialBytes &&
-      partialBytes <= FridayBytes;
+      partialBytes <=
+          [self.downloadManifest[@"expectedBytes"] unsignedLongLongValue];
   self.resume = valid ? [resume mutableCopy] : [NSMutableDictionary dictionary];
   if (!valid) {
     [NSFileManager.defaultManager removeItemAtPath:partialPath error:nil];
@@ -396,10 +500,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
 
 - (void)persistResumeDurably {
   self.resume[@"schemaVersion"] = @1;
-  self.resume[@"url"] = FridayURL;
-  self.resume[@"revision"] = FridayRevision;
-  self.resume[@"artifact"] = FridayArtifact;
-  self.resume[@"expectedBytes"] = @(FridayBytes);
+  self.resume[@"url"] = self.downloadManifest[@"downloadURL"];
+  self.resume[@"revision"] = self.downloadManifest[@"revision"];
+  self.resume[@"artifact"] = self.downloadManifest[@"artifact"];
+  self.resume[@"sha256"] = self.downloadManifest[@"sha256"];
+  self.resume[@"repository"] = self.downloadManifest[@"repository"];
+  self.resume[@"displayName"] = self.downloadManifest[@"displayName"];
+  self.resume[@"expectedBytes"] = self.downloadManifest[@"expectedBytes"];
+  self.resume[@"manifest"] = self.downloadManifest;
   self.resume[@"partialBytes"] = @(self.downloaded);
   NSData *data =
       [NSJSONSerialization dataWithJSONObject:self.resume
@@ -419,20 +527,20 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   self.lastResumePersisted = self.downloaded;
 }
 
-- (void)downloadDefaultOperation:(uint64_t)operationID
-                      completion:(void (^)(NSDictionary *))completion {
+- (void)beginDownloadManifest:(NSDictionary *)manifest
+                    operation:(uint64_t)operationID
+                   completion:(void (^)(NSDictionary *))completion {
   [self onQueue:^{
-    NSMutableDictionary *installed = [self modelForKey:FridayDefaultKey];
+    uint64_t modelKey = [manifest[@"modelKey"] unsignedLongLongValue];
+    NSMutableDictionary *installed = [self modelForKey:modelKey];
     if (installed &&
-        [self
-            validateDefaultDirectory:[installed[@"path"]
-                                         stringByDeletingLastPathComponent]]) {
-      [self selectKey:FridayDefaultKey
-           generation:operationID
-           completion:completion];
+        [self validateManagedDirectory:[installed[@"path"]
+                                           stringByDeletingLastPathComponent]
+                              expected:installed]) {
+      [self selectKey:modelKey generation:operationID completion:completion];
       return;
     }
-    if (self.task || self.completion) {
+    if (self.task || self.completion || self.metadataTask) {
       dispatch_async(dispatch_get_main_queue(), ^{
         completion(@{
           @"ok" : @NO,
@@ -442,12 +550,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
       });
       return;
     }
+    self.downloadManifest = [manifest mutableCopy];
     self.operation = operationID;
     self.completion = completion;
     self.cancelled = NO;
     self.responseValid = NO;
-    NSString *operationRoot =
-        [self.downloadsRoot stringByAppendingPathComponent:@"default-v1"];
+    NSString *operationRoot = [self.downloadsRoot
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"model-%llu",
+                                                                  modelKey]];
     [NSFileManager.defaultManager createDirectoryAtPath:operationRoot
                             withIntermediateDirectories:YES
                                              attributes:nil
@@ -461,12 +571,18 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     if (![NSFileManager.defaultManager fileExistsAtPath:self.partialURL.path])
       [NSData.data writeToURL:self.partialURL atomically:YES];
     [self loadResumeForPartial:self.partialURL.path];
-    self.total = FridayBytes;
+    self.total = [manifest[@"expectedBytes"] unsignedLongLongValue];
     self.handle = [NSFileHandle fileHandleForWritingToURL:self.partialURL
                                                     error:nil];
     [self.handle seekToEndOfFile];
+    NSURL *downloadURL = [NSURL URLWithString:manifest[@"downloadURL"]];
+    if (!downloadURL) {
+      [self fail:@"The resolved model download address is invalid."
+            code:@"invalid_download_url"];
+      return;
+    }
     NSMutableURLRequest *request =
-        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:FridayURL]];
+        [NSMutableURLRequest requestWithURL:downloadURL];
     request.timeoutInterval = 120;
     if (self.downloaded > 0) {
       [request setValue:[NSString
@@ -485,8 +601,77 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   }];
 }
 
+- (void)downloadDefaultOperation:(uint64_t)operationID
+                      completion:(void (^)(NSDictionary *))completion {
+  [self beginDownloadManifest:[self defaultManifest:0]
+                    operation:operationID
+                   completion:completion];
+}
+
+- (void)resumePendingOperation:(uint64_t)operationID
+                    completion:(void (^)(NSDictionary *))completion {
+  [self onQueue:^{
+    NSArray<NSString *> *directories =
+        [NSFileManager.defaultManager
+            contentsOfDirectoryAtPath:self.downloadsRoot
+                                error:nil]
+            ?: @[];
+    for (NSString *directoryName in directories) {
+      NSString *resumePath =
+          [[self.downloadsRoot stringByAppendingPathComponent:directoryName]
+              stringByAppendingPathComponent:@"resume.json"];
+      NSData *data = [NSData dataWithContentsOfFile:resumePath];
+      NSDictionary *resume = data ? [NSJSONSerialization JSONObjectWithData:data
+                                                                    options:0
+                                                                      error:nil]
+                                  : nil;
+      NSDictionary *manifest =
+          [resume[@"manifest"] isKindOfClass:NSDictionary.class]
+              ? resume[@"manifest"]
+              : nil;
+      if (!manifest)
+        continue;
+      NSString *partialPath = [resumePath.stringByDeletingLastPathComponent
+          stringByAppendingPathComponent:@"download.partial"];
+      uint64_t partialBytes =
+          [[[NSFileManager.defaultManager attributesOfItemAtPath:partialPath
+                                                           error:nil]
+              objectForKey:NSFileSize] unsignedLongLongValue];
+      uint64_t expected = [manifest[@"expectedBytes"] unsignedLongLongValue];
+      BOOL valid =
+          [manifest[@"engine"] isEqual:@"nemo_speech_cpp"] &&
+          [manifest[@"family"] isEqual:@"parakeet_tdt"] &&
+          [manifest[@"format"] isEqual:@"gguf"] &&
+          [manifest[@"managed"] boolValue] &&
+          [self isLowerHex:manifest[@"revision"] length:40] &&
+          [self isLowerHex:manifest[@"sha256"] length:64] &&
+          [resume[@"partialBytes"] unsignedLongLongValue] == partialBytes &&
+          partialBytes > 0 && partialBytes < expected &&
+          [resume[@"url"] isEqual:manifest[@"downloadURL"]];
+      if (valid) {
+        [self beginDownloadManifest:manifest
+                          operation:operationID
+                         completion:completion];
+        return;
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(@{
+        @"ok" : @NO,
+        @"code" : @"resume_unavailable",
+        @"message" : @"No valid partial model download is available to resume."
+      });
+    });
+  }];
+}
+
 - (void)cancelOperation:(uint64_t)operationID {
   [self onQueue:^{
+    if (self.metadataTask && operationID == self.metadataOperation) {
+      [self.metadataTask cancel];
+      self.metadataTask = nil;
+      self.metadataCompletion = nil;
+    }
     if (!self.task || operationID != self.operation)
       return;
     self.cancelled = YES;
@@ -500,7 +685,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   NSArray<NSString *> *parts =
       [[value substringFromIndex:6] componentsSeparatedByString:@"/"];
   if (parts.count != 2 ||
-      [(NSString *)parts[1] longLongValue] != (long long)FridayBytes)
+      [(NSString *)parts[1] longLongValue] != (long long)self.total)
     return NO;
   NSArray<NSString *> *range =
       [(NSString *)parts[0] componentsSeparatedByString:@"-"];
@@ -639,15 +824,17 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                      return;
                    }
                    NSMutableDictionary *record = [manifest mutableCopy];
+                   uint64_t modelKey =
+                       [manifest[@"modelKey"] unsignedLongLongValue];
                    record[@"path"] = finalModel;
-                   NSMutableDictionary *old =
-                       [self modelForKey:FridayDefaultKey];
+                   record[@"installedBytes"] = @(size);
+                   NSMutableDictionary *old = [self modelForKey:modelKey];
                    uint64_t previousKey = self.activeModelKey;
                    NSString *previousPath = self.activeModelPath;
                    if (old)
                      [self.models removeObject:old];
                    [self.models addObject:record];
-                   self.activeModelKey = FridayDefaultKey;
+                   self.activeModelKey = modelKey;
                    self.activeModelPath = finalModel;
                    self.activeRuntimeReady = YES;
                    if (![self saveIndexDurably]) {
@@ -673,9 +860,11 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                                    total:size];
                    [self complete:@{
                      @"ok" : @YES,
-                     @"modelKey" : @(FridayDefaultKey),
-                     @"message" :
-                         @"Parakeet TDT v3 is verified, warm, and active.",
+                     @"modelKey" : @(modelKey),
+                     @"message" : [NSString
+                         stringWithFormat:@"%@ is verified, warm, and active.",
+                                          manifest[@"displayName"]
+                                              ?: @"The model"],
                      @"probe" : finalProbe
                    }];
                  }];
@@ -688,7 +877,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                        error:nil] objectForKey:NSFileSize]
       unsignedLongLongValue];
   NSString *digest = [self sha256:self.partialURL.path];
-  if (size != FridayBytes || ![digest isEqual:FridaySHA]) {
+  if (size != [self.downloadManifest[@"expectedBytes"] unsignedLongLongValue] ||
+      ![digest isEqual:self.downloadManifest[@"sha256"]]) {
     [self fail:@"The model failed exact size/SHA-256 verification."
           code:@"integrity_failed"];
     return;
@@ -711,7 +901,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
           code:@"install_failed"];
     return;
   }
-  NSDictionary *manifest = [self defaultManifest:size];
+  NSMutableDictionary *manifest = [self.downloadManifest mutableCopy];
+  manifest[@"installedBytes"] = @(size);
   NSString *manifestPath =
       [staging stringByAppendingPathComponent:@"manifest.json"];
   NSData *manifestData =
@@ -741,7 +932,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                      return;
                    }
                    NSString *idRoot = [self.modelsRoot
-                       stringByAppendingPathComponent:FridayModelID];
+                       stringByAppendingPathComponent:manifest[@"id"]];
                    if (![NSFileManager.defaultManager
                                  createDirectoryAtPath:idRoot
                            withIntermediateDirectories:YES
@@ -751,12 +942,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                            code:@"publication_root_failed"];
                      return;
                    }
+                   NSString *revision = manifest[@"revision"];
                    NSString *finalDirectory =
-                       [idRoot stringByAppendingPathComponent:FridayRevision];
+                       [idRoot stringByAppendingPathComponent:revision];
                    BOOL reuseExisting =
                        [NSFileManager.defaultManager
                            fileExistsAtPath:finalDirectory] &&
-                       [self validateDefaultDirectory:finalDirectory];
+                       [self validateManagedDirectory:finalDirectory
+                                             expected:manifest];
                    if (reuseExisting) {
                      [NSFileManager.defaultManager removeItemAtPath:staging
                                                               error:nil];
@@ -766,8 +959,7 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                        finalDirectory = [idRoot
                            stringByAppendingPathComponent:
                                [NSString
-                                   stringWithFormat:@"%@-verified-%@",
-                                                    FridayRevision,
+                                   stringWithFormat:@"%@-verified-%@", revision,
                                                     NSUUID.UUID.UUIDString]];
                      }
                      if (rename(staging.fileSystemRepresentation,
@@ -785,7 +977,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                            code:@"publication_fsync_failed"];
                      return;
                    }
-                   if (![self validateDefaultDirectory:finalDirectory]) {
+                   if (![self validateManagedDirectory:finalDirectory
+                                              expected:manifest]) {
                      [self fail:@"The published final model failed "
                                 @"manifest/size/SHA validation."
                            code:@"published_model_invalid"];
@@ -931,22 +1124,313 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
   }];
 }
 
-- (void)addHuggingFaceID:(NSString *)identifier
-               operation:(uint64_t)operation
-              completion:(void (^)(NSDictionary *))completion {
+- (BOOL)isSafeHuggingFaceIdentifier:(NSString *)identifier {
+  if (identifier.length < 3 || identifier.length > 128)
+    return NO;
+  NSArray<NSString *> *parts = [identifier componentsSeparatedByString:@"/"];
+  if (parts.count != 2)
+    return NO;
+  NSCharacterSet *invalid = [[NSCharacterSet
+      characterSetWithCharactersInString:
+          @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"]
+      invertedSet];
+  for (NSString *part in parts)
+    if (part.length == 0 || part.length > 64 ||
+        [part rangeOfCharacterFromSet:invalid].location != NSNotFound ||
+        [part isEqual:@"."] || [part isEqual:@".."])
+      return NO;
+  return YES;
+}
+
+- (uint64_t)modelKeyForIdentifier:(NSString *)identifier {
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  NSData *data = [identifier dataUsingEncoding:NSUTF8StringEncoding];
+  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+  uint32_t prefix = 0;
+  memcpy(&prefix, digest, sizeof(prefix));
+  return 1000 + ((uint64_t)prefix % 1000000000ULL);
+}
+
+- (nullable NSMutableDictionary *)
+    manifestFromHuggingFaceMetadata:(NSDictionary *)metadata
+                         identifier:(NSString *)identifier
+                              error:(NSString **)error {
+  if ([metadata[@"private"] boolValue]) {
+    if (error)
+      *error = @"That Hugging Face repository is private.";
+    return nil;
+  }
+  id gated = metadata[@"gated"];
+  if ([gated boolValue] || ([gated isKindOfClass:NSString.class] &&
+                            ![(NSString *)gated isEqual:@"false"] &&
+                            [(NSString *)gated length] > 0)) {
+    if (error)
+      *error = @"That Hugging Face repository requires gated access.";
+    return nil;
+  }
+  NSString *revision = [metadata[@"sha"] lowercaseString];
+  if (![self isLowerHex:revision length:40]) {
+    if (error)
+      *error = @"Hugging Face did not return an immutable revision.";
+    return nil;
+  }
+  NSArray *tags =
+      [metadata[@"tags"] isKindOfClass:NSArray.class] ? metadata[@"tags"] : @[];
+  BOOL parakeet = [identifier.lowercaseString containsString:@"parakeet"];
+  BOOL asr =
+      [metadata[@"pipeline_tag"] isEqual:@"automatic-speech-recognition"];
+  NSString *license = nil;
+  for (id value in tags) {
+    if (![value isKindOfClass:NSString.class])
+      continue;
+    NSString *tag = [(NSString *)value lowercaseString];
+    if ([tag containsString:@"parakeet"])
+      parakeet = YES;
+    if ([tag isEqual:@"automatic-speech-recognition"])
+      asr = YES;
+    if ([tag hasPrefix:@"license:"])
+      license = [(NSString *)value substringFromIndex:8];
+  }
+  NSDictionary *cardData =
+      [metadata[@"cardData"] isKindOfClass:NSDictionary.class]
+          ? metadata[@"cardData"]
+          : @{};
+  if ([cardData[@"license"] isKindOfClass:NSString.class])
+    license = cardData[@"license"];
+  if (!parakeet || !asr) {
+    if (error)
+      *error = @"The repository is not identified as compatible Parakeet "
+               @"speech recognition.";
+    return nil;
+  }
+  if (license.length == 0 || license.length > 64) {
+    if (error)
+      *error = @"The repository does not provide bounded license metadata.";
+    return nil;
+  }
+  NSArray *siblings = [metadata[@"siblings"] isKindOfClass:NSArray.class]
+                          ? metadata[@"siblings"]
+                          : @[];
+  NSMutableArray<NSDictionary *> *gguf = [NSMutableArray array];
+  for (id value in siblings) {
+    if (![value isKindOfClass:NSDictionary.class])
+      continue;
+    NSString *name = value[@"rfilename"];
+    if ([name.pathExtension.lowercaseString isEqual:@"gguf"] &&
+        [name isEqual:name.lastPathComponent] && name.length <= 256)
+      [gguf addObject:value];
+  }
+  if (gguf.count != 1) {
+    if (error)
+      *error = gguf.count == 0
+                   ? @"The repository has no compatible GGUF artifact."
+                   : @"The repository has multiple GGUF artifacts; choose an "
+                     @"unambiguous source.";
+    return nil;
+  }
+  NSDictionary *sibling = gguf.firstObject;
+  NSDictionary *lfs = [sibling[@"lfs"] isKindOfClass:NSDictionary.class]
+                          ? sibling[@"lfs"]
+                          : @{};
+  NSString *sha = [lfs[@"sha256"] lowercaseString] ?: @"";
+  if (!sha.length && [lfs[@"oid"] isKindOfClass:NSString.class]) {
+    sha = [lfs[@"oid"] lowercaseString];
+    if ([sha hasPrefix:@"sha256:"])
+      sha = [sha substringFromIndex:7];
+  }
+  uint64_t expected = [lfs[@"size"] unsignedLongLongValue];
+  if (![self isLowerHex:sha length:64] || expected < 1024 * 1024 ||
+      expected > 8ULL * 1024 * 1024 * 1024) {
+    if (error)
+      *error = @"The GGUF artifact is missing a valid LFS SHA-256 or size.";
+    return nil;
+  }
+  NSString *artifact = sibling[@"rfilename"];
+  NSString *encodedID =
+      [identifier stringByAddingPercentEncodingWithAllowedCharacters:
+                      NSCharacterSet.URLPathAllowedCharacterSet];
+  NSString *encodedArtifact =
+      [artifact stringByAddingPercentEncodingWithAllowedCharacters:
+                    NSCharacterSet.URLPathAllowedCharacterSet];
+  NSString *downloadURL =
+      [NSString stringWithFormat:@"https://huggingface.co/%@/resolve/%@/%@",
+                                 encodedID, revision, encodedArtifact];
+  id languages = cardData[@"language"];
+  NSArray *languageList = [languages isKindOfClass:NSArray.class] ? languages
+                          : [languages isKindOfClass:NSString.class]
+                              ? @[ languages ]
+                              : @[];
+  return [@{
+    @"schemaVersion" : @1,
+    @"modelKey" : @([self modelKeyForIdentifier:identifier]),
+    @"id" : identifier,
+    @"displayName" : metadata[@"modelId"] ?: identifier.lastPathComponent,
+    @"repository" : identifier,
+    @"revision" : revision,
+    @"artifact" : artifact,
+    @"sha256" : sha,
+    @"expectedBytes" : @(expected),
+    @"installedBytes" : @0,
+    @"downloadURL" : downloadURL,
+    @"engine" : @"nemo_speech_cpp",
+    @"family" : @"parakeet_tdt",
+    @"format" : @"gguf",
+    @"languages" : languageList,
+    @"license" : license,
+    @"provider" : @"Hugging Face",
+    @"attribution" : metadata[@"author"]
+        ?: [[identifier componentsSeparatedByString:@"/"] firstObject],
+    @"source" : @"hugging_face",
+    @"managed" : @YES,
+    @"compatibility" : @"compatible"
+  } mutableCopy];
+}
+
+- (void)resolveHuggingFaceID:(NSString *)identifier
+                   operation:(uint64_t)operation
+                  completion:(void (^)(NSDictionary *))completion {
   NSString *normalized = [identifier
       stringByTrimmingCharactersInSet:NSCharacterSet
                                           .whitespaceAndNewlineCharacterSet];
-  if (![normalized isEqual:FridayModelID]) {
+  if (![self isSafeHuggingFaceIdentifier:normalized]) {
     completion(@{
       @"ok" : @NO,
-      @"code" : @"unsupported_repository",
-      @"message" : @"The repository is not an immutable verified Parakeet TDT "
-                   @"GGUF source."
+      @"code" : @"invalid_identifier",
+      @"message" : @"Use a public Hugging Face identifier in owner/repository "
+                   @"form."
     });
     return;
   }
-  [self downloadDefaultOperation:operation completion:completion];
+  [self onQueue:^{
+    if (self.task || self.metadataTask || self.completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(@{
+          @"ok" : @NO,
+          @"code" : @"model_operation_active",
+          @"message" : @"Another model operation is active."
+        });
+      });
+      return;
+    }
+    NSString *encoded =
+        [normalized stringByAddingPercentEncodingWithAllowedCharacters:
+                        NSCharacterSet.URLPathAllowedCharacterSet];
+    NSString *urlString = [NSString
+        stringWithFormat:
+            @"https://huggingface.co/api/models/%@?blobs=true&"
+             "expand%%5B%%5D=siblings&expand%%5B%%5D=cardData&"
+             "expand%%5B%%5D=tags&expand%%5B%%5D=sha&"
+             "expand%%5B%%5D=gated&expand%%5B%%5D=private&"
+             "expand%%5B%%5D=pipeline_tag&expand%%5B%%5D=author",
+            encoded];
+    NSMutableURLRequest *request =
+        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    request.timeoutInterval = 30;
+    self.metadataOperation = operation;
+    self.metadataCompletion = [completion copy];
+    __weak FridayModelRepository *weakSelf = self;
+    self.metadataTask = [NSURLSession.sharedSession
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *data, NSURLResponse *response,
+                              NSError *networkError) {
+            FridayModelRepository *strongSelf = weakSelf;
+            if (!strongSelf)
+              return;
+            [strongSelf onQueue:^{
+              void (^done)(NSDictionary *) = strongSelf.metadataCompletion;
+              strongSelf.metadataCompletion = nil;
+              strongSelf.metadataTask = nil;
+              if (!done)
+                return;
+              NSInteger status = [(NSHTTPURLResponse *)response statusCode];
+              if (status == 401 || status == 403) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  done(@{
+                    @"ok" : @NO,
+                    @"code" : @"gated_or_private",
+                    @"message" : @"That repository is private or requires "
+                                 @"gated access."
+                  });
+                });
+                return;
+              }
+              if (networkError || status != 200 || data.length == 0 ||
+                  data.length > 2 * 1024 * 1024) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  done(@{
+                    @"ok" : @NO,
+                    @"code" : @"metadata_unavailable",
+                    @"message" : networkError.localizedDescription
+                        ?: @"Hugging Face metadata is unavailable."
+                  });
+                });
+                return;
+              }
+              NSDictionary *metadata =
+                  [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+              NSString *validationError = nil;
+              NSMutableDictionary *manifest =
+                  [strongSelf manifestFromHuggingFaceMetadata:metadata
+                                                   identifier:normalized
+                                                        error:&validationError];
+              if (!manifest) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  done(@{
+                    @"ok" : @NO,
+                    @"code" : @"incompatible_repository",
+                    @"message" : validationError
+                        ?: @"The repository is incompatible."
+                  });
+                });
+                return;
+              }
+              strongSelf.pendingHFManifests[normalized] = manifest;
+              NSString *sizeText = [NSByteCountFormatter
+                  stringFromByteCount:[manifest[@"expectedBytes"] longLongValue]
+                           countStyle:NSByteCountFormatterCountStyleFile];
+              dispatch_async(dispatch_get_main_queue(), ^{
+                done(@{
+                  @"ok" : @YES,
+                  @"identifier" : normalized,
+                  @"revision" : manifest[@"revision"],
+                  @"artifact" : manifest[@"artifact"],
+                  @"expectedBytes" : manifest[@"expectedBytes"],
+                  @"sizeText" : sizeText,
+                  @"license" : manifest[@"license"],
+                  @"provider" : manifest[@"provider"],
+                  @"attribution" : manifest[@"attribution"]
+                });
+              });
+            }];
+          }];
+    [self.metadataTask resume];
+  }];
+}
+
+- (void)downloadResolvedHuggingFaceID:(NSString *)identifier
+                            operation:(uint64_t)operation
+                           completion:(void (^)(NSDictionary *))completion {
+  NSString *normalized = [identifier
+      stringByTrimmingCharactersInSet:NSCharacterSet
+                                          .whitespaceAndNewlineCharacterSet];
+  [self onQueue:^{
+    NSDictionary *manifest = self.pendingHFManifests[normalized];
+    if (!manifest) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(@{
+          @"ok" : @NO,
+          @"code" : @"resolution_required",
+          @"message" : @"Resolve and confirm this Hugging Face source first."
+        });
+      });
+      return;
+    }
+    [self beginDownloadManifest:manifest
+                      operation:operation
+                     completion:completion];
+  }];
 }
 
 - (void)selectKey:(uint64_t)key
@@ -958,7 +1442,8 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     BOOL valid = NO;
     if ([model[@"managed"] boolValue])
       valid = [self
-          validateDefaultDirectory:[path stringByDeletingLastPathComponent]];
+          validateManagedDirectory:[path stringByDeletingLastPathComponent]
+                          expected:model];
     else
       valid = [self validatedLocalManifestForModel:path error:nil] != nil;
     if (!model || !valid) {
@@ -1227,10 +1712,106 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
                          ![emptyCleanup[@"removed"] boolValue] &&
                          [removedCleanup[@"ok"] boolValue] &&
                          [removedCleanup[@"removed"] boolValue];
+  NSDictionary *compatibleMetadata = @{
+    @"modelId" : @"community/parakeet-tdt-gguf",
+    @"author" : @"community",
+    @"private" : @NO,
+    @"gated" : @NO,
+    @"sha" : FridayRevision,
+    @"pipeline_tag" : @"automatic-speech-recognition",
+    @"tags" : @[ @"gguf", @"parakeet", @"license:cc-by-4.0" ],
+    @"cardData" : @{@"license" : @"cc-by-4.0", @"language" : @[ @"en" ]},
+    @"siblings" : @[ @{
+      @"rfilename" : @"parakeet-tdt-q8.gguf",
+      @"lfs" : @{@"sha256" : FridaySHA, @"size" : @(FridayBytes)}
+    } ]
+  };
+  NSString *metadataError = nil;
+  NSDictionary *compatibleHF =
+      [repository manifestFromHuggingFaceMetadata:compatibleMetadata
+                                       identifier:@"community/parakeet-tdt-gguf"
+                                            error:&metadataError];
+  NSMutableDictionary *privateMetadata = [compatibleMetadata mutableCopy];
+  privateMetadata[@"private"] = @YES;
+  BOOL privateRejected =
+      [repository manifestFromHuggingFaceMetadata:privateMetadata
+                                       identifier:@"community/private-parakeet"
+                                            error:&metadataError] == nil;
+  NSMutableDictionary *ambiguousMetadata = [compatibleMetadata mutableCopy];
+  ambiguousMetadata[@"siblings"] = @[
+    compatibleMetadata[@"siblings"][0], @{
+      @"rfilename" : @"parakeet-tdt-q4.gguf",
+      @"lfs" : @{@"sha256" : FridaySHA, @"size" : @(FridayBytes)}
+    }
+  ];
+  BOOL ambiguousRejected =
+      [repository manifestFromHuggingFaceMetadata:ambiguousMetadata
+                                       identifier:@"community/parakeet-many"
+                                            error:&metadataError] == nil;
+  NSMutableDictionary *noHashMetadata = [compatibleMetadata mutableCopy];
+  noHashMetadata[@"siblings"] = @[
+    @{@"rfilename" : @"parakeet-tdt.gguf", @"lfs" : @{@"size" : @(FridayBytes)}}
+  ];
+  BOOL noHashRejected =
+      [repository manifestFromHuggingFaceMetadata:noHashMetadata
+                                       identifier:@"community/parakeet-nohash"
+                                            error:&metadataError] == nil;
+  NSMutableDictionary *incompatibleMetadata = [compatibleMetadata mutableCopy];
+  incompatibleMetadata[@"pipeline_tag"] = @"text-classification";
+  incompatibleMetadata[@"tags"] = @[ @"gguf", @"license:cc-by-4.0" ];
+  BOOL incompatibleRejected =
+      [repository manifestFromHuggingFaceMetadata:incompatibleMetadata
+                                       identifier:@"community/speech-model"
+                                            error:&metadataError] == nil;
+  BOOL identifierValidation =
+      [repository isSafeHuggingFaceIdentifier:@"community/parakeet-tdt-gguf"] &&
+      ![repository isSafeHuggingFaceIdentifier:@"https://example.com/model"] &&
+      ![repository isSafeHuggingFaceIdentifier:@"../escape"];
+  NSString *pendingRoot =
+      [[repository downloadsRoot] stringByAppendingPathComponent:@"model-1"];
+  [NSFileManager.defaultManager createDirectoryAtPath:pendingRoot
+                          withIntermediateDirectories:YES
+                                           attributes:nil
+                                                error:nil];
+  NSString *pendingPartial =
+      [pendingRoot stringByAppendingPathComponent:@"download.partial"];
+  [data writeToFile:pendingPartial atomically:YES];
+  NSMutableDictionary *pendingManifest =
+      [[repository defaultManifest:0] mutableCopy];
+  NSDictionary *pendingResume = @{
+    @"schemaVersion" : @1,
+    @"url" : pendingManifest[@"downloadURL"],
+    @"revision" : pendingManifest[@"revision"],
+    @"artifact" : pendingManifest[@"artifact"],
+    @"sha256" : pendingManifest[@"sha256"],
+    @"repository" : pendingManifest[@"repository"],
+    @"displayName" : pendingManifest[@"displayName"],
+    @"expectedBytes" : pendingManifest[@"expectedBytes"],
+    @"partialBytes" : @(data.length),
+    @"manifest" : pendingManifest
+  };
+  NSData *pendingResumeData =
+      [NSJSONSerialization dataWithJSONObject:pendingResume
+                                      options:0
+                                        error:nil];
+  [pendingResumeData
+      writeToFile:[pendingRoot stringByAppendingPathComponent:@"resume.json"]
+          options:0
+            error:nil];
+  NSDictionary *pendingStatus = [repository status];
+  BOOL pendingResumeHydrated =
+      [pendingStatus[@"pendingResumeAvailable"] boolValue] &&
+      [pendingStatus[@"pendingDownloadedBytes"] unsignedLongLongValue] ==
+          data.length &&
+      [pendingStatus[@"pendingTotalBytes"] unsignedLongLongValue] ==
+          FridayBytes;
   [NSFileManager.defaultManager removeItemAtPath:root error:nil];
   return @{
     @"ok" : @(resume == 4096 && malformed && shaFailed && missingActiveReset &&
-              finalCollisionCorruptionRejected && cleanupTruthful),
+              finalCollisionCorruptionRejected && cleanupTruthful &&
+              compatibleHF != nil && privateRejected && ambiguousRejected &&
+              noHashRejected && incompatibleRejected && identifierValidation &&
+              pendingResumeHydrated),
     @"resumeOffset" : @(resume),
     @"malformedRejected" : @(malformed),
     @"shaFailed" : @(shaFailed),
@@ -1238,7 +1819,14 @@ static const void *FridayRepositoryQueueKey = &FridayRepositoryQueueKey;
     @"managedDeleteBounded" : @(unsafeDeleteRejected),
     @"missingActiveReset" : @(missingActiveReset),
     @"finalCollisionCorruptionRejected" : @(finalCollisionCorruptionRejected),
-    @"cleanupTruthful" : @(cleanupTruthful)
+    @"cleanupTruthful" : @(cleanupTruthful),
+    @"hfCompatibleFixture" : @(compatibleHF != nil),
+    @"hfPrivateRejected" : @(privateRejected),
+    @"hfAmbiguousRejected" : @(ambiguousRejected),
+    @"hfNoHashRejected" : @(noHashRejected),
+    @"hfIncompatibleRejected" : @(incompatibleRejected),
+    @"hfIdentifierValidation" : @(identifierValidation),
+    @"pendingResumeHydrated" : @(pendingResumeHydrated)
   };
 }
 @end

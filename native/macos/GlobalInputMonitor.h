@@ -14,6 +14,10 @@ typedef void (^FridayInputEventHandler)(NSString *event,
 - (void)stop;
 - (void)requestPermission;
 - (NSDictionary<NSString *, id> *)runSyntheticProbe;
+- (void)beginShortcutCapture:
+    (void (^)(NSDictionary<NSString *, id> *result))completion;
+- (void)cancelShortcutCapture;
++ (NSDictionary<NSString *, id> *)runShortcutContractProbes;
 @end
 
 NS_ASSUME_NONNULL_END

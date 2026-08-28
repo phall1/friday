@@ -137,11 +137,12 @@ pub const FridayHost = struct {
     }
 
     fn isAsync(name: []const u8) bool {
-        return std.mem.eql(u8, name, "friday.audio.start") or std.mem.eql(u8, name, "friday.audio.finish") or
-            std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.debug.fixture_delivery") or
+        return std.mem.eql(u8, name, "friday.hotkey.capture") or std.mem.eql(u8, name, "friday.audio.start") or
+            std.mem.eql(u8, name, "friday.audio.stop") or std.mem.eql(u8, name, "friday.audio.finish") or
+            std.mem.eql(u8, name, "friday.nemo.transcribe_capture") or std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.debug.fixture_delivery") or
             std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
-            std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.pick_local") or
-            std.mem.eql(u8, name, "friday.model.add_hf_ui") or std.mem.eql(u8, name, "friday.model.add_local") or
+            std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.resume") or std.mem.eql(u8, name, "friday.model.pick_local") or
+            std.mem.eql(u8, name, "friday.model.resolve_hf") or std.mem.eql(u8, name, "friday.model.download_hf") or std.mem.eql(u8, name, "friday.model.add_local") or
             std.mem.eql(u8, name, "friday.model.add_hf") or std.mem.eql(u8, name, "friday.model.select");
     }
 
@@ -315,7 +316,7 @@ test "native completion is consumed once and closing suppresses late delivery" {
 }
 
 test "native audio and model contracts reject unsafe states" {
-    var buffer: [4096]u8 = undefined;
+    var buffer: [16 * 1024]u8 = undefined;
     const length = friday_host_native_contract_probes(&buffer, buffer.len);
     try std.testing.expect(length > 0);
     const result = buffer[0..length];
@@ -328,12 +329,24 @@ test "native audio and model contracts reject unsafe states" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"missingActiveReset\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"finalCollisionCorruptionRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfCompatibleFixture\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfPrivateRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfAmbiguousRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfNoHashRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"hfIncompatibleRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"pendingResumeHydrated\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"cleanupTruthful\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"loginStatusKnown\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"audioInput\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"statesComplete\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"positionAutosave\":\"FridayOverlayPosition\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"dismissContract\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"currentPlatformSupported\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"architecture\":\"arm64\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"reservedRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"bareTypingRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"keyDownUp\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"functionDownUp\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"appearanceContract\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"reducedMotionContract\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"copyOnlyDelivery\"") != null);
