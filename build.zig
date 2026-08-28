@@ -43,7 +43,9 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
     module.addRPathSpecial("@executable_path/../../../third_party/nemo-speech/lib");
     const flags: []const []const u8 = if (b.sysroot) |sysroot| &.{
         "-fobjc-arc",
+        "-fblocks",
         "-fno-sanitize=builtin",
+        "-Wno-deprecated-declarations",
         "-ObjC++",
         "-std=c++20",
         "-stdlib=libc++",
@@ -53,19 +55,26 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
         b.fmt("-isystem{s}/usr/include", .{sysroot}),
     } else &.{
         "-fobjc-arc",
+        "-fblocks",
         "-fno-sanitize=builtin",
+        "-Wno-deprecated-declarations",
         "-ObjC++",
         "-std=c++20",
         "-stdlib=libc++",
         "-mmacosx-version-min=14.0",
     };
-    module.addCSourceFile(.{
-        .file = b.path("native/macos/FridayHost.mm"),
-        .flags = flags,
-    });
+    const sources = [_][]const u8{
+        "native/macos/FridayHost.mm",
+        "native/macos/GlobalInputMonitor.mm",
+        "native/macos/TextDelivery.mm",
+        "native/macos/OverlayWindow.mm",
+    };
+    for (sources) |source| module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
+    if (b.sysroot) |sysroot| module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
     module.link_libcpp = true;
     module.linkFramework("Accelerate", .{});
     module.linkFramework("AVFoundation", .{});
+    module.linkFramework("AVFAudio", .{});
     module.linkFramework("AppKit", .{});
     module.linkFramework("ApplicationServices", .{});
     module.linkFramework("Carbon", .{});

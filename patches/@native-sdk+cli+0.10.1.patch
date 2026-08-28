@@ -95,3 +95,27 @@ index 0ec7a26..ee01ec4 100644
      return b.resolveTargetQuery(query);
  }
  
+diff --git a/node_modules/@native-sdk/cli/src/root.zig b/node_modules/@native-sdk/cli/src/root.zig
+index 2da935a..c1fa0c0 100644
+--- a/node_modules/@native-sdk/cli/src/root.zig
++++ b/node_modules/@native-sdk/cli/src/root.zig
+@@ -151,6 +151,7 @@ pub const max_effect_pty_write_bytes = runtime.max_effect_pty_write_bytes;
+ pub const max_effect_pty_term_bytes = runtime.max_effect_pty_term_bytes;
+ pub const EffectHostResult = runtime.EffectHostResult;
+ pub const HostCallBinding = runtime.HostCallBinding;
++pub const HostChannelBinding = runtime.HostChannelBinding;
+ pub const HostCallCompletion = runtime.HostCallCompletion;
+ pub const ServiceHost = runtime.ServiceHost;
+ pub const serviceEnvironmentVariableAllowed = runtime.serviceEnvironmentVariableAllowed;
+diff --git a/node_modules/@native-sdk/cli/src/runtime/root.zig b/node_modules/@native-sdk/cli/src/runtime/root.zig
+index d6a79e9..2307a25 100644
+--- a/node_modules/@native-sdk/cli/src/runtime/root.zig
++++ b/node_modules/@native-sdk/cli/src/runtime/root.zig
+@@ -162,6 +162,7 @@ pub const max_effect_pty_write_bytes = runtime_effects.max_effect_pty_write_byte
+ pub const max_effect_pty_term_bytes = runtime_effects.max_effect_pty_term_bytes;
+ pub const EffectHostResult = runtime_effects.EffectHostResult;
+ pub const HostCallBinding = runtime_effects.HostCallBinding;
++pub const HostChannelBinding = runtime_effects.HostChannelBinding;
+ pub const HostCallCompletion = runtime_effects.HostCallCompletion;
+ pub const ServiceHost = @import("service_host.zig").ServiceHost;
+ pub const serviceEnvironmentVariableAllowed = @import("service_host.zig").environmentVariableAllowed;

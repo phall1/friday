@@ -4,5 +4,5 @@
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{ .native_sdk = .{ .path = "node_modules/@native-sdk/cli" } },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "native", "assets", "resources", "third_party", "app.json", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "native", "assets", "resources", "scripts", "tests", "third_party", "app.json", "README.md" },
 }

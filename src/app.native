@@ -1,11 +1,36 @@
-<column gap="16" padding="24" main="center" cross="stretch">
-  <text size="heading">FridayHost bridge</text>
-  <text wrap="true">Native SDK deterministic core → Zig host binding → Objective-C++ AppKit adapter.</text>
-  <card>
-    <column gap="8" padding="16">
-      <text>State: {bridgeState}</text>
-      <text wrap="true">{bridgeDetail}</text>
-    </column>
-  </card>
-  <button variant="primary" on-press="run_spike">Run bridge spike</button>
-</column>
+<scroll>
+  <column gap="12" padding="20">
+    <text size="heading">Friday native interaction spikes</text>
+    <text wrap="true">Production FridayHost paths: global input, exact-source delivery, and a nonactivating overlay.</text>
+    <card>
+      <column gap="6" padding="12">
+        <text>Bridge: {bridgeState}</text>
+        <text wrap="true">{detail}</text>
+        <text wrap="true">Permissions: {permissions}</text>
+      </column>
+    </card>
+    <row gap="8">
+      <button variant="primary" on-press="confirm_hotkey">Confirm Command-Shift hotkey</button>
+      <button on-press="probe_hotkey">Run global-input probe</button>
+    </row>
+    <text>Confirmed: {hotkeyConfirmed} · down: {hotkeyDown} · locked: {recordingLocked}</text>
+    <text>Events: {hotkeyDownCount} down / {hotkeyUpCount} up · pressed {pressedAtMs} · last release {lastQuickReleaseAtMs}</text>
+    <text wrap="true">Captured source token: {sourceToken}</text>
+    <row gap="8">
+      <button on-press="show_overlay">Show overlay</button>
+      <button on-press="hide_overlay">Hide overlay</button>
+      <button on-press="probe_overlay">Probe overlay click</button>
+    </row>
+    <text>Last overlay action: {overlayAction}</text>
+    <row gap="8">
+      <button on-press="probe_textedit">Paste probe: TextEdit</button>
+      <button on-press="probe_terminal">Paste probe: Terminal</button>
+    </row>
+    <card>
+      <column gap="6" padding="12">
+        <text>Most recent probe</text>
+        <text wrap="true">{probeResult}</text>
+      </column>
+    </card>
+  </column>
+</scroll>
