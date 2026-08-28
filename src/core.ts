@@ -239,6 +239,12 @@ export type Msg =
   | { readonly kind: "automation_login_failed"; readonly error: Uint8Array }
   | { readonly kind: "debug_fixture_requested"; readonly value: Uint8Array }
   | { readonly kind: "debug_fixture_finished"; readonly body: Uint8Array }
+  | { readonly kind: "automation_contracts_requested"; readonly value: Uint8Array }
+  | { readonly kind: "automation_contracts_finished"; readonly body: Uint8Array }
+  | { readonly kind: "automation_contracts_failed"; readonly error: Uint8Array }
+  | { readonly kind: "performance_fixture_requested"; readonly value: Uint8Array }
+  | { readonly kind: "performance_fixture_finished"; readonly body: Uint8Array }
+  | { readonly kind: "performance_fixture_failed"; readonly error: Uint8Array }
   | { readonly kind: "debug_fixture_failed"; readonly error: Uint8Array }
   | { readonly kind: "copy_immediate_result" }
   | { readonly kind: "dismiss_overlay_preview" }
@@ -247,6 +253,8 @@ export type Msg =
 export const envMsgs = [
   { env: "FRIDAY_AUTOMATION_FIXTURE", msg: "debug_fixture_requested" },
   { env: "FRIDAY_AUTOMATION_SCENE", msg: "automation_scene_requested" },
+  { env: "FRIDAY_AUTOMATION_CONTRACTS", msg: "automation_contracts_requested" },
+  { env: "FRIDAY_AUTOMATION_PERFORMANCE", msg: "performance_fixture_requested" },
   { env: "FRIDAY_AUTOMATION_LOGIN", msg: "automation_login_requested" },
 ] as const;
 export const appearanceMsg = "appearance_changed";
@@ -259,7 +267,7 @@ export const viewUnbound = [
   "local_model_added", "local_model_failed", "hf_model_added", "hf_model_failed", "model_selected", "model_select_failed", "model_removed", "model_remove_failed", "model_cleanup_finished", "model_cleanup_failed",
   "microphone_loaded", "microphone_failed", "diagnostics_loaded", "diagnostics_failed", "diagnostics_copy_loaded", "diagnostics_copy_failed", "diagnostics_exported", "diagnostics_export_failed",
   "login_status_loaded", "login_status_failed", "login_setting_saved", "login_setting_failed", "appearance_changed",
-  "automation_scene_requested", "automation_login_requested", "automation_login_finished", "automation_login_failed", "automationSceneActive", "systemColorScheme", "reduceMotion", "highContrast", "sessionSourceToken", "workflowMessage",
+  "automation_scene_requested", "automation_login_requested", "automation_login_finished", "automation_login_failed", "automation_contracts_requested", "automation_contracts_finished", "automation_contracts_failed", "performance_fixture_requested", "performance_fixture_finished", "performance_fixture_failed", "automationSceneActive", "systemColorScheme", "reduceMotion", "highContrast", "sessionSourceToken", "workflowMessage",
 ] as const;
 
 function hasPrefix(bytes: Uint8Array, prefix: Uint8Array): boolean {
@@ -677,6 +685,7 @@ export function onboardingProgress(model: Model): Uint8Array {
   return utf8Bytes("Step 4 of 4 · Local model");
 }
 export function permissionMicrophoneState(model: Model): Uint8Array { return model.microphonePermission ? utf8Bytes("Granted and usable") : utf8Bytes("Required to record"); }
+export function onboardingStepLabel(model: Model): Uint8Array { return utf8Bytes(`STEP ${Math.min(4, Math.max(1, Math.trunc(model.onboardingStep) + 1))} / 4`); }
 export function hasHotkeyCandidate(model: Model): boolean { return model.hotkeyCandidateDisplay.length > 0; }
 export function hasHotkeyWarning(model: Model): boolean { return model.hotkeyCandidateWarning.length > 0; }
 export function permissionAccessibilityState(model: Model): Uint8Array { return model.accessibilityPermission ? utf8Bytes("Granted and usable") : utf8Bytes("Accessibility missing — completed text will be copied"); }
@@ -689,6 +698,12 @@ export function waveformGlyph(model: Model): Uint8Array {
   if (model.meterLevel === "medium") return utf8Bytes("▂ ▅ ▇ ▅ ▃");
   if (model.meterLevel === "low") return utf8Bytes("▁ ▃ ▅ ▃ ▂");
   return utf8Bytes("▁ ▂ ▂ ▂ ▁");
+}
+export function waveformSignature(model: Model): Uint8Array {
+  if (model.workflow.kind === "recording") return utf8Bytes("╱╲╱╲╱╲──╱╲╱╲");
+  if (model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping") return utf8Bytes("──╱╲╱╲╱╲╱╲──");
+  if (model.workflow.kind === "failed") return utf8Bytes("╱╲──╱╲──╱╲──");
+  return utf8Bytes("──╱╲────╱╲──");
 }
 export function modelDownloadActive(model: Model): boolean { return model.modelDownloadState === "downloading" || model.modelDownloadState === "verifying"; }
 export function modelDownloadFailed(model: Model): boolean { return model.modelDownloadState === "failed" || model.modelDownloadState === "cancelled"; }
@@ -989,9 +1004,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "automation_login_requested":
       return [model, Cmd.request("friday.login.cycle_test", msg.value, { key: "automation-login", ok: "automation_login_finished", err: "automation_login_failed" })];
     case "automation_login_finished":
-      return { ...model, ambientDetail: msg.body };
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.body, ambientDetail: msg.body };
     case "automation_login_failed":
-      return { ...model, ambientDetail: msg.error };
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.error, ambientDetail: msg.error };
     case "dismiss_overlay_preview":
       return model.automationSceneActive ? { ...model, automationOverlayPreview: false } : model;
     case "show_settings":
@@ -1003,6 +1018,18 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "show_diagnostics":
       if (!model.platformSupported) return model;
       return [{ ...model, page: "diagnostics" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics", ok: "diagnostics_loaded", err: "diagnostics_failed" })])];
+    case "automation_contracts_requested":
+      return [model, Cmd.request("friday.debug.contracts", msg.value, { key: "automation-contracts", ok: "automation_contracts_finished", err: "automation_contracts_failed" })];
+    case "automation_contracts_finished":
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.body, ambientDetail: msg.body };
+    case "automation_contracts_failed":
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.error, ambientDetail: msg.error };
+    case "performance_fixture_requested":
+      return [model, Cmd.request("friday.debug.performance", msg.value, { key: "automation-performance", ok: "performance_fixture_finished", err: "performance_fixture_failed" })];
+    case "performance_fixture_finished":
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.body, ambientDetail: msg.body };
+    case "performance_fixture_failed":
+      return { ...model, hasImmediateResult: true, immediateResultKind: "shown", immediateResultMessage: msg.error, ambientDetail: msg.error };
     case "quit_app":
       return [model, Cmd.quitApp()];
     case "onboarding_next":
