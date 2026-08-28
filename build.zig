@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
         .ts_runner = "native/friday_main.zig",
         .ts_extension = "native/friday_host.zig",
         .macos_minimum_version = .{ .major = 13, .minor = 0, .patch = 0 },
+        .macos_cpu_arch = .aarch64,
     });
     addFridayHost(b, artifacts.exe.root_module);
     addFridayHost(b, artifacts.tests.root_module);
@@ -54,6 +55,8 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
         "-std=c++17",
         "-stdlib=libc++",
         "-mmacosx-version-min=13.0",
+        "-arch",
+        "arm64",
         "-isysroot",
         sysroot,
         b.fmt("-isystem{s}/usr/include", .{sysroot}),
@@ -68,6 +71,8 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
         "-mmacosx-version-min=13.0",
         "-Wno-availability",
         "-Wno-unknown-attributes",
+        "-arch",
+        "arm64",
         "-Wno-deprecated-enum-enum-conversion",
         "-Wno-unguarded-availability-new",
     };

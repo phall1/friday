@@ -1,8 +1,8 @@
 diff --git a/node_modules/@native-sdk/cli/build/app.zig b/node_modules/@native-sdk/cli/build/app.zig
-index 0ec7a26..ee01ec4 100644
+index 0ec7a26..6369d3e 100644
 --- a/node_modules/@native-sdk/cli/build/app.zig
 +++ b/node_modules/@native-sdk/cli/build/app.zig
-@@ -144,6 +144,16 @@ pub const AppOptions = struct {
+@@ -144,6 +144,18 @@ pub const AppOptions = struct {
      /// step walks wuffs/translate_c and whose full build pulls harfbuzz)
      /// — the load-bearing property for scaffolded apps.
      terminal_sessions: bool = false,
@@ -16,10 +16,12 @@ index 0ec7a26..ee01ec4 100644
 +    /// Override the SDK's macOS 11 deployment floor for apps that require
 +    /// newer platform APIs.
 +    macos_minimum_version: ?std.SemanticVersion = null,
++    /// Force a single macOS CPU architecture and reject target overrides.
++    macos_cpu_arch: ?std.Target.Cpu.Arch = null,
  };
  
  /// Which core the app tree carries. No flag and no config anywhere: the
-@@ -857,6 +867,7 @@ fn tsCoreStage(
+@@ -857,6 +869,7 @@ fn tsCoreStage(
      service_pool_workers: ?u8,
      build_trace: bool,
      scriptc_optimization: ?[]const u8,
@@ -27,7 +29,7 @@ index 0ec7a26..ee01ec4 100644
  ) TsCoreStage {
      const node = tsCorePreflight(b, dep, app_root);
      const window_views = collectTsWindowViews(b, app_root);
-@@ -1207,7 +1218,10 @@ fn tsCoreStage(
+@@ -1207,7 +1220,10 @@ fn tsCoreStage(
          _ = staged.addCopyFile(b.path(appPath(b, app_root, source.source_path)), source.staged_path);
      }
      _ = staged.add("window_views.zig", tsWindowRegistrySource(b, window_views));
@@ -39,25 +41,25 @@ index 0ec7a26..ee01ec4 100644
      // The mobile wiring stages beside the desktop entry: same mirror, same
      // registry, same carrier constant — only the shell differs (the embed
      // host's AppDef contract instead of a process `main`).
-@@ -1468,7 +1482,7 @@ pub const MobileTsCore = struct {
+@@ -1468,7 +1484,7 @@ pub const MobileTsCore = struct {
  /// a standalone build.zig (it registers the standard `target`/`optimize`
  /// options itself).
  pub fn addMobileLib(b: *std.Build, dep: *std.Build.Dependency, options: MobileLibOptions) void {
 -    const target = nativeSdkTarget(b);
-+    const target = nativeSdkTarget(b, null);
++    const target = nativeSdkTarget(b, null, null);
      const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
      const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
      addMobileLibWithTarget(b, dep, target, optimize, options);
-@@ -1613,7 +1627,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions
+@@ -1613,7 +1629,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions
  }
  
  pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions) AppArtifacts {
 -    const target = nativeSdkTarget(b);
-+    const target = nativeSdkTarget(b, app_options.macos_minimum_version);
++    const target = nativeSdkTarget(b, app_options.macos_minimum_version, app_options.macos_cpu_arch);
      const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
      const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
      const app_optimize = exampleOptimizeMode(b, optimize_request, .ReleaseFast);
-@@ -1681,6 +1695,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+@@ -1681,6 +1697,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
              service_pool_workers,
              build_trace,
              scriptc_optimization,
@@ -65,7 +67,7 @@ index 0ec7a26..ee01ec4 100644
          )
      else
          null;
-@@ -2058,6 +2073,11 @@ fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.Resolv
+@@ -2058,6 +2075,11 @@ fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.Resolv
          // The wiring derives scene/identity/security from app.zon itself.
          app_mod.addImport("app_manifest_zon", manifest_mod);
      }
@@ -77,20 +79,32 @@ index 0ec7a26..ee01ec4 100644
      if (ts_stage) |stage| {
          // The compiled-core archive links behind the staged mirror; the
          // toolchain's runtime needs libc.
-@@ -2124,7 +2144,7 @@ fn addMacosInfoPlist(b: *std.Build, app_mod: *std.Build.Module, target: std.Buil
+@@ -2124,9 +2146,16 @@ fn addMacosInfoPlist(b: *std.Build, app_mod: *std.Build.Module, target: std.Buil
      app_mod.addCSourceFile(.{ .file = generated, .flags = &.{} });
  }
  
 -fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
-+fn nativeSdkTarget(b: *std.Build, minimum_macos: ?std.SemanticVersion) std.Build.ResolvedTarget {
-     const target = b.standardTargetOptions(.{});
-     if (target.result.os.tag != .macos) return target;
+-    const target = b.standardTargetOptions(.{});
+-    if (target.result.os.tag != .macos) return target;
++fn nativeSdkTarget(b: *std.Build, minimum_macos: ?std.SemanticVersion, required_macos_arch: ?std.Target.Cpu.Arch) std.Build.ResolvedTarget {
++    const default_target: std.Target.Query = if (required_macos_arch) |arch|
++        .{ .cpu_arch = arch, .os_tag = .macos }
++    else
++        .{};
++    const target = b.standardTargetOptions(.{ .default_target = default_target });
++    if (required_macos_arch) |arch| {
++        if (target.result.os.tag != .macos or target.result.cpu.arch != arch)
++            @panic("this app requires the configured single-architecture macOS target");
++    } else if (target.result.os.tag != .macos) return target;
  
-@@ -2134,7 +2154,7 @@ fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
+     if (b.sysroot == null) {
+         b.sysroot = macosSdkPath(b) orelse b.sysroot;
+@@ -2134,7 +2163,8 @@ fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
  
      var query = target.query;
      query.os_tag = .macos;
 -    query.os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } };
++    query.cpu_arch = required_macos_arch orelse query.cpu_arch;
 +    query.os_version_min = .{ .semver = minimum_macos orelse .{ .major = 11, .minor = 0, .patch = 0 } };
      return b.resolveTargetQuery(query);
  }

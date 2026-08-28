@@ -5,8 +5,8 @@
   "scripts": {
     "postinstall": "patch-package",
     "check": "native check",
-    "test": "tsx --test tests/*.test.ts && zig build test",
-    "build": "zig build",
+    "test": "tsx --test tests/*.test.ts && zig build test -Dtarget=aarch64-macos",
+    "build": "zig build -Dtarget=aarch64-macos",
     "package": "bash scripts/package-macos.sh"
   },
   "dependencies": {
