@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockerText, commandMsg, initialModel, migrate, statusItem, update, type Model, type Msg } from "../src/core.ts";
+import { blockerText, commandMsg, failureDetail, failureModelName, initialModel, migrate, statusItem, themeState, update, type Model, type Msg } from "../src/core.ts";
 import type { Cmd } from "@native-sdk/core";
 
 type UpdateResult = Model | [Model, Cmd<Msg>];
@@ -175,6 +175,9 @@ test("persistence projection scrubs every transient and ambient field", () => {
     hasImmediateResult: true,
     immediateResultMessage: bytes("secret-transcript"),
     ambientDetail: bytes("ambient"),
+    hfSourceConfirmed: true,
+    automationSceneActive: true,
+    automationOverlayPreview: true,
   };
   const persisted = modelOf(update(model, { kind: "toggle_overlay" }));
   assert.equal(persisted.workflow.kind, "booting");
@@ -188,6 +191,9 @@ test("persistence projection scrubs every transient and ambient field", () => {
   assert.equal(persisted.modelsLoaded, false);
   assert.equal(persisted.modelReady, false);
   assert.equal(persisted.ambientDetail.length, 0);
+  assert.equal(persisted.hfSourceConfirmed, false);
+  assert.equal(persisted.automationSceneActive, false);
+  assert.equal(persisted.automationOverlayPreview, false);
   const serialized = JSON.stringify(persisted);
   assert.equal(serialized.includes("secret-source"), false);
   assert.equal(serialized.includes("secret-transcript"), false);
@@ -240,7 +246,7 @@ test("UI scene automation remains env-shaped and covers production surfaces", ()
   });
   assert.equal(onboarding.onboardingComplete, false);
   assert.equal(onboarding.onboardingStep, 1);
-  assert.equal(onboarding.modelDownloadState, "downloading");
+  assert.equal(onboarding.modelDownloadState, "idle");
   assert.equal(onboarding.accessibilityPermission, false);
 
   const settings = dispatch(initial, {
@@ -284,14 +290,136 @@ test("launch-at-login result is authoritative and persisted only after host succ
 
 test("model manager parses and acts on every available model row", () => {
   const ready = readyModel();
-  const body = bytes('{"ok":true,"activeModelKey":1,"activeModelReady":true,"models":[{"displayName":"Local Parakeet","sourceLabel":"Local file · reference only","modelKey":2,"license":"CC-BY-4.0","languageSummary":"1 language","sizeText":"700 MB","managed":false,"active":false}],"modelCount":2,"managedBytes":713975456,"activeModelName":"Parakeet TDT 0.6B v3","activeModelSource":"Hugging Face · managed by Friday","activeModelLicense":"CC-BY-4.0","activeModelLanguages":"25 languages","activeModelSizeText":"714 MB","managedModelSizeText":"714 MB","activeModelBytes":713975456,"downloadedBytes":713975456,"totalBytes":713975456}');
+  const body = bytes('{"ok":true,"activeModelKey":1,"activeModelReady":true,"models":[{"displayName":"Local Parakeet","sourceLabel":"Local file · reference only","modelKey":1002,"license":"CC-BY-4.0","languageSummary":"1 language","sizeText":"700 MB","managed":false,"active":false}],"modelCount":2,"managedBytes":713975456,"activeModelName":"Parakeet TDT 0.6B v3","activeModelSource":"Hugging Face · managed by Friday","activeModelLicense":"CC-BY-4.0","activeModelLanguages":"25 languages","activeModelSizeText":"714 MB","managedModelSizeText":"714 MB","activeModelBytes":713975456,"downloadedBytes":713975456,"totalBytes":713975456}');
   const loaded = dispatch(ready, { kind: "model_status_loaded", body });
   assert.equal(loaded.modelRows.length, 1);
-  assert.equal(loaded.modelRows[0].modelKey, 2);
+  assert.equal(new TextDecoder().decode(loaded.modelRows[0].modelKey), "1002");
   assert.equal(new TextDecoder().decode(loaded.modelRows[0].name), "Local Parakeet");
   assert.equal(loaded.modelRows[0].managed, false);
-  const selecting = update(loaded, { kind: "select_model", rowKey: 2 });
+  const selecting = update(loaded, { kind: "select_model", rowKey: bytes("1002") });
   const command = commandOf(selecting) as unknown as { op: string; payload: Uint8Array };
   assert.equal(command.op, "request");
-  assert.equal(new TextDecoder().decode(command.payload), "modelKey=2;generation=0");
+  assert.equal(new TextDecoder().decode(command.payload), "modelKey=1002;generation=0");
+});
+
+test("default model download starts only on visible model step", () => {
+  const [initial] = initialModel();
+  const status = update(initial, {
+    kind: "model_status_loaded",
+    body: bytes('{"ok":true,"activeModelKey":0,"activeModelReady":false,"downloadActive":false,"models":[]}'),
+  });
+  assert.equal(commandOf(status), null);
+  const stepThree: Model = {
+    ...modelOf(status),
+    workflow: { kind: "not_ready" },
+    onboardingStep: 2,
+    permissionsLoaded: true,
+    modelsLoaded: true,
+    microphonePermission: true,
+    accessibilityPermission: true,
+    inputMonitoringPermission: true,
+    hotkeyConfirmed: true,
+    modelReady: false,
+    modelDownloadState: "idle",
+  };
+  const entered = update(stepThree, { kind: "onboarding_next" });
+  assert.equal(modelOf(entered).onboardingStep, 3);
+  assert.equal(modelOf(entered).modelDownloadState, "downloading");
+  assert.equal(commandOf(entered)?.op, "request");
+});
+
+test("every missing degraded permission requires limited-mode acknowledgement", () => {
+  const [initial] = initialModel();
+  const permissionsStep: Model = {
+    ...initial,
+    onboardingStep: 1,
+    microphonePermission: true,
+    accessibilityPermission: false,
+    inputMonitoringPermission: true,
+    limitedModeAccepted: false,
+  };
+  assert.equal(dispatch(permissionsStep, { kind: "onboarding_next" }).onboardingStep, 1);
+  const acknowledged = dispatch(permissionsStep, { kind: "accept_limited_mode" });
+  assert.equal(dispatch(acknowledged, { kind: "onboarding_next" }).onboardingStep, 2);
+});
+
+test("model cleanup is keyed, truthful, and blocked by an active download", () => {
+  const ready = readyModel();
+  const active: Model = { ...ready, modelDownloadState: "downloading" };
+  const blocked = update(active, { kind: "cleanup_model_downloads" });
+  assert.equal(commandOf(blocked), null);
+  assert.equal(new TextDecoder().decode(modelOf(blocked).modelDownloadMessage), "Cancel the active download before cleaning partial files.");
+
+  const request = update({ ...ready, modelDownloadState: "failed" }, { kind: "cleanup_model_downloads" });
+  const command = commandOf(request) as unknown as { op: string; name: string };
+  assert.equal(command.op, "request");
+  assert.equal(command.name, "friday.model.cleanup");
+  const failed = dispatch(ready, { kind: "model_cleanup_failed", error: bytes('{"ok":false,"message":"Cancel the active download before cleaning partial files."}') });
+  assert.equal(new TextDecoder().decode(failed.modelDownloadMessage), "Cancel the active download before cleaning partial files.");
+  const finished = dispatch(ready, { kind: "model_cleanup_finished", body: bytes('{"ok":true,"removed":true}') });
+  assert.equal(new TextDecoder().decode(finished.modelDownloadMessage), "Failed and partial downloads removed.");
+  const empty = dispatch(ready, { kind: "model_cleanup_finished", body: bytes('{"ok":true,"removed":false}') });
+  assert.equal(new TextDecoder().decode(empty.modelDownloadMessage), "No failed or partial downloads were present.");
+});
+
+test("model operations produce plain user copy and picker cancellation is neutral", () => {
+  const ready = readyModel();
+  const selected = dispatch(ready, { kind: "model_selected", body: bytes('{"ok":true,"probe":{"residentBytes":99}}') });
+  assert.equal(new TextDecoder().decode(selected.modelDownloadMessage), "Active model changed.");
+  const cancelled = dispatch({ ...ready, modelDownloadState: "idle" }, {
+    kind: "local_model_failed",
+    error: bytes('{"ok":false,"code":"user_cancelled","message":"No local model was selected."}'),
+  });
+  assert.equal(cancelled.modelDownloadState, "idle");
+  assert.equal(new TextDecoder().decode(cancelled.modelDownloadMessage), "No local model selected.");
+  assert.equal(JSON.stringify(cancelled).includes('"probe"'), false);
+});
+
+test("Hugging Face add requires explicit source confirmation", () => {
+  const ready = readyModel();
+  const drafted = dispatch(ready, { kind: "hf_draft_edit", edit: { kind: "insert_text", text: bytes("nvidia/parakeet-tdt-0.6b-v3") } });
+  const blocked = update(drafted, { kind: "add_hugging_face_model" });
+  assert.equal(commandOf(blocked), null);
+  assert.equal(new TextDecoder().decode(modelOf(blocked).modelDownloadMessage).includes("Confirm the hosting"), true);
+  const confirmed = dispatch(drafted, { kind: "toggle_hf_source_confirmation" });
+  const requested = update(confirmed, { kind: "add_hugging_face_model" });
+  assert.equal(commandOf(requested)?.op, "request");
+});
+
+test("busy model actions explain why they cannot run", () => {
+  const ready = readyModel();
+  const busy: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: false } };
+  const result = update(busy, { kind: "remove_model_reference" });
+  assert.equal(commandOf(result), null);
+  assert.equal(new TextDecoder().decode(modelOf(result).modelDownloadMessage).includes("Finish or cancel"), true);
+});
+
+test("failure copy includes native reason and active model identity", () => {
+  const failed: Model = {
+    ...readyModel(),
+    activeModelName: bytes("Parakeet TDT 0.6B v3"),
+    workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true },
+    workflowMessage: bytes('{"ok":false,"message":"The model ran out of memory."}'),
+  };
+  assert.equal(new TextDecoder().decode(failureModelName(failed)), "Parakeet TDT 0.6B v3");
+  assert.equal(new TextDecoder().decode(failureDetail(failed)), "The model ran out of memory.");
+});
+
+test("appearance and overlay-preview contracts retain accessibility state", () => {
+  const [initial] = initialModel();
+  const appearance = dispatch(initial, {
+    kind: "appearance_changed",
+    colorScheme: "dark",
+    reduceMotion: true,
+    highContrast: true,
+  });
+  assert.equal(appearance.reduceMotion, true);
+  assert.equal(appearance.highContrast, true);
+  assert.equal(appearance.systemColorScheme, "dark");
+  assert.equal(themeState(appearance).accent, "#e7685f");
+  const preview = dispatch(initial, { kind: "automation_scene_requested", value: bytes("overlay-preview-light") });
+  assert.equal(preview.automationOverlayPreview, true);
+  const dismissed = dispatch(preview, { kind: "dismiss_overlay_preview" });
+  assert.equal(dismissed.automationOverlayPreview, false);
+  assert.equal(dismissed.workflow.kind, "recording");
 });
