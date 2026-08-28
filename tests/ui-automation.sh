@@ -19,19 +19,20 @@ HAD_SNAPSHOT=0
 HAD_SNAPSHOT_BAK=0
 MANAGED_STATE=0
 
+NO_ELLIPSIS=()
 case "$SCENE" in
   onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Grant Accessibility"' 'role=button name="Grant Input Monitoring"' 'role=button name="Continue"') ;;
-  settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"') ;;
-  model-*) REQUIRED=('role=text name="Model Manager"' 'role=button name="Add Local Model…"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Compatible Model"') ;;
+  settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=text name="Default microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"'); NO_ELLIPSIS=('Default microph…') ;;
+  model-*) REQUIRED=('role=text name="Model Manager"' 'role=button name="Add Local Model…"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
   error-*) REQUIRED=('Friday needs attention' 'Model: Parakeet TDT 0.6B v3' 'role=button name="Retry Transcription"' 'role=button name="Change Model"') ;;
   recording-*) REQUIRED=('role=text name="recording"' 'role=button name="Stop Recording"' 'role=button name="Cancel"') ;;
   transcribing-*) REQUIRED=('role=text name="transcribing"' 'role=button name="Cancel"' 'Transcribing locally') ;;
-  overlay-preview-*) REQUIRED=('Recording capsule preview' 'role=button name="Stop"' 'role=button name="Hide Capsule"' 'role=button name="Cancel"') ;;
-  accessibility-*) REQUIRED=('role=text name="PERMISSION STATUS"' 'role=button name="Recover Paste Access"' 'Accessibility missing') ;;
-  unsupported-intel-*) REQUIRED=('Friday can’t run on this Mac' 'Friday requires an Apple Silicon Mac.' 'Detected x86_64 · macOS 14.0' 'Setup, model downloads, and recording are disabled') ;;
-  hotkey-conflict-*) REQUIRED=('Candidate: Command' 'That shortcut is reserved by macOS' 'role=button name="Save This Shortcut"' 'role=button name="Discard Candidate"') ;;
-  resume-*) REQUIRED=('STEP 4 / 4' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"') ;;
-  hf-confirmation-*) REQUIRED=('role=text name="Model Manager"' 'community/parakeet-tdt-gguf' 'REV 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'role=button name="Download Confirmed Model"') ;;
+  overlay-preview-*) REQUIRED=('Recording capsule preview' 'role=button name="Stop"' 'role=button name="Hide"' 'role=button name="Cancel"') ;;
+  accessibility-*) REQUIRED=('role=text name="PERMISSION STATUS"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
+  unsupported-intel-*) REQUIRED=('Friday needs Apple Silicon' 'Friday requires an Apple Silicon Mac.' 'Detected x86_64 · macOS 14.0' 'Setup, model downloads, and recording are disabled'); NO_ELLIPSIS=('Friday needs Apple…') ;;
+  hotkey-conflict-*) REQUIRED=('Candidate: Command' 'That shortcut is reserved by macOS or a standard app command. Choose another shortcut.' 'role=button name="Save This Shortcut"' 'role=button name="Discard Candidate"'); NO_ELLIPSIS=('That shortcut is reserved by macOS or a standard app command. Choose another short…') ;;
+  resume-*) REQUIRED=('STEP 4 / 4' 'Install the voice engine' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"'); NO_ELLIPSIS=('Install the voice engi…') ;;
+  hf-confirmation-*) REQUIRED=('role=text name="Model Manager"' 'UNVERIFIED CANDIDATE' 'community/parakeet-tdt-gguf' 'Hugging Face · CC-BY-4.0 · 702 MB' 'REV 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Download to verify locally.' 'role=switch name="Authorize this exact download for local verification"' 'role=button name="Download to Verify Locally"'); NO_ELLIPSIS=('UNVERIFIED CANDID…' 'Download to verify local…') ;;
   *) echo "unknown scene: $SCENE" >&2; exit 2 ;;
 esac
 
@@ -81,11 +82,12 @@ cd "$ROOT"
 "$CLI" automate wait
 "$CLI" automate assert 'window @w1 "Friday" bounds=.* 760x620' "${REQUIRED[@]}"
 "$CLI" automate assert --absent 'error event='
+if [[ "${#NO_ELLIPSIS[@]}" -gt 0 ]]; then "$CLI" automate assert --absent "${NO_ELLIPSIS[@]}"; fi
+"$CLI" automate screenshot main-canvas
 "$CLI" automate widget-key main-canvas tab
 "$CLI" automate assert 'focused=true'
 "$CLI" automate widget-key main-canvas shift+tab
 "$CLI" automate assert 'focused=true'
-"$CLI" automate screenshot main-canvas
 
 if [[ "$UPDATE" == "1" ]]; then
   cp "$CAPTURE" "$GOLDEN"

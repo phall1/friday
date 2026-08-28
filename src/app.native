@@ -12,7 +12,7 @@
       <column grow="1" padding="40" gap="18">
         <spacer grow="1"/>
         <text foreground="warning"><span mono="true">UNSUPPORTED PLATFORM</span></text>
-        <text size="display">Friday can’t run on this Mac</text>
+        <text size="heading" wrap="true">Friday needs Apple Silicon</text>
         <separator/>
         <text size="heading" wrap="true">{platformMessage}</text>
         <text foreground="text_muted">Detected {platformArchitecture} · macOS {platformOSVersion}</text>
@@ -25,14 +25,14 @@
     <if test="{showOverlayPreview}">
       <column grow="1" cross="center" background="surface_subtle">
         <spacer grow="1"/>
-        <column width="600" padding="24" gap="18" background="surface" radius="md" border-color="border">
-          <row cross="center" gap="12"><text foreground="accent"><span mono="true">LIVE / REC</span></text><spacer grow="1"/><text foreground="text_muted">Recording capsule preview</text></row>
+        <column width="680" padding="18" gap="12" background="surface" radius="md" border-color="border">
+          <row cross="center" gap="10"><text foreground="accent"><span mono="true">LIVE / REC</span></text><spacer grow="1"/><text foreground="text_muted">Recording capsule preview</text></row>
           <separator/>
-          <row gap="18" cross="center">
-            <text size="display" foreground="accent"><span mono="true">{waveformSignature}</span></text>
-            <column grow="1" gap="3"><text size="heading">Locked</text><text foreground="text_muted"><span mono="true">{elapsedLabel}</span></text></column>
+          <row gap="10" cross="center">
+            <text size="heading" foreground="accent"><span mono="true">{waveformGlyph}</span></text>
+            <column grow="1" gap="2"><text size="heading">Locked</text><text foreground="text_muted"><span mono="true">{elapsedLabel}</span></text></column>
             <button variant="primary" on-press="stop_recording">Stop</button>
-            <button variant="ghost" on-press="dismiss_overlay_preview">Hide Capsule</button>
+            <button variant="ghost" on-press="dismiss_overlay_preview">Hide</button>
             <button variant="destructive" on-press="cancel_active">Cancel</button>
           </row>
           <text foreground="text_muted">Hide removes the capsule only. Stop transcribes; Cancel discards.</text>
@@ -99,7 +99,7 @@
 
               <if test="{onboardingStep == 3}">
                 <text foreground="accent"><span mono="true">04 / ENGINE</span></text>
-                <text size="display">Install the local voice engine.</text>
+                <text size="heading" wrap="true">Install the voice engine</text>
                 <text foreground="text_muted">Parakeet runs final transcription on this Mac. The verified download is about 714 MB.</text>
                 <column padding="20" gap="12" background="surface" border-color="border">
                   <row gap="12" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Parakeet TDT 0.6B v3</text><text foreground="text_muted">CC-BY-4.0 · 25 languages · 714 MB</text></column><text><span mono="true">{modelDownloadState}</span></text></row>
@@ -148,13 +148,13 @@
               <column padding="24" gap="18">
                 <if test="{showSettings}">
                   <text foreground="text_muted"><span mono="true">INPUT</span></text>
-                  <row gap="14" cross="center"><text foreground="accent"><span mono="true">{waveformGlyph}</span></text><column grow="1"><text size="heading">{microphoneName}</text><text foreground="text_muted">{microphoneDetail}</text></column><button on-press="refresh_microphone">Check Microphone</button></row>
+                  <row gap="14" cross="center"><text foreground="accent"><span mono="true">{waveformGlyph}</span></text><column grow="1"><text size="heading" wrap="true">{microphoneDisplayName}</text><text foreground="text_muted">{microphoneDetail}</text></column><button on-press="refresh_microphone">Check Microphone</button></row>
                   <separator/>
                   <text foreground="text_muted"><span mono="true">SHORTCUT</span></text>
                   <row gap="12" cross="center"><column grow="1" gap="3"><text size="heading"><span mono="true">{hotkeyLabel}</span></text><text foreground="text_muted">Hold to record · double-tap to lock</text></column><button on-press="start_hotkey_capture" disabled="{hotkeyCaptureActive}">Record a Key or Function Key…</button></row>
                   <toggle-group gap="8" label="Shortcut conveniences"><toggle-button selected="{hotkeyChoice == 'command_shift'}" on-toggle="choose_command_shift">Command + Shift Preset</toggle-button><toggle-button selected="{hotkeyChoice == 'control_option'}" on-toggle="choose_control_option">Control + Option Preset</toggle-button></toggle-group>
                   <if test="{hotkeyCaptureActive}"><row gap="8"><text foreground="text_muted" grow="1">Press one key or function key.</text><button variant="ghost" on-press="cancel_hotkey_capture">Cancel Recording</button></row></if>
-                  <if test="{hasHotkeyCandidate}"><column padding="12" gap="8" background="surface_subtle"><text><span mono="true">Candidate: {hotkeyCandidateDisplay}</span></text><if test="{hasHotkeyWarning}"><text foreground="warning">{hotkeyCandidateWarning}</text></if><row gap="8"><button variant="primary" on-press="confirm_hotkey_candidate" disabled="{not hotkeyCandidateValid}">Save This Shortcut</button><button variant="ghost" on-press="cancel_hotkey_capture">Discard Candidate</button></row></column></if>
+                  <if test="{hasHotkeyCandidate}"><column padding="12" gap="8" background="surface_subtle"><text><span mono="true">Candidate: {hotkeyCandidateDisplay}</span></text><if test="{hasHotkeyWarning}"><text foreground="warning" wrap="true">{hotkeyCandidateWarning}</text></if><row gap="8"><button variant="primary" on-press="confirm_hotkey_candidate" disabled="{not hotkeyCandidateValid}">Save This Shortcut</button><button variant="ghost" on-press="cancel_hotkey_capture">Discard Candidate</button></row></column></if>
                   <switch checked="{doubleTapEnabled}" on-toggle="toggle_double_tap">Double-tap to lock recording</switch>
                   <row gap="12" cross="center"><text foreground="text_muted" grow="1"><span mono="true">DOUBLE-TAP WINDOW</span></text><toggle-group gap="6" label="Double-tap timing"><toggle-button selected="{doubleTapWindowMs == 250}" on-toggle="set_double_tap_fast">Fast · 250 ms</toggle-button><toggle-button selected="{doubleTapWindowMs == 300}" on-toggle="set_double_tap_balanced">Balanced · 300 ms</toggle-button><toggle-button selected="{doubleTapWindowMs == 400}" on-toggle="set_double_tap_deliberate">Deliberate · 400 ms</toggle-button></toggle-group></row>
                   <separator/>
@@ -173,33 +173,44 @@
                 </if>
 
                 <if test="{showPermissions}">
-                  <text foreground="text_muted"><span mono="true">PERMISSION STATUS</span></text>
-                  <text size="display">Access</text>
-                  <text foreground="text_muted">Friday rechecks these live when macOS changes them.</text>
+                  <row gap="12" cross="center"><column grow="1"><text foreground="text_muted"><span mono="true">PERMISSION STATUS</span></text><text size="heading">Access</text></column><text foreground="text_muted">Friday rechecks live.</text></row>
                   <separator/>
-                  <row gap="14" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Microphone</text><text foreground="text_muted">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button on-press="request_microphone">Recover Microphone Access</button></if></row>
+                  <row gap="10" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Microphone</text><text foreground="text_muted">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button on-press="request_microphone">Recover Microphone Access</button></if></row>
                   <separator/>
-                  <row gap="14" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Accessibility</text><text foreground="text_muted">{permissionAccessibilityState}</text></column><if test="{not accessibilityPermission}"><button on-press="request_accessibility">Recover Paste Access</button></if></row>
+                  <row gap="10" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Accessibility</text><text foreground="text_muted">{permissionAccessibilityState}</text></column><if test="{not accessibilityPermission}"><button on-press="request_accessibility">Recover Paste Access</button></if></row>
                   <separator/>
-                  <row gap="14" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Input Monitoring</text><text foreground="text_muted">{permissionInputState}</text></column><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Recover Shortcut Access</button></if></row>
+                  <row gap="10" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Input Monitoring</text><text foreground="text_muted">{permissionInputState}</text></column><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Recover Shortcut Access</button></if></row>
                   <separator/>
                   <text foreground="text_muted" wrap="true">Without Microphone, recording is blocked. Without Input Monitoring, use manual Start. Without Accessibility, final text is copied.</text>
                 </if>
 
                 <if test="{showModels}">
                   <row gap="12" cross="center"><column grow="1"><text foreground="text_muted"><span mono="true">MODEL RACK</span></text><text size="display">Model Manager</text></column><button on-press="choose_local_model">Add Local Model…</button></row>
-                  <text foreground="text_muted">Compatible Parakeet TDT GGUF models only.</text>
+                  <if test="{hfResolved}"><text foreground="text_muted">Immutable metadata only. Local verification has not run.</text></if><else><text foreground="text_muted">Compatible Parakeet TDT GGUF models only.</text></else>
                   <if test="{isBusy}"><text foreground="warning">Finish or cancel dictation before changing the rack.</text></if>
                   <separator/>
-                  <if test="{hasActiveModel}"><row gap="14" cross="center"><text foreground="success"><span mono="true">●</span></text><column grow="1" gap="3"><text size="heading">{activeModelName}</text><text foreground="text_muted">ACTIVE · {activeModelSource}</text><text><span mono="true">{activeModelLicense} · {activeModelLanguages} · {activeModelSizeText}</span></text></column><column gap="8"><button variant="outline" on-press="remove_model_reference" disabled="{isBusy}">Remove from Friday</button><if test="{isDefaultModelActive}"><button variant="destructive" on-press="delete_managed_model" disabled="{isBusy}">Delete Friday’s Copy</button></if></column></row></if><else><text foreground="warning">No active model. Select or add one below.</text></else>
-                  <for each="availableModels" as="m"><separator/><row gap="14" cross="center"><text foreground="text_muted"><span mono="true">○</span></text><column grow="1"><text size="heading">{m.name}</text><text foreground="text_muted">AVAILABLE · {m.source}</text><text><span mono="true">{m.license} · {m.languages} · {m.size}</span></text></column><button on-press="select_model:{m.modelKey}" disabled="{isBusy}">Select</button><button variant="ghost" on-press="remove_model:{m.modelKey}" disabled="{isBusy}">Remove</button><if test="{m.managed}"><button variant="destructive" on-press="delete_model:{m.modelKey}" disabled="{isBusy}">Delete Copy</button></if></row></for>
-                  <if test="{not defaultModelInstalled}"><separator/><row gap="14" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Parakeet TDT 0.6B v3</text><text foreground="text_muted">HUGGING FACE · CC-BY-4.0 · 25 languages · 714 MB</text></column><if test="{modelDownloadState == 'idle'}"><button variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><button on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadPaused}"><button variant="primary" on-press="retry_model_download">Resume Download</button></if><if test="{modelDownloadFailed}"><button variant="primary" on-press="retry_model_download">Retry Download</button></if></row><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/><text foreground="text_muted"><span mono="true">{modelDownloadedBytesLabel} / {modelTotalBytesLabel} bytes</span></text></if></if>
-                  <separator/>
-                  <text foreground="text_muted"><span mono="true">ADD FROM HUGGING FACE</span></text>
-                  <text-field text="{hfDraft}" on-input="hf_draft_edit" placeholder="owner/parakeet-repository" label="Hugging Face model identifier"/>
-                  <switch checked="{hfSourceConfirmed}" on-toggle="toggle_hf_source_confirmation">Allow Friday to contact Hugging Face and resolve public metadata</switch>
-                  <row><spacer grow="1"/><button on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Resolve Compatible Model</button></row>
-                  <if test="{hfResolved}"><column padding="14" gap="8" background="surface_subtle" border-color="border"><row gap="10"><text foreground="success"><span mono="true">●</span></text><text size="heading">{hfResolvedIdentifier}</text></row><text><span mono="true">{hfResolvedProvider} · {hfResolvedLicense} · {hfResolvedSize}</span></text><text foreground="text_muted"><span mono="true">REV {hfResolvedRevision}</span></text><text foreground="text_muted">Artifact {hfResolvedArtifact} · Attribution {hfResolvedAttribution}</text><switch checked="{hfResolvedConfirmed}" on-toggle="toggle_hf_download_confirmation">I confirm this exact provider, immutable revision, artifact, size, license, and attribution</switch><button variant="primary" on-press="download_resolved_hf" disabled="{not hfResolvedConfirmed or modelDownloadActive or isBusy}">Download Confirmed Model</button></column></if>
+                  <if test="{hfResolved}">
+                    <column gap="6">
+                      <text foreground="warning"><span mono="true">UNVERIFIED CANDIDATE</span></text>
+                      <text size="heading">{hfResolvedIdentifier}</text>
+                      <text><span mono="true">{hfResolvedProvider} · {hfResolvedLicense} · {hfResolvedSize}</span></text>
+                      <text foreground="text_muted"><span mono="true">REV {hfResolvedRevision}</span></text>
+                      <text foreground="text_muted">Artifact {hfResolvedArtifact} · Attribution {hfResolvedAttribution}</text>
+                      <text wrap="true">Download to verify locally. Friday will check exact bytes, bounded GGUF metadata, and the real local recognizer before this candidate can become compatible or active.</text>
+                      <switch checked="{hfResolvedConfirmed}" on-toggle="toggle_hf_download_confirmation">Authorize this exact download for local verification</switch>
+                      <row><button variant="ghost" on-press="clear_hf_candidate">Choose Another Repository</button><spacer grow="1"/><button variant="primary" on-press="download_resolved_hf" disabled="{not hfResolvedConfirmed or modelDownloadActive or isBusy}">Download to Verify Locally</button></row>
+                    </column>
+                  </if>
+                  <else>
+                    <if test="{hasActiveModel}"><row gap="14" cross="center"><text foreground="success"><span mono="true">●</span></text><column grow="1" gap="3"><text size="heading">{activeModelName}</text><text foreground="text_muted">ACTIVE · {activeModelSource}</text><text><span mono="true">{activeModelLicense} · {activeModelLanguages} · {activeModelSizeText}</span></text></column><column gap="8"><button variant="outline" on-press="remove_model_reference" disabled="{isBusy}">Remove from Friday</button><if test="{isDefaultModelActive}"><button variant="destructive" on-press="delete_managed_model" disabled="{isBusy}">Delete Friday’s Copy</button></if></column></row></if><else><text foreground="warning">No active model. Select or add one below.</text></else>
+                    <for each="availableModels" as="m"><separator/><row gap="14" cross="center"><text foreground="text_muted"><span mono="true">○</span></text><column grow="1"><text size="heading">{m.name}</text><text foreground="text_muted">AVAILABLE · {m.source}</text><text><span mono="true">{m.license} · {m.languages} · {m.size}</span></text></column><button on-press="select_model:{m.modelKey}" disabled="{isBusy}">Select</button><button variant="ghost" on-press="remove_model:{m.modelKey}" disabled="{isBusy}">Remove</button><if test="{m.managed}"><button variant="destructive" on-press="delete_model:{m.modelKey}" disabled="{isBusy}">Delete Copy</button></if></row></for>
+                    <if test="{not defaultModelInstalled}"><separator/><row gap="14" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Parakeet TDT 0.6B v3</text><text foreground="text_muted">HUGGING FACE · CC-BY-4.0 · 25 languages · 714 MB</text></column><if test="{modelDownloadState == 'idle'}"><button variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><button on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadPaused}"><button variant="primary" on-press="retry_model_download">Resume Download</button></if><if test="{modelDownloadFailed}"><button variant="primary" on-press="retry_model_download">Retry Download</button></if></row><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/><text foreground="text_muted"><span mono="true">{modelDownloadedBytesLabel} / {modelTotalBytesLabel} bytes</span></text></if></if>
+                    <separator/>
+                    <text foreground="text_muted"><span mono="true">ADD FROM HUGGING FACE</span></text>
+                    <text-field text="{hfDraft}" on-input="hf_draft_edit" placeholder="owner/repository" label="Hugging Face model identifier"/>
+                    <switch checked="{hfSourceConfirmed}" on-toggle="toggle_hf_source_confirmation">Allow Friday to contact Hugging Face and resolve public metadata</switch>
+                    <row><spacer grow="1"/><button on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Resolve Candidate Metadata</button></row>
+                  </else>
                   <separator/>
                   <row gap="8"><text foreground="text_muted" grow="1"><span mono="true">{round(modelCount)} {plural(round(modelCount), 'MODEL', 'MODELS')} · {managedModelSizeText} MANAGED</span></text><button variant="ghost" on-press="cleanup_model_downloads" disabled="{modelDownloadActive}">Clean Failed and Partial Downloads</button></row>
                   <text foreground="text_muted">{modelDownloadMessage}</text>
