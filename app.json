@@ -8,8 +8,17 @@
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
     "permissions": ["view", "command", "microphone", "filesystem"],
-    "capabilities": ["native_module", "native_views", "gpu_surfaces", "menus", "shortcuts", "tray", "filesystem", "network", "clipboard", "open_url", "reveal_path"],
+    "capabilities": ["native_module", "native_views", "gpu_surfaces", "menus", "shortcuts", "tray", "filesystem", "network", "clipboard", "open_url", "reveal_path", "persist"],
     "dock_visible": false,
+    "persist": {
+        "version": 2,
+        "debounce_ms": 250,
+        "restore": {
+            "ok": "restored",
+            "none": "fresh_boot",
+            "err": "restore_failed"
+        }
+    },
     "shell": {
         "windows": [
             {

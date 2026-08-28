@@ -4,9 +4,15 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FridayNemoRecognizer : NSObject
 @property(nonatomic, readonly, copy, nullable) NSString *activeModelPath;
 @property(nonatomic, readonly, getter=isBusy) BOOL busy;
-- (void)activateModelAtPath:(NSString *)path generation:(uint64_t)generation completion:(void (^)(NSDictionary *result))completion;
-- (void)transcribeAudioAtURL:(NSURL *)url sessionID:(uint64_t)sessionID generation:(uint64_t)generation completion:(void (^)(NSDictionary *result))completion;
+- (void)activateModelAtPath:(NSString *)path
+                 generation:(uint64_t)generation
+                 completion:(void (^)(NSDictionary *result))completion;
+- (void)transcribeAudioAtURL:(NSURL *)url
+                   sessionID:(uint64_t)sessionID
+                  generation:(uint64_t)generation
+                  completion:(void (^)(NSDictionary *result))completion;
 - (void)cancelGeneration:(uint64_t)generation;
-- (void)unload;
+- (void)unloadWithCompletion:(void (^)(NSDictionary *result))completion;
+- (void)shutdownAndWait;
 @end
 NS_ASSUME_NONNULL_END

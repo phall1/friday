@@ -1,94 +1,536 @@
 #import "AudioSession.h"
-#import <AVFAudio/AVAudioEngine.h>
-#import <AVFAudio/AVAudioNode.h>
 #import <AVFAudio/AVAudioBuffer.h>
+#import <AVFAudio/AVAudioConverter.h>
+#import <AVFAudio/AVAudioEngine.h>
 #import <AVFAudio/AVAudioFormat.h>
+#import <AVFAudio/AVAudioIONode.h>
+#import <AVFAudio/AVAudioSinkNode.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstdio>
-#include <memory>
 #include <fcntl.h>
+#include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
-static constexpr uint64_t kFridayRate=16000;
-static constexpr uint64_t kFridayWarningFrames=kFridayRate*585;
-static constexpr uint64_t kFridayMaximumFrames=kFridayRate*600;
+static constexpr uint64_t kFridayRate = 16000;
+static constexpr uint64_t kFridayWarningFrames = kFridayRate * 585;
+static constexpr uint64_t kFridayMaximumFrames = kFridayRate * 600;
 
 class FridayRing {
 public:
-    explicit FridayRing(size_t capacity):values(capacity){}
-    bool push(float value){uint64_t w=write.load(std::memory_order_relaxed),r=read.load(std::memory_order_acquire);if(w-r>=values.size()){dropped.fetch_add(1);return false;}values[w%values.size()]=value;write.store(w+1,std::memory_order_release);return true;}
-    size_t pop(float *out,size_t capacity){uint64_t r=read.load(std::memory_order_relaxed),w=write.load(std::memory_order_acquire);size_t count=(size_t)std::min<uint64_t>(w-r,capacity);for(size_t i=0;i<count;i++)out[i]=values[(r+i)%values.size()];read.store(r+count,std::memory_order_release);return count;}
-    uint64_t drops()const{return dropped.load(std::memory_order_acquire);}
+  explicit FridayRing(size_t capacity) : values_(capacity) {}
+
+  bool push(float value) {
+    const uint64_t write = write_.load(std::memory_order_relaxed);
+    const uint64_t read = read_.load(std::memory_order_acquire);
+    if (write - read >= values_.size()) {
+      dropped_.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+    values_[write % values_.size()] = value;
+    write_.store(write + 1, std::memory_order_release);
+    return true;
+  }
+
+  size_t pop(float *output, size_t capacity) {
+    const uint64_t read = read_.load(std::memory_order_relaxed);
+    const uint64_t write = write_.load(std::memory_order_acquire);
+    const size_t count =
+        static_cast<size_t>(std::min<uint64_t>(write - read, capacity));
+    for (size_t index = 0; index < count; ++index) {
+      output[index] = values_[(read + index) % values_.size()];
+    }
+    read_.store(read + count, std::memory_order_release);
+    return count;
+  }
+
+  uint64_t dropped() const { return dropped_.load(std::memory_order_acquire); }
+
 private:
-    std::vector<float> values; std::atomic<uint64_t> write{0},read{0},dropped{0};
+  std::vector<float> values_;
+  std::atomic<uint64_t> write_{0};
+  std::atomic<uint64_t> read_{0};
+  std::atomic<uint64_t> dropped_{0};
+};
+
+struct FridayRealtimeCapture {
+  explicit FridayRealtimeCapture(size_t capacity, uint32_t channels,
+                                 bool interleaved)
+      : ring(capacity), channel_count(channels), is_interleaved(interleaved) {}
+
+  std::atomic<bool> accepting{true};
+  FridayRing ring;
+  const uint32_t channel_count;
+  const bool is_interleaved;
+
+  void push(const AudioBufferList *buffers, AVAudioFrameCount frame_count) {
+    if (!accepting.load(std::memory_order_acquire) || buffers == nullptr)
+      return;
+    if (is_interleaved) {
+      if (buffers->mNumberBuffers == 0 || buffers->mBuffers[0].mData == nullptr)
+        return;
+      const float *samples =
+          static_cast<const float *>(buffers->mBuffers[0].mData);
+      for (AVAudioFrameCount frame = 0; frame < frame_count; ++frame) {
+        float mono = 0;
+        for (uint32_t channel = 0; channel < channel_count; ++channel) {
+          mono += samples[frame * channel_count + channel];
+        }
+        ring.push(
+            std::clamp(mono / static_cast<float>(channel_count), -1.0f, 1.0f));
+      }
+      return;
+    }
+    if (buffers->mNumberBuffers < channel_count)
+      return;
+    for (AVAudioFrameCount frame = 0; frame < frame_count; ++frame) {
+      float mono = 0;
+      for (uint32_t channel = 0; channel < channel_count; ++channel) {
+        const float *samples =
+            static_cast<const float *>(buffers->mBuffers[channel].mData);
+        if (samples != nullptr)
+          mono += samples[frame];
+      }
+      ring.push(
+          std::clamp(mono / static_cast<float>(channel_count), -1.0f, 1.0f));
+    }
+  }
 };
 
 @interface FridayAudioSession ()
-@property(nonatomic,copy) FridayAudioEventHandler handler;
-@property(nonatomic,strong) AVAudioEngine *engine;
-@property(nonatomic,readwrite,getter=isActive) BOOL active;
-@property(nonatomic,readwrite,strong,nullable) NSURL *retryAudioURL;
+@property(nonatomic, copy) FridayAudioEventHandler handler;
+@property(nonatomic, strong) AVAudioEngine *engine;
+@property(nonatomic, strong) AVAudioSinkNode *sink;
+@property(nonatomic, strong) AVAudioConverter *converter;
+@property(nonatomic, strong) AVAudioFormat *converterInputFormat;
+@property(nonatomic, strong) AVAudioFormat *converterOutputFormat;
+@property(nonatomic, readwrite, getter=isActive) BOOL active;
+@property(nonatomic, readwrite, strong, nullable) NSURL *retryAudioURL;
 @property(nonatomic) dispatch_queue_t queue;
 @property(nonatomic) dispatch_source_t timer;
 @property(nonatomic) FILE *file;
-@property(nonatomic,strong) NSURL *url;
+@property(nonatomic, strong) NSURL *url;
 @property(nonatomic) uint64_t sessionID;
-@property(nonatomic) double hardwareRate;
-@property(nonatomic) double accumulator;
 @property(nonatomic) uint64_t startedAtMs;
 @property(nonatomic) uint64_t firstAudioAtMs;
 @property(nonatomic) BOOL warned;
 @end
 
-@implementation FridayAudioSession { std::unique_ptr<FridayRing> _ring; std::atomic<uint64_t> _frames; }
+@implementation FridayAudioSession {
+  std::unique_ptr<FridayRealtimeCapture> _realtime;
+  std::atomic<uint64_t> _frames;
+}
+
 - (instancetype)initWithEventHandler:(FridayAudioEventHandler)handler {
-    if((self=[super init])){_handler=[handler copy];_queue=dispatch_queue_create("com.phall.friday.audio",DISPATCH_QUEUE_SERIAL);[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(configurationChanged:) name:AVAudioEngineConfigurationChangeNotification object:nil];}
-    return self;
+  self = [super init];
+  if (self) {
+    _handler = [handler copy];
+    _queue =
+        dispatch_queue_create("com.phall.friday.audio", DISPATCH_QUEUE_SERIAL);
+    NSString *root =
+        [NSTemporaryDirectory() stringByAppendingPathComponent:@"Friday/Audio"];
+    [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(configurationChanged:)
+               name:AVAudioEngineConfigurationChangeNotification
+             object:nil];
+  }
+  return self;
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; if(self.active)[self cancelSession:self.sessionID]; }
-- (uint64_t)now { return (uint64_t)llround(NSDate.date.timeIntervalSince1970*1000); }
+
+- (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self];
+  [self cancelActiveSession];
+  [self discardRetryAudio];
+}
+
+- (uint64_t)now {
+  return (uint64_t)llround(NSDate.date.timeIntervalSince1970 * 1000);
+}
+
 - (NSDictionary *)startSession:(uint64_t)sessionID error:(NSError **)error {
-    if(self.active){if(error)*error=[NSError errorWithDomain:@"com.phall.friday.audio" code:1 userInfo:@{NSLocalizedDescriptionKey:@"A recording is already active."}];return nil;}
-    [self discardRetryAudio]; NSString *root=[NSTemporaryDirectory() stringByAppendingPathComponent:@"Friday/Audio"];[NSFileManager.defaultManager createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil];
-    self.url=[NSURL fileURLWithPath:[root stringByAppendingPathComponent:[NSString stringWithFormat:@"session-%llu.f32",sessionID]]];self.file=fopen(self.url.fileSystemRepresentation,"wb");if(!self.file){if(error)*error=[NSError errorWithDomain:@"com.phall.friday.audio" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Friday could not create temporary audio storage."}];return nil;}
-    self.engine=[AVAudioEngine new];AVAudioInputNode *input=self.engine.inputNode;AVAudioFormat *format=[input inputFormatForBus:0];if(format.sampleRate<8000||format.sampleRate>96000||format.channelCount==0){fclose(self.file);self.file=NULL;if(error)*error=[NSError errorWithDomain:@"com.phall.friday.audio" code:3 userInfo:@{NSLocalizedDescriptionKey:@"The microphone format is unsupported."}];return nil;}
-    self.sessionID=sessionID;self.hardwareRate=format.sampleRate;self.accumulator=0;_frames.store(0);self.startedAtMs=[self now];self.firstAudioAtMs=0;self.warned=NO;_ring=std::make_unique<FridayRing>((size_t)format.sampleRate*4);self.active=YES;
-    __weak FridayAudioSession *weak=self;
-    [input installTapOnBus:0 bufferSize:1024 format:format block:^(AVAudioPCMBuffer *buffer,AVAudioTime *when){(void)when;FridayAudioSession *strong=weak;if(!strong||!strong.active||!buffer.floatChannelData)return;uint32_t channels=buffer.format.channelCount;for(uint32_t i=0;i<buffer.frameLength;i++){float sample=0;for(uint32_t c=0;c<channels;c++)sample+=buffer.floatChannelData[c][i];strong->_ring->push(std::clamp(sample/(float)channels,-1.0f,1.0f));}if(strong.firstAudioAtMs==0&&buffer.frameLength)strong.firstAudioAtMs=[strong now];}];
-    self.timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,self.queue);dispatch_source_set_timer(self.timer,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_MSEC),10*NSEC_PER_MSEC,2*NSEC_PER_MSEC);dispatch_source_set_event_handler(self.timer,^{[weak drain];});dispatch_resume(self.timer);
-    NSError *startError=nil;if(![self.engine startAndReturnError:&startError]){self.active=NO;[input removeTapOnBus:0];dispatch_source_cancel(self.timer);self.timer=nil;fclose(self.file);self.file=NULL;[NSFileManager.defaultManager removeItemAtURL:self.url error:nil];if(error)*error=startError;return nil;}
-    return @{@"ok":@YES,@"sessionId":@(sessionID),@"captureStartedAtMs":@(self.startedAtMs),@"sampleRate":@(kFridayRate),@"channels":@1};
+  if (self.active) {
+    if (error)
+      *error = [NSError
+          errorWithDomain:@"com.phall.friday.audio"
+                     code:1
+                 userInfo:@{
+                   NSLocalizedDescriptionKey : @"A recording is already active."
+                 }];
+    return nil;
+  }
+  [self discardRetryAudio];
+  NSString *root =
+      [NSTemporaryDirectory() stringByAppendingPathComponent:@"Friday/Audio"];
+  [NSFileManager.defaultManager createDirectoryAtPath:root
+                          withIntermediateDirectories:YES
+                                           attributes:nil
+                                                error:nil];
+  self.url = [NSURL
+      fileURLWithPath:[root stringByAppendingPathComponent:
+                                [NSString stringWithFormat:@"session-%llu.f32",
+                                                           sessionID]]];
+  self.file = fopen(self.url.fileSystemRepresentation, "wb");
+  if (!self.file) {
+    if (error)
+      *error = [NSError
+          errorWithDomain:@"com.phall.friday.audio"
+                     code:2
+                 userInfo:@{
+                   NSLocalizedDescriptionKey :
+                       @"Friday could not create temporary audio storage."
+                 }];
+    return nil;
+  }
+
+  self.engine = [AVAudioEngine new];
+  AVAudioInputNode *input = self.engine.inputNode;
+  AVAudioFormat *hardware = [input outputFormatForBus:0];
+  if (hardware.commonFormat != AVAudioPCMFormatFloat32 ||
+      hardware.sampleRate < 8000 || hardware.sampleRate > 96000 ||
+      hardware.channelCount == 0) {
+    fclose(self.file);
+    self.file = NULL;
+    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+    if (error)
+      *error = [NSError
+          errorWithDomain:@"com.phall.friday.audio"
+                     code:3
+                 userInfo:@{
+                   NSLocalizedDescriptionKey :
+                       @"The microphone format cannot be converted safely."
+                 }];
+    return nil;
+  }
+
+  self.converterInputFormat = [[AVAudioFormat alloc]
+      initStandardFormatWithSampleRate:hardware.sampleRate
+                              channels:1];
+  self.converterOutputFormat =
+      [[AVAudioFormat alloc] initStandardFormatWithSampleRate:kFridayRate
+                                                     channels:1];
+  self.converter =
+      [[AVAudioConverter alloc] initFromFormat:self.converterInputFormat
+                                      toFormat:self.converterOutputFormat];
+  if (!self.converter) {
+    fclose(self.file);
+    self.file = NULL;
+    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+    if (error)
+      *error =
+          [NSError errorWithDomain:@"com.phall.friday.audio"
+                              code:4
+                          userInfo:@{
+                            NSLocalizedDescriptionKey :
+                                @"Friday could not create the audio converter."
+                          }];
+    return nil;
+  }
+  self.converter.sampleRateConverterQuality = AVAudioQualityMax;
+
+  _realtime = std::make_unique<FridayRealtimeCapture>(
+      static_cast<size_t>(hardware.sampleRate * 4), hardware.channelCount,
+      hardware.interleaved);
+  FridayRealtimeCapture *realtime = _realtime.get();
+  self.sink = [[AVAudioSinkNode alloc]
+      initWithReceiverBlock:^OSStatus(const AudioTimeStamp *timestamp,
+                                      AVAudioFrameCount frameCount,
+                                      const AudioBufferList *audioData) {
+        (void)timestamp;
+        realtime->push(audioData, frameCount);
+        return noErr;
+      }];
+  [self.engine attachNode:self.sink];
+  [self.engine connect:input to:self.sink format:hardware];
+
+  self.sessionID = sessionID;
+  self.startedAtMs = [self now];
+  self.firstAudioAtMs = 0;
+  self.warned = NO;
+  _frames.store(0, std::memory_order_release);
+  self.active = YES;
+
+  __weak FridayAudioSession *weakSelf = self;
+  self.timer =
+      dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.queue);
+  dispatch_source_set_timer(
+      self.timer, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_MSEC),
+      10 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
+  dispatch_source_set_event_handler(self.timer, ^{
+    [weakSelf drainConverter];
+  });
+  dispatch_resume(self.timer);
+
+  NSError *startError = nil;
+  if (![self.engine startAndReturnError:&startError]) {
+    self.active = NO;
+    realtime->accepting.store(false, std::memory_order_release);
+    [self.engine disconnectNodeOutput:input];
+    [self.engine detachNode:self.sink];
+    dispatch_source_cancel(self.timer);
+    self.timer = nil;
+    fclose(self.file);
+    self.file = NULL;
+    _realtime.reset();
+    [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+    if (error)
+      *error = startError;
+    return nil;
+  }
+  return @{
+    @"ok" : @YES,
+    @"sessionId" : @(sessionID),
+    @"captureStartedAtMs" : @(self.startedAtMs),
+    @"sampleRate" : @(kFridayRate),
+    @"channels" : @1
+  };
 }
-- (void)drain {
-    if(!_ring||!self.file)return;float input[4096],output[4096];size_t count=0;
-    while((count=_ring->pop(input,4096))>0){size_t out=0;double step=(double)kFridayRate/self.hardwareRate;for(size_t i=0;i<count&&_frames.load()<kFridayMaximumFrames;i++){self.accumulator+=step;while(self.accumulator>=1&&out<4096){output[out++]=input[i];self.accumulator-=1;_frames.fetch_add(1);}}if(out)fwrite(output,sizeof(float),out,self.file);}
-    uint64_t frames=_frames.load();if(frames>=kFridayWarningFrames&&!self.warned){self.warned=YES;dispatch_async(dispatch_get_main_queue(),^{self.handler(@"duration_warning",@{@"sessionId":@(self.sessionID),@"capturedFrames":@(frames)});});}
-    if(frames>=kFridayMaximumFrames)dispatch_async(dispatch_get_main_queue(),^{if(self.active)self.handler(@"duration_limit",@{@"sessionId":@(self.sessionID),@"capturedFrames":@(kFridayMaximumFrames)});});
+
+- (void)drainConverter {
+  if (!_realtime || !self.file || !self.converter)
+    return;
+  float samples[4096];
+  size_t count = 0;
+  while ((count = _realtime->ring.pop(samples, 4096)) > 0 &&
+         _frames.load(std::memory_order_acquire) < kFridayMaximumFrames) {
+    if (self.firstAudioAtMs == 0)
+      self.firstAudioAtMs = [self now];
+    AVAudioPCMBuffer *input =
+        [[AVAudioPCMBuffer alloc] initWithPCMFormat:self.converterInputFormat
+                                      frameCapacity:(AVAudioFrameCount)count];
+    input.frameLength = (AVAudioFrameCount)count;
+    memcpy(input.floatChannelData[0], samples, count * sizeof(float));
+    const AVAudioFrameCount capacity =
+        (AVAudioFrameCount)ceil((double)count * kFridayRate /
+                                self.converterInputFormat.sampleRate) +
+        64;
+    AVAudioPCMBuffer *output =
+        [[AVAudioPCMBuffer alloc] initWithPCMFormat:self.converterOutputFormat
+                                      frameCapacity:capacity];
+    __block BOOL supplied = NO;
+    NSError *error = nil;
+    AVAudioConverterOutputStatus status =
+        [self.converter convertToBuffer:output
+                                  error:&error
+                     withInputFromBlock:^AVAudioBuffer *(
+                         AVAudioPacketCount requested,
+                         AVAudioConverterInputStatus *inputStatus) {
+                       (void)requested;
+                       if (supplied) {
+                         *inputStatus = AVAudioConverterInputStatus_NoDataNow;
+                         return nil;
+                       }
+                       supplied = YES;
+                       *inputStatus = AVAudioConverterInputStatus_HaveData;
+                       return input;
+                     }];
+    if (status == AVAudioConverterOutputStatus_Error || error) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self.handler(
+            @"audio_interrupted", @{
+              @"sessionId" : @(self.sessionID),
+              @"reason" : error.localizedDescription
+                  ?: @"Audio conversion failed."
+            });
+      });
+      return;
+    }
+    uint64_t remaining =
+        kFridayMaximumFrames - _frames.load(std::memory_order_acquire);
+    AVAudioFrameCount frames =
+        (AVAudioFrameCount)std::min<uint64_t>(output.frameLength, remaining);
+    if (frames > 0) {
+      fwrite(output.floatChannelData[0], sizeof(float), frames, self.file);
+      _frames.fetch_add(frames, std::memory_order_release);
+    }
+  }
+  const uint64_t frames = _frames.load(std::memory_order_acquire);
+  if (frames >= kFridayWarningFrames && !self.warned) {
+    self.warned = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self.handler(
+          @"duration_warning",
+          @{@"sessionId" : @(self.sessionID),
+            @"capturedFrames" : @(frames)});
+    });
+  }
+  if (frames >= kFridayMaximumFrames) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (self.active)
+        self.handler(
+            @"duration_limit", @{
+              @"sessionId" : @(self.sessionID),
+              @"capturedFrames" : @(kFridayMaximumFrames)
+            });
+    });
+  }
 }
-- (void)stopSession:(uint64_t)sessionID completion:(void (^)(NSDictionary<NSString *,id> *))completion {
-    if(!self.active||sessionID!=self.sessionID){completion(@{@"ok":@NO,@"sessionId":@(sessionID),@"message":@"The recording is stale."});return;}self.active=NO;[self.engine.inputNode removeTapOnBus:0];[self.engine stop];if(self.timer){dispatch_source_cancel(self.timer);self.timer=nil;}
-    dispatch_async(self.queue,^{[self drain];if(self.file){fflush(self.file);fsync(fileno(self.file));fclose(self.file);self.file=NULL;}uint64_t drops=self->_ring?self->_ring->drops():0;self->_ring.reset();self.retryAudioURL=self.url;uint64_t frames=_frames.load();NSDictionary *result=@{@"ok":@(drops==0),@"sessionId":@(sessionID),@"audioPath":self.url.path,@"capturedFrames":@(frames),@"audioDurationMs":@(frames*1000/kFridayRate),@"captureStartedAtMs":@(self.startedAtMs),@"firstAudioAtMs":@(self.firstAudioAtMs),@"captureStoppedAtMs":@([self now]),@"droppedFrames":@(drops),@"retryAudioAvailable":@YES};dispatch_async(dispatch_get_main_queue(),^{completion(result);});});
+
+- (void)stopSession:(uint64_t)sessionID
+         completion:(void (^)(NSDictionary<NSString *, id> *))completion {
+  if (!self.active || sessionID != self.sessionID) {
+    completion(@{
+      @"ok" : @NO,
+      @"sessionId" : @(sessionID),
+      @"message" : @"The recording is stale."
+    });
+    return;
+  }
+  self.active = NO;
+  _realtime->accepting.store(false, std::memory_order_release);
+  [self.engine stop];
+  [self.engine disconnectNodeOutput:self.engine.inputNode];
+  [self.engine detachNode:self.sink];
+  if (self.timer) {
+    dispatch_source_cancel(self.timer);
+    self.timer = nil;
+  }
+  dispatch_async(self.queue, ^{
+    [self drainConverter];
+    [self flushConverter];
+    if (self.file) {
+      fflush(self.file);
+      fsync(fileno(self.file));
+      fclose(self.file);
+      self.file = NULL;
+    }
+    const uint64_t drops =
+        self->_realtime ? self->_realtime->ring.dropped() : 0;
+    self->_realtime.reset();
+    const uint64_t frames = self->_frames.load(std::memory_order_acquire);
+    const BOOL retry = drops == 0;
+    if (retry)
+      self.retryAudioURL = self.url;
+    else {
+      [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+      self.retryAudioURL = nil;
+    }
+    NSDictionary *result = @{
+      @"ok" : @(drops == 0),
+      @"sessionId" : @(sessionID),
+      @"audioPath" : retry ? self.url.path : @"",
+      @"capturedFrames" : @(frames),
+      @"audioDurationMs" : @(frames * 1000 / kFridayRate),
+      @"captureStartedAtMs" : @(self.startedAtMs),
+      @"firstAudioAtMs" : @(self.firstAudioAtMs),
+      @"captureStoppedAtMs" : @([self now]),
+      @"droppedFrames" : @(drops),
+      @"retryAudioAvailable" : @(retry)
+    };
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  });
 }
-- (void)cancelActiveSession { if(self.active)[self cancelSession:self.sessionID]; }
-- (void)cancelSession:(uint64_t)sessionID { if(!self.active||sessionID!=self.sessionID)return;self.active=NO;[self.engine.inputNode removeTapOnBus:0];[self.engine stop];if(self.timer){dispatch_source_cancel(self.timer);self.timer=nil;}dispatch_sync(self.queue,^{if(self.file){fclose(self.file);self.file=NULL;}self->_ring.reset();});[NSFileManager.defaultManager removeItemAtURL:self.url error:nil]; }
-- (void)discardRetryAudio { if(self.retryAudioURL)[NSFileManager.defaultManager removeItemAtURL:self.retryAudioURL error:nil];self.retryAudioURL=nil; }
-- (void)configurationChanged:(NSNotification *)note { (void)note;if(self.active){uint64_t session=self.sessionID;[self cancelSession:session];self.handler(@"audio_interrupted",@{@"sessionId":@(session),@"reason":@"The microphone route changed during recording."});} }
+
+- (void)cancelActiveSession {
+  if (self.active)
+    [self cancelSession:self.sessionID];
+}
+- (void)flushConverter {
+  if (!self.converter || !self.file)
+    return;
+  while (_frames.load(std::memory_order_acquire) < kFridayMaximumFrames) {
+    AVAudioPCMBuffer *output =
+        [[AVAudioPCMBuffer alloc] initWithPCMFormat:self.converterOutputFormat
+                                      frameCapacity:1024];
+    NSError *error = nil;
+    AVAudioConverterOutputStatus status =
+        [self.converter convertToBuffer:output
+                                  error:&error
+                     withInputFromBlock:^AVAudioBuffer *(
+                         AVAudioPacketCount requested,
+                         AVAudioConverterInputStatus *inputStatus) {
+                       (void)requested;
+                       *inputStatus = AVAudioConverterInputStatus_EndOfStream;
+                       return nil;
+                     }];
+    if (status != AVAudioConverterOutputStatus_HaveData ||
+        output.frameLength == 0 || error)
+      break;
+    uint64_t remaining =
+        kFridayMaximumFrames - _frames.load(std::memory_order_acquire);
+    AVAudioFrameCount frames =
+        (AVAudioFrameCount)std::min<uint64_t>(output.frameLength, remaining);
+    fwrite(output.floatChannelData[0], sizeof(float), frames, self.file);
+    _frames.fetch_add(frames, std::memory_order_release);
+  }
+}
+
+- (void)cancelSession:(uint64_t)sessionID {
+  if (!self.active || sessionID != self.sessionID)
+    return;
+  self.active = NO;
+  _realtime->accepting.store(false, std::memory_order_release);
+  [self.engine stop];
+  [self.engine disconnectNodeOutput:self.engine.inputNode];
+  [self.engine detachNode:self.sink];
+  if (self.timer) {
+    dispatch_source_cancel(self.timer);
+    self.timer = nil;
+  }
+  dispatch_sync(self.queue, ^{
+    if (self.file) {
+      fclose(self.file);
+      self.file = NULL;
+    }
+    self->_realtime.reset();
+  });
+  [NSFileManager.defaultManager removeItemAtURL:self.url error:nil];
+}
+
+- (void)discardRetryAudio {
+  if (self.retryAudioURL)
+    [NSFileManager.defaultManager removeItemAtURL:self.retryAudioURL error:nil];
+  self.retryAudioURL = nil;
+}
+
+- (void)configurationChanged:(NSNotification *)note {
+  (void)note;
+  if (!self.active)
+    return;
+  const uint64_t session = self.sessionID;
+  [self cancelSession:session];
+  self.handler(@"audio_interrupted", @{
+    @"sessionId" : @(session),
+    @"reason" : @"The microphone route changed during recording."
+  });
+}
+
 + (NSDictionary *)runStorageProbe {
-    NSString *path=[NSTemporaryDirectory() stringByAppendingPathComponent:@"friday-10-minute-probe.f32"];
-    int fd=open(path.fileSystemRepresentation,O_CREAT|O_TRUNC|O_RDWR,0600);
-    off_t expected=(off_t)kFridayMaximumFrames*sizeof(float);
-    BOOL storageOK=fd>=0&&ftruncate(fd,expected)==0;
-    struct stat st={};
-    if(fd>=0){fstat(fd,&st);close(fd);}
-    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-    FridayRing ring(4);
-    ring.push(0);ring.push(0);ring.push(0);ring.push(0);BOOL overflowRejected=!ring.push(0);
-    BOOL ok=storageOK&&st.st_size==expected&&overflowRejected&&ring.drops()==1;
-    return @{@"ok":@(ok),@"frames":@(kFridayMaximumFrames),@"bytes":@(st.st_size),@"expectedBytes":@(expected),@"durationSeconds":@600,@"warningAtSeconds":@585,@"warningFrames":@(kFridayWarningFrames),@"droppedFrameFailure":@(overflowRejected&&ring.drops()==1)};
+  NSString *path = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:@"friday-10-minute-probe.f32"];
+  int fd =
+      open(path.fileSystemRepresentation, O_CREAT | O_TRUNC | O_RDWR, 0600);
+  off_t expected = (off_t)kFridayMaximumFrames * sizeof(float);
+  BOOL storageOK = fd >= 0 && ftruncate(fd, expected) == 0;
+  struct stat attributes = {};
+  if (fd >= 0) {
+    fstat(fd, &attributes);
+    close(fd);
+  }
+  [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+  FridayRing ring(4);
+  ring.push(0);
+  ring.push(0);
+  ring.push(0);
+  ring.push(0);
+  BOOL overflowRejected = !ring.push(0);
+  BOOL ok = storageOK && attributes.st_size == expected && overflowRejected &&
+            ring.dropped() == 1;
+  return @{
+    @"ok" : @(ok),
+    @"frames" : @(kFridayMaximumFrames),
+    @"bytes" : @(attributes.st_size),
+    @"expectedBytes" : @(expected),
+    @"durationSeconds" : @600,
+    @"warningAtSeconds" : @585,
+    @"warningFrames" : @(kFridayWarningFrames),
+    @"droppedFrameFailure" : @(overflowRejected && ring.dropped() == 1)
+  };
 }
 @end

@@ -9,6 +9,7 @@ extern fn friday_host_native_destroy(*NativeHost) void;
 extern fn friday_host_native_request(*NativeHost, [*]const u8, usize, [*]const u8, usize, *bool, [*]u8, usize) usize;
 extern fn friday_host_native_request_async(*NativeHost, u64, [*]const u8, usize, [*]const u8, usize, CompletionCallback, ?*anyopaque) void;
 extern fn friday_host_native_cancel(*NativeHost, u64) void;
+extern fn friday_host_native_contract_probes([*]u8, usize) usize;
 
 const completion_capacity = 128;
 
@@ -34,6 +35,9 @@ pub const FridayHost = struct {
     completion_tail: usize = 0,
     completion_count: usize = 0,
     in_flight_count: usize = 0,
+    in_flight_keys: [completion_capacity]u64 = @splat(0),
+    in_flight_used: [completion_capacity]bool = @splat(false),
+    closing: bool = false,
     channels: ?native_sdk.HostChannelBinding = null,
     event_handle: ?native_sdk.ChannelHandle = null,
     services: ?native_sdk.platform.PlatformServices = null,
@@ -54,8 +58,20 @@ pub const FridayHost = struct {
     }
 
     pub fn destroy(self: *FridayHost) void {
-        friday_host_native_destroy(self.native);
+        self.mutex.lock();
+        self.closing = true;
         self.event_handle = null;
+        self.channels = null;
+        self.services = null;
+        self.mutex.unlock();
+        friday_host_native_destroy(self.native);
+        self.mutex.lock();
+        const safe_to_free = self.in_flight_count == 0;
+        self.mutex.unlock();
+        if (!safe_to_free) {
+            std.log.err("FridayHost teardown retained callback context for {d} unfinished operation(s)", .{self.in_flight_count});
+            return;
+        }
         self.allocator.destroy(self);
     }
 
@@ -74,21 +90,31 @@ pub const FridayHost = struct {
 
     fn bindServices(context: *anyopaque, services: *const native_sdk.platform.PlatformServices) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        self.services = services.*;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing) self.services = services.*;
     }
 
     fn bindChannels(context: *anyopaque, channels: native_sdk.HostChannelBinding) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        self.channels = channels;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing) self.channels = channels;
     }
 
     fn nativeEvent(context: ?*anyopaque, bytes: [*]const u8, length: usize) callconv(.c) void {
         const self: *FridayHost = @ptrCast(@alignCast(context.?));
-        if (self.event_handle) |handle| switch (handle.post(bytes[0..length])) {
+        self.mutex.lock();
+        const handle = if (!self.closing) self.event_handle else null;
+        self.mutex.unlock();
+        if (handle) |live_handle| switch (live_handle.post(bytes[0..length])) {
             .accepted => {},
             .dropped_full, .dropped_oversized, .closed => {
+                self.mutex.lock();
                 self.event_post_failures += 1;
-                std.log.err("FridayHost event channel rejected post; failures={d}", .{self.event_post_failures});
+                const failures = self.event_post_failures;
+                self.mutex.unlock();
+                std.log.err("FridayHost event channel rejected post; failures={d}", .{failures});
             },
         };
     }
@@ -96,10 +122,12 @@ pub const FridayHost = struct {
     fn nativeCompletion(context: ?*anyopaque, key: u64, ok: bool, bytes: [*]const u8, length: usize) callconv(.c) void {
         const self: *FridayHost = @ptrCast(@alignCast(context.?));
         self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.in_flight_count > 0) self.in_flight_count -= 1;
-        self.enqueueLocked(key, ok, bytes[0..length]);
-        if (self.services) |services| services.wake() catch {};
+        const known = self.takeInFlightLocked(key);
+        const should_deliver = known and !self.closing;
+        if (should_deliver) self.enqueueLocked(key, ok, bytes[0..length]);
+        const services = if (should_deliver) self.services else null;
+        self.mutex.unlock();
+        if (services) |live_services| live_services.wake() catch {};
     }
 
     fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
@@ -110,26 +138,63 @@ pub const FridayHost = struct {
 
     fn isAsync(name: []const u8) bool {
         return std.mem.eql(u8, name, "friday.audio.start") or std.mem.eql(u8, name, "friday.audio.finish") or
-            std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.model.download") or
-            std.mem.eql(u8, name, "friday.model.add_local") or std.mem.eql(u8, name, "friday.model.add_hf") or
-            std.mem.eql(u8, name, "friday.model.select");
+            std.mem.eql(u8, name, "friday.audio.retry") or std.mem.eql(u8, name, "friday.nemo.transcribe_path") or std.mem.eql(u8, name, "friday.nemo.unload") or
+            std.mem.eql(u8, name, "friday.model.download") or std.mem.eql(u8, name, "friday.model.add_local") or
+            std.mem.eql(u8, name, "friday.model.add_hf") or std.mem.eql(u8, name, "friday.model.select");
+    }
+
+    fn addInFlightLocked(self: *FridayHost, key: u64) bool {
+        for (self.in_flight_used, 0..) |used, index| {
+            if (used and self.in_flight_keys[index] == key) return false;
+        }
+        for (&self.in_flight_used, 0..) |*used, index| {
+            if (!used.*) {
+                used.* = true;
+                self.in_flight_keys[index] = key;
+                self.in_flight_count += 1;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn takeInFlightLocked(self: *FridayHost, key: u64) bool {
+        for (&self.in_flight_used, 0..) |*used, index| {
+            if (used.* and self.in_flight_keys[index] == key) {
+                used.* = false;
+                self.in_flight_keys[index] = 0;
+                if (self.in_flight_count > 0) self.in_flight_count -= 1;
+                return true;
+            }
+        }
+        return false;
     }
 
     fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, name, "friday.subscribe")) {
-            const channels = self.channels orelse {
+            self.mutex.lock();
+            const channels = if (!self.closing) self.channels else null;
+            self.mutex.unlock();
+            const channel_binding = channels orelse {
                 self.enqueue(key, false, "channel_binding_unavailable");
                 return;
             };
-            self.event_handle = channels.acquire_fn(channels.context, event_channel_key);
-            self.enqueue(key, self.event_handle != null, if (self.event_handle != null) "{\"ok\":true,\"subscribed\":true}" else "channel_unavailable");
+            const handle = channel_binding.acquire_fn(channel_binding.context, event_channel_key);
+            self.mutex.lock();
+            if (!self.closing) self.event_handle = handle;
+            self.mutex.unlock();
+            self.enqueue(key, handle != null, if (handle != null) "{\"ok\":true,\"subscribed\":true}" else "channel_unavailable");
             return;
         }
         if (isAsync(name)) {
             self.mutex.lock();
-            self.in_flight_count += 1;
+            const accepted = !self.closing and self.addInFlightLocked(key);
             self.mutex.unlock();
+            if (!accepted) {
+                self.enqueue(key, false, "async_key_unavailable");
+                return;
+            }
             friday_host_native_request_async(self.native, key, name.ptr, name.len, payload.ptr, payload.len, nativeCompletion, self);
             return;
         }
@@ -204,11 +269,32 @@ test "completion queue preserves order cancellation and pending state" {
     host.completion_tail = 0;
     host.completion_count = 0;
     host.in_flight_count = 0;
+    host.in_flight_used = @splat(false);
+    host.in_flight_keys = @splat(0);
+    host.closing = false;
+    try std.testing.expect(host.addInFlightLocked(77));
+    try std.testing.expect(!host.addInFlightLocked(77));
+    try std.testing.expectEqual(@as(usize, 1), host.in_flight_count);
+    try std.testing.expect(host.takeInFlightLocked(77));
+    try std.testing.expect(!host.takeInFlightLocked(77));
+    try std.testing.expectEqual(@as(usize, 0), host.in_flight_count);
     host.enqueue(1, true, "first");
     host.enqueue(2, true, "second");
     host.markCancelled(1);
     const result = FridayHost.poll(&host).?;
     try std.testing.expectEqual(@as(u64, 2), result.key);
+
     try std.testing.expectEqualStrings("second", result.bytes);
     try std.testing.expect(!FridayHost.pending(&host));
+}
+test "native audio and model contracts reject unsafe states" {
+    var buffer: [4096]u8 = undefined;
+    const length = friday_host_native_contract_probes(&buffer, buffer.len);
+    try std.testing.expect(length > 0);
+    const result = buffer[0..length];
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"expectedBytes\":38400000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"droppedFrameFailure\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"malformedRejected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"shaFailed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"sidecarRequired\":true") != null);
 }

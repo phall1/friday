@@ -1,35 +1,54 @@
 import { Cmd, asciiBytes, utf8Bytes } from "@native-sdk/core";
 
-export type BridgeState = "booting" | "ready" | "failed";
 export type HostChannelState = "data" | "closed" | "rejected";
 export type HostChannelKey = 7001;
-export type WorkflowState = "idle" | "waiting_hold" | "recording" | "transcribing" | "locked" | "failed";
+export type DeliveryKind = "pasted" | "clipboard" | "shown";
+export type FailureStage = "capture" | "model" | "transcription" | "delivery";
+export type RecordingControl = "held" | "locked";
+export type StopDisposition = "transcribe" | "discard" | "cancel" | "duration_limit";
 const HOST_CHANNEL_KEY: HostChannelKey = 7001;
 
+
+export type DictationWorkflow =
+  | { readonly kind: "booting" }
+  | { readonly kind: "not_ready" }
+  | { readonly kind: "ready"; readonly modelKey: number }
+  | { readonly kind: "starting"; readonly lockCandidate: boolean }
+  | { readonly kind: "recording"; readonly control: RecordingControl; readonly warnedDurationLimit: boolean }
+  | { readonly kind: "stopping"; readonly disposition: StopDisposition }
+  | { readonly kind: "transcribing"; readonly retryAudioAvailable: boolean }
+  | { readonly kind: "delivering" }
+  | { readonly kind: "failed"; readonly stage: FailureStage; readonly retryAudioAvailable: boolean };
+
 export interface Model {
-  readonly bridgeState: BridgeState;
-  readonly detail: Uint8Array;
-  readonly permissions: Uint8Array;
+  readonly workflow: DictationWorkflow;
+  readonly sessionId: number;
   readonly generation: number;
-  readonly hotkeyConfirmed: boolean;
-  readonly hotkeyDown: boolean;
-  readonly recordingLocked: boolean;
-  readonly recordingActive: boolean;
-  readonly workflow: WorkflowState;
   readonly pressedAtMs: number;
   readonly lastQuickReleaseAtMs: number;
+  readonly capturedFrames: number;
+  readonly sessionSourceToken: Uint8Array;
+  readonly workflowMessage: Uint8Array;
+  readonly hasImmediateResult: boolean;
+  readonly immediateResultKind: DeliveryKind;
+  readonly immediateResultMessage: Uint8Array;
+  readonly permissionsLoaded: boolean;
+  readonly modelsLoaded: boolean;
+  readonly microphonePermission: boolean;
+  readonly accessibilityPermission: boolean;
+  readonly inputMonitoringPermission: boolean;
+  readonly modelReady: boolean;
+  readonly selectedModelKey: number;
+  readonly onboardingComplete: boolean;
+  readonly limitedModeAccepted: boolean;
+  readonly hotkeyConfirmed: boolean;
+  readonly doubleTapEnabled: boolean;
   readonly doubleTapWindowMs: number;
   readonly minimumHoldMs: number;
-  readonly hotkeyDownCount: number;
-  readonly hotkeyUpCount: number;
-  readonly sourceToken: Uint8Array;
-  readonly sessionId: number;
-  readonly nextSessionId: number;
-  readonly probeResult: Uint8Array;
-  readonly overlayAction: Uint8Array;
-  readonly audioDetail: Uint8Array;
-  readonly modelDetail: Uint8Array;
-  readonly modelProgress: Uint8Array;
+  readonly overlayEnabled: boolean;
+  readonly pasteAutomatically: boolean;
+  readonly launchAtLogin: boolean;
+  readonly ambientDetail: Uint8Array;
 }
 
 export type Msg =
@@ -39,182 +58,444 @@ export type Msg =
   | { readonly kind: "permissions_loaded"; readonly body: Uint8Array }
   | { readonly kind: "permissions_failed"; readonly error: Uint8Array }
   | { readonly kind: "model_status_loaded"; readonly body: Uint8Array }
-  | { readonly kind: "model_failed"; readonly error: Uint8Array }
+  | { readonly kind: "model_status_failed"; readonly error: Uint8Array }
+  | { readonly kind: "model_downloaded"; readonly body: Uint8Array }
+  | { readonly kind: "model_download_failed"; readonly error: Uint8Array }
+  | { readonly kind: "restored" }
+  | { readonly kind: "fresh_boot" }
+  | { readonly kind: "restore_failed"; readonly error: Uint8Array }
   | { readonly kind: "confirm_hotkey" }
   | { readonly kind: "hotkey_configured"; readonly body: Uint8Array }
   | { readonly kind: "hotkey_failed"; readonly error: Uint8Array }
+  | { readonly kind: "request_microphone" }
+  | { readonly kind: "request_accessibility" }
+  | { readonly kind: "request_input_monitoring" }
+  | { readonly kind: "complete_onboarding" }
+  | { readonly kind: "toggle_double_tap" }
+  | { readonly kind: "toggle_overlay" }
+  | { readonly kind: "toggle_paste" }
+  | { readonly kind: "toggle_launch_at_login" }
+  | { readonly kind: "start_recording" }
+  | { readonly kind: "stop_recording" }
+  | { readonly kind: "cancel_active" }
   | { readonly kind: "hold_elapsed"; readonly at: number }
   | { readonly kind: "audio_started"; readonly body: Uint8Array }
-  | { readonly kind: "audio_finished"; readonly body: Uint8Array }
-  | { readonly kind: "audio_failed"; readonly error: Uint8Array }
-  | { readonly kind: "start_audio_probe" }
-  | { readonly kind: "stop_audio_probe" }
-  | { readonly kind: "probe_audio_storage" }
-  | { readonly kind: "audio_storage_probed"; readonly body: Uint8Array }
-  | { readonly kind: "probe_hotkey" }
-  | { readonly kind: "hotkey_probed"; readonly body: Uint8Array }
-  | { readonly kind: "probe_overlay" }
-  | { readonly kind: "overlay_probed"; readonly body: Uint8Array }
-  | { readonly kind: "probe_textedit" }
-  | { readonly kind: "textedit_probed"; readonly body: Uint8Array }
-  | { readonly kind: "probe_terminal" }
-  | { readonly kind: "terminal_probed"; readonly body: Uint8Array }
-  | { readonly kind: "probe_models" }
-  | { readonly kind: "models_probed"; readonly body: Uint8Array }
-  | { readonly kind: "download_model" }
-  | { readonly kind: "model_downloaded"; readonly body: Uint8Array }
-  | { readonly kind: "cancel_download" }
-  | { readonly kind: "transcribe_fixture" }
-  | { readonly kind: "cancel_fixture" }
-  | { readonly kind: "fixture_transcribed"; readonly body: Uint8Array }
-  | { readonly kind: "unload_model" }
-  | { readonly kind: "model_unloaded"; readonly body: Uint8Array }
-  | { readonly kind: "probe_failed"; readonly error: Uint8Array }
-  | { readonly kind: "show_overlay" }
-  | { readonly kind: "hide_overlay" };
+  | { readonly kind: "audio_start_failed"; readonly error: Uint8Array }
+  | { readonly kind: "transcript_ready"; readonly body: Uint8Array }
+  | { readonly kind: "transcription_failed"; readonly error: Uint8Array }
+  | { readonly kind: "delivery_finished"; readonly body: Uint8Array }
+  | { readonly kind: "delivery_failed"; readonly error: Uint8Array }
+  | { readonly kind: "retry_transcription" }
+  | { readonly kind: "source_captured"; readonly body: Uint8Array }
+  | { readonly kind: "source_capture_failed"; readonly error: Uint8Array }
+  | { readonly kind: "dismiss_failure" }
+  | { readonly kind: "dismiss_result" };
 
 export const viewUnbound = [
   "host_event", "subscribed", "subscribe_failed", "permissions_loaded", "permissions_failed",
-  "model_status_loaded", "model_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
-  "audio_started", "audio_finished", "audio_failed", "audio_storage_probed", "hotkey_probed",
-  "overlay_probed", "textedit_probed", "terminal_probed", "models_probed", "model_downloaded",
-  "fixture_transcribed", "model_unloaded", "probe_failed",
+  "model_status_loaded", "model_status_failed", "model_downloaded", "model_download_failed",
+  "restored", "fresh_boot", "restore_failed", "source_captured", "source_capture_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
+  "audio_started", "audio_start_failed", "transcript_ready", "transcription_failed",
+  "delivery_finished", "delivery_failed", "sessionSourceToken", "workflowMessage",
 ] as const;
-
-function parseUnsigned(bytes: Uint8Array): number {
-  let value = 0;
-  for (const byte of bytes) {
-    if (byte < 48 || byte > 57) return value;
-    value = value * 10 + byte - 48;
-  }
-  return value;
-}
-
-function boundedInteger(bytes: Uint8Array, start: number, end: number): number {
-  const parsed = parseUnsigned(bytes.slice(start, end));
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 9007199254740991 ? Math.trunc(parsed) : 0;
-}
 
 function hasPrefix(bytes: Uint8Array, prefix: Uint8Array): boolean {
   if (bytes.length < prefix.length) return false;
-  for (let i = 0; i < prefix.length; i += 1) if (bytes[i] !== prefix[i]) return false;
+  for (let index = 0; index < prefix.length; index += 1) if (bytes[index] !== prefix[index]) return false;
   return true;
 }
 
+function contains(bytes: Uint8Array, needle: Uint8Array): boolean {
+  if (needle.length === 0) return true;
+  if (bytes.length < needle.length) return false;
+  for (let start = 0; start <= bytes.length - needle.length; start += 1) {
+    let match = true;
+    for (let index = 0; index < needle.length; index += 1) if (bytes[start + index] !== needle[index]) match = false;
+    if (match) return true;
+  }
+  return false;
+}
+
 function findPipe(bytes: Uint8Array, start: number): number {
-  for (let i = start; i < bytes.length; i += 1) if (bytes[i] === 124) return i;
+  for (let index = start; index < bytes.length; index += 1) if (bytes[index] === 124) return index;
   return bytes.length;
 }
 
+function parseUnsigned(bytes: Uint8Array, start: number, end: number): number {
+  let value = 0;
+  for (let index = start; index < end; index += 1) {
+    const byte = bytes[index];
+    if (byte < 48 || byte > 57) return 0;
+    value = value * 10 + byte - 48;
+  }
+  if (!Number.isFinite(value) || value < 0 || value > 9007199254740991) return 0;
+  return Math.trunc(value);
+}
+
+function jsonInteger(bytes: Uint8Array, key: Uint8Array): number {
+  if (key.length === 0 || bytes.length < key.length) return 0;
+  for (let start = 0; start <= bytes.length - key.length; start += 1) {
+    let match = true;
+    for (let index = 0; index < key.length; index += 1) if (bytes[start + index] !== key[index]) match = false;
+    if (!match) continue;
+    let end = start + key.length;
+    while (end < bytes.length && bytes[end] >= 48 && bytes[end] <= 57) end += 1;
+    return parseUnsigned(bytes, start + key.length, end);
+  }
+  return 0;
+}
+
+function defaultModel(): Model {
+  return {
+    workflow: { kind: "booting" },
+    sessionId: 0 / 1,
+    generation: 0 / 1,
+    pressedAtMs: 0 / 1,
+    lastQuickReleaseAtMs: 0 / 1,
+    capturedFrames: 0 / 1,
+    sessionSourceToken: asciiBytes(""),
+    workflowMessage: asciiBytes(""),
+    hasImmediateResult: false,
+    immediateResultKind: "shown",
+    immediateResultMessage: asciiBytes(""),
+    permissionsLoaded: false,
+    modelsLoaded: false,
+    microphonePermission: false,
+    accessibilityPermission: false,
+    inputMonitoringPermission: false,
+    modelReady: false,
+    selectedModelKey: 0 / 1,
+    onboardingComplete: false,
+    limitedModeAccepted: false,
+    hotkeyConfirmed: false,
+    doubleTapEnabled: true,
+    doubleTapWindowMs: 350 / 1,
+    minimumHoldMs: 300 / 1,
+    overlayEnabled: true,
+    pasteAutomatically: true,
+    launchAtLogin: false,
+    ambientDetail: utf8Bytes("Checking permissions and local model readiness…"),
+  };
+}
+
+export function migrate(snapshot: Uint8Array, fromVersion: number): Model {
+  if (fromVersion === 1 && snapshot.length >= 0) return defaultModel();
+  return defaultModel();
+}
+
+function readiness(model: Model): DictationWorkflow {
+  if (!model.permissionsLoaded || !model.modelsLoaded) return { kind: "booting" };
+  if (!model.microphonePermission) return { kind: "not_ready" };
+  if (!model.inputMonitoringPermission) return { kind: "not_ready" };
+  if (!model.hotkeyConfirmed) return { kind: "not_ready" };
+  if (!model.modelReady || model.selectedModelKey === 0) return { kind: "not_ready" };
+  if (!model.onboardingComplete && !model.limitedModeAccepted) return { kind: "not_ready" };
+  return { kind: "ready", modelKey: model.selectedModelKey };
+}
+
+function notReadyMessage(model: Model): Uint8Array {
+  if (!model.microphonePermission) return utf8Bytes("Microphone permission is required before recording.");
+  if (!model.inputMonitoringPermission) return utf8Bytes("Input Monitoring permission is required for the global hotkey.");
+  if (!model.hotkeyConfirmed) return utf8Bytes("Confirm a global hotkey to enable dictation.");
+  if (!model.modelReady || model.selectedModelKey === 0) return utf8Bytes("Download or select a compatible Parakeet TDT GGUF model.");
+  return utf8Bytes("Complete onboarding before using Friday.");
+}
+
+
 export function initialModel(): [Model, Cmd<Msg>] {
-  return [{
-    bridgeState: "booting", detail: utf8Bytes("Connecting to FridayHost…"), permissions: utf8Bytes("Checking permissions…"),
-    generation: 0, hotkeyConfirmed: false, hotkeyDown: false, recordingLocked: false, recordingActive: false,
-    workflow: "idle", pressedAtMs: 0, lastQuickReleaseAtMs: 0, doubleTapWindowMs: 350, minimumHoldMs: 300,
-    hotkeyDownCount: 0, hotkeyUpCount: 0, sourceToken: asciiBytes(""), sessionId: 0, nextSessionId: 1,
-    probeResult: asciiBytes("No probe run yet."), overlayAction: asciiBytes("none"), audioDetail: asciiBytes("Audio idle."),
-    modelDetail: utf8Bytes("Checking local models…"), modelProgress: asciiBytes("No model operation."),
-  }, Cmd.batch([
+  return [defaultModel(), Cmd.batch([
     Cmd.channelOpen(HOST_CHANNEL_KEY, { event: "host_event" }),
     Cmd.request("friday.subscribe", asciiBytes("7001"), { key: "host-subscribe", ok: "subscribed", err: "subscribe_failed" }),
     Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
-    Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_failed" }),
+    Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
   ])];
 }
 
+export function workflowName(model: Model): Uint8Array {
+  switch (model.workflow.kind) {
+    case "booting": return asciiBytes("booting");
+    case "not_ready": return asciiBytes("not ready");
+    case "ready": return asciiBytes("ready");
+    case "starting": return asciiBytes("starting");
+    case "recording": return asciiBytes("recording");
+    case "stopping": return asciiBytes("stopping");
+    case "transcribing": return asciiBytes("transcribing");
+    case "delivering": return asciiBytes("delivering");
+    case "failed": return asciiBytes("failed");
+  }
+}
+export function workflowDetail(model: Model): Uint8Array {
+  switch (model.workflow.kind) {
+    case "booting": return utf8Bytes("Checking Friday’s local services…");
+    case "not_ready": return notReadyMessage(model);
+    case "ready": return model.hasImmediateResult ? model.immediateResultMessage : asciiBytes("Ready for local dictation.");
+    case "starting": return asciiBytes("Waiting for an intentional hold or second tap.");
+    case "recording": return model.workflow.control === "locked" ? asciiBytes("Recording is locked. Press the hotkey or Stop to finish.") : asciiBytes("Recording while the hotkey is held.");
+    case "stopping": return asciiBytes("Draining captured audio.");
+    case "transcribing": return asciiBytes("Transcribing locally with the selected model.");
+    case "delivering": return asciiBytes("Delivering only the final transcript to the exact source.");
+    case "failed": return model.workflowMessage;
+  }
+}
+export function isReady(model: Model): boolean { return model.workflow.kind === "ready"; }
+export function isRecording(model: Model): boolean { return model.workflow.kind === "recording"; }
+export function isLocked(model: Model): boolean { return model.workflow.kind === "recording" && model.workflow.control === "locked"; }
+export function isBusy(model: Model): boolean { return model.workflow.kind === "starting" || model.workflow.kind === "recording" || model.workflow.kind === "stopping" || model.workflow.kind === "transcribing" || model.workflow.kind === "delivering"; }
+export function canRetry(model: Model): boolean { return model.workflow.kind === "failed" && model.workflow.stage === "transcription" && model.workflow.retryAudioAvailable; }
+export function permissionSummary(model: Model): Uint8Array {
+  if (!model.permissionsLoaded) return utf8Bytes("Checking…");
+  if (model.microphonePermission && model.accessibilityPermission && model.inputMonitoringPermission) return asciiBytes("Microphone, Accessibility, and Input Monitoring granted.");
+  if (!model.microphonePermission) return asciiBytes("Microphone missing.");
+  if (!model.inputMonitoringPermission) return asciiBytes("Input Monitoring missing.");
+  return asciiBytes("Accessibility missing; Friday will use clipboard fallback.");
+}
+export function modelSummary(model: Model): Uint8Array { return model.modelReady ? asciiBytes("Parakeet TDT model ready.") : asciiBytes("No compatible model ready."); }
+
+
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   switch (msg.kind) {
-    case "subscribed": return { ...model, bridgeState: "ready", detail: msg.body };
-    case "subscribe_failed": return { ...model, bridgeState: "failed", detail: msg.error };
-    case "permissions_loaded": return { ...model, permissions: msg.body };
-    case "permissions_failed": return { ...model, permissions: msg.error };
-    case "model_status_loaded": return { ...model, modelDetail: msg.body };
-    case "model_failed": return { ...model, modelDetail: msg.error };
+    case "subscribed": return { ...model, ambientDetail: msg.body };
+    case "subscribe_failed": return { ...model, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "restored": {
+      const restored = { ...model, workflow: { kind: "booting" } as DictationWorkflow, permissionsLoaded: false, modelsLoaded: false };
+      if (restored.hotkeyConfirmed) return [restored, Cmd.batch([
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+        Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
+      ])];
+      return [restored, Cmd.batch([
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      ])];
+    }
+    case "fresh_boot": return [model, Cmd.batch([
+      Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+      Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+    ])];
+    case "restore_failed": return [{ ...model, ambientDetail: msg.error }, Cmd.batch([
+      Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+      Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+    ])];
+    case "permissions_loaded": {
+      const next = { ...model,
+        permissionsLoaded: true,
+        microphonePermission: contains(msg.body, asciiBytes("\"microphone\":true")),
+        accessibilityPermission: contains(msg.body, asciiBytes("\"accessibility\":1")) || contains(msg.body, asciiBytes("\"accessibility\":true")),
+        inputMonitoringPermission: contains(msg.body, asciiBytes("\"inputMonitoring\":true")),
+        ambientDetail: msg.body,
+      };
+      if (model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready") return { ...next, workflow: readiness(next) };
+      return next;
+    }
+    case "permissions_failed": return { ...model, permissionsLoaded: true, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "model_status_loaded": {
+      const key = jsonInteger(msg.body, asciiBytes("\"activeModelKey\":"));
+      const ready = key > 0 && contains(msg.body, asciiBytes("\"compatibility\":\"compatible\""));
+      const selectedKey = key > 0 ? key / 1 : 0 / 1;
+      const next = { ...model, modelsLoaded: true, modelReady: ready, selectedModelKey: selectedKey, ambientDetail: msg.body };
+      if (!ready && !model.onboardingComplete) return [{ ...next, workflow: readiness(next) }, Cmd.request("friday.model.download", asciiBytes(""), { key: "model-download", ok: "model_downloaded", err: "model_download_failed" })];
+      if (model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready") return { ...next, workflow: readiness(next) };
+      return next;
+    }
+    case "model_status_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "model_downloaded": {
+      const next = { ...model, modelsLoaded: true, modelReady: true, selectedModelKey: 1, ambientDetail: msg.body };
+      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+    }
+    case "model_download_failed": return { ...model, modelsLoaded: true, modelReady: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
     case "confirm_hotkey": return [model, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
-    case "hotkey_configured": return { ...model, hotkeyConfirmed: true, detail: msg.body };
-    case "hotkey_failed": return { ...model, hotkeyConfirmed: false, detail: msg.error };
+    case "hotkey_configured": {
+      const next = { ...model, hotkeyConfirmed: true, ambientDetail: msg.body };
+      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+    }
+    case "hotkey_failed": return { ...model, hotkeyConfirmed: false, workflow: { kind: "not_ready" }, workflowMessage: msg.error, ambientDetail: msg.error };
+    case "request_microphone": return [model, Cmd.request("friday.permissions.request", asciiBytes("microphone"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
+    case "request_accessibility": return [model, Cmd.request("friday.permissions.request", asciiBytes("accessibility"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
+    case "request_input_monitoring": return [model, Cmd.request("friday.permissions.request", asciiBytes("input"), { key: "permission-request", ok: "permissions_loaded", err: "permissions_failed" })];
+    case "complete_onboarding": {
+      if (!model.microphonePermission || !model.inputMonitoringPermission || !model.hotkeyConfirmed || !model.modelReady) return model;
+      const next = { ...model, onboardingComplete: true };
+      return [{ ...next, workflow: readiness(next) }, Cmd.persist()];
+    }
+    case "toggle_double_tap":
+      if (isBusy(model)) return model;
+      return [{ ...model, doubleTapEnabled: !model.doubleTapEnabled }, Cmd.persist()];
+    case "toggle_overlay":
+      if (isBusy(model)) return model;
+      return [{ ...model, overlayEnabled: !model.overlayEnabled }, Cmd.persist()];
+    case "toggle_paste":
+      if (isBusy(model)) return model;
+      return [{ ...model, pasteAutomatically: !model.pasteAutomatically }, Cmd.persist()];
+    case "toggle_launch_at_login":
+      if (isBusy(model)) return model;
+      return [{ ...model, launchAtLogin: !model.launchAtLogin }, Cmd.persist()];
+    case "start_recording": {
+      if (model.workflow.kind !== "ready") return model;
+      return [{ ...model, workflow: { kind: "starting", lockCandidate: false }, sessionId: 0 / 1, generation: 0 / 1, pressedAtMs: 0 / 1 }, Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" })];
+    }
+    case "source_captured": {
+      if (model.workflow.kind !== "starting" || model.generation !== 0) return model;
+      const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
+      if (generation === 0) return model;
+      const current = model.workflow;
+      const safeGeneration = generation / 1;
+      return [{ ...model, workflow: current, sessionId: safeGeneration, generation: safeGeneration }, Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" })];
+    }
+    case "source_capture_failed": {
+      if (model.workflow.kind !== "starting") return model;
+      const current = model.workflow;
+      return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.error };
+    }
+    case "stop_recording": {
+      if (model.workflow.kind !== "recording") return model;
+      const current = model.workflow;
+      return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+    }
+    case "cancel_active": {
+      if (!isBusy(model) && model.workflow.kind !== "failed") return model;
+      const source = model.workflow.kind === "ready" || model.workflow.kind === "not_ready" || model.workflow.kind === "booting" ? asciiBytes("") : model.sessionSourceToken;
+      return [{ ...model, workflow: readiness(model) }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", source), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+    }
     case "hold_elapsed": {
-      if (!model.hotkeyDown || model.recordingActive || model.recordingLocked) return model;
-      const session = model.nextSessionId;
-      const next = session < 1000000 ? session + 1 : 1;
-      return [{ ...model, recordingActive: true, workflow: "recording", sessionId: session, nextSessionId: next }, Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${model.generation}`), { key: "audio-session", ok: "audio_started", err: "audio_failed" })];
+      if (model.workflow.kind !== "starting" || model.workflow.lockCandidate) return model;
+      const current = model.workflow;
+      return [model, Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" })];
     }
-    case "audio_started": return { ...model, audioDetail: msg.body, recordingActive: true };
-    case "audio_finished": return { ...model, audioDetail: msg.body, recordingActive: false, recordingLocked: false, hotkeyDown: false, workflow: "idle", lastQuickReleaseAtMs: 0 };
-    case "audio_failed": return { ...model, audioDetail: msg.error, recordingActive: false, workflow: "failed" };
-    case "start_audio_probe": {
-      if (model.recordingActive) return model;
-      const session = model.nextSessionId;
-      const next = session < 1000000 ? session + 1 : 1;
-      return [{ ...model, recordingActive: true, workflow: "recording", sessionId: session, nextSessionId: next }, Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${model.generation}`), { key: "audio-session", ok: "audio_started", err: "audio_failed" })];
+    case "audio_started": {
+      if (model.workflow.kind !== "starting") return model;
+      const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
+      if (session !== model.sessionId) return model;
+      const current = model.workflow;
+      return { ...model, capturedFrames: 0 / 1, workflow: { kind: "recording", control: current.lockCandidate ? "locked" : "held", warnedDurationLimit: false } };
     }
-    case "stop_audio_probe":
-      if (!model.recordingActive) return model;
-      return [{ ...model, workflow: "transcribing" }, Cmd.request("friday.audio.finish", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_finished", err: "audio_failed" })];
-    case "probe_audio_storage": return [model, Cmd.request("friday.audio.storage_probe", asciiBytes(""), { key: "audio-storage", ok: "audio_storage_probed", err: "probe_failed" })];
-    case "audio_storage_probed": return { ...model, probeResult: msg.body };
-    case "probe_hotkey": return [model, Cmd.request("friday.hotkey.probe", asciiBytes(""), { key: "hotkey-probe", ok: "hotkey_probed", err: "probe_failed" })];
-    case "hotkey_probed": return { ...model, probeResult: msg.body };
-    case "probe_overlay": return [model, Cmd.request("friday.overlay.probe", asciiBytes(""), { key: "overlay-probe", ok: "overlay_probed", err: "probe_failed" })];
-    case "overlay_probed": return { ...model, probeResult: msg.body };
-    case "probe_textedit": return [model, Cmd.request("friday.delivery.probe", asciiBytes("TextEdit"), { key: "textedit-probe", ok: "textedit_probed", err: "probe_failed" })];
-    case "textedit_probed": return { ...model, probeResult: msg.body };
-    case "probe_terminal": return [model, Cmd.request("friday.delivery.probe", asciiBytes("Terminal"), { key: "terminal-probe", ok: "terminal_probed", err: "probe_failed" })];
-    case "terminal_probed": return { ...model, probeResult: msg.body };
-    case "probe_models": return [model, Cmd.request("friday.model.probes", asciiBytes(""), { key: "model-probes", ok: "models_probed", err: "probe_failed" })];
-    case "models_probed": return { ...model, probeResult: msg.body };
-    case "download_model": return [{ ...model, modelProgress: utf8Bytes("Starting default model download…") }, Cmd.request("friday.model.download", utf8Bytes(`generation=${model.generation}`), { key: "model-download", ok: "model_downloaded", err: "model_failed" })];
-    case "model_downloaded": return { ...model, modelDetail: msg.body, modelProgress: asciiBytes("Default model installed and warm.") };
-    case "cancel_download": return [{ ...model, modelProgress: utf8Bytes("Cancelling model download…") }, Cmd.batch([Cmd.cancel("model-download"), Cmd.host("friday.model.cancel", asciiBytes("0"))])];
-    case "transcribe_fixture": {
-      const generation = model.generation < 1000000 ? model.generation + 1 : 1;
-      return [{ ...model, generation, audioDetail: asciiBytes("Fixture transcription running.") }, Cmd.request("friday.nemo.transcribe_path", utf8Bytes(`session=999;generation=${generation};path=L3RtcC9mcmlkYXktZml4dHVyZS5mMzI=`), { key: "fixture-transcription", ok: "fixture_transcribed", err: "audio_failed" })];
+    case "audio_start_failed": {
+      if (model.workflow.kind !== "starting") return model;
+      const current = model.workflow;
+      return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.error };
     }
-    case "cancel_fixture": return [{ ...model, audioDetail: asciiBytes("Fixture transcription cancelled.") }, Cmd.cancel("fixture-transcription")];
-    case "fixture_transcribed": return { ...model, audioDetail: msg.body };
-    case "unload_model": return [model, Cmd.request("friday.nemo.unload", asciiBytes(""), { key: "nemo-unload", ok: "model_unloaded", err: "model_failed" })];
-    case "model_unloaded": return { ...model, modelDetail: msg.body };
-    case "probe_failed": return { ...model, probeResult: msg.error };
-    case "show_overlay": return [model, Cmd.host("friday.overlay.show", asciiBytes("locked"))];
-    case "hide_overlay": return [model, Cmd.host("friday.overlay.hide", asciiBytes(""))];
+    case "transcript_ready": {
+      if (model.workflow.kind !== "stopping" && model.workflow.kind !== "transcribing") return model;
+      const current = model.workflow;
+      const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
+      const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
+      if (session !== model.sessionId || generation !== model.generation) return model;
+      if (contains(msg.body, asciiBytes("\"silence\":true"))) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes("No speech detected."), lastQuickReleaseAtMs: 0 / 1, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+      return [{ ...model, workflow: { kind: "delivering" } }, Cmd.request("friday.deliver_session", asciiBytes(""), { key: "delivery", ok: "delivery_finished", err: "delivery_failed" })];
+    }
+    case "transcription_failed": {
+      if (model.workflow.kind !== "stopping" && model.workflow.kind !== "transcribing") return model;
+      const current = model.workflow;
+      const session = jsonInteger(msg.error, asciiBytes("\"sessionId\":"));
+      const generation = jsonInteger(msg.error, asciiBytes("\"generation\":"));
+      if (session !== model.sessionId || generation !== model.generation) return model;
+      return { ...model, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: contains(msg.error, asciiBytes("\"retryAudioAvailable\":true")) }, workflowMessage: msg.error };
+    }
+    case "delivery_finished": {
+      if (model.workflow.kind !== "delivering") return model;
+      const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
+      const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
+      if (session !== model.sessionId || generation !== model.generation) return model;
+      const kind: DeliveryKind = contains(msg.body, asciiBytes("\"kind\":\"pasted\"")) ? "pasted" : contains(msg.body, asciiBytes("\"kind\":\"clipboard\"")) ? "clipboard" : "shown";
+      return { ...model, hasImmediateResult: true, immediateResultKind: kind, sessionSourceToken: asciiBytes(""), immediateResultMessage: msg.body, workflow: { kind: "ready", modelKey: model.selectedModelKey } };
+    }
+    case "delivery_failed": {
+      if (model.workflow.kind !== "delivering") return model;
+      const current = model.workflow;
+      return { ...model, workflow: { kind: "failed", stage: "delivery", retryAudioAvailable: false }, workflowMessage: msg.error };
+    }
+    case "retry_transcription": {
+      if (model.workflow.kind !== "failed" || model.workflow.stage !== "transcription" || !model.workflow.retryAudioAvailable) return model;
+      const current = model.workflow;
+      return [{ ...model, workflow: { kind: "transcribing", retryAudioAvailable: true } }, Cmd.request("friday.audio.retry", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+    }
+    case "dismiss_failure": {
+      if (model.workflow.kind !== "failed") return model;
+      const current = model.workflow;
+      return [{ ...model, workflow: readiness(model) }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+    }
+    case "dismiss_result": {
+      if (model.workflow.kind !== "ready") return model;
+      return { ...model, hasImmediateResult: false, immediateResultMessage: asciiBytes("") };
+    }
     case "host_event": {
       if (msg.state !== "data" || msg.key !== HOST_CHANNEL_KEY) return model;
-      if (msg.droppedPending > 0 || msg.droppedTotal > 0) return [{ ...model, hotkeyDown: false, recordingLocked: false, recordingActive: false, workflow: "failed", detail: asciiBytes("FridayHost event back-pressure invalidated the active session.") }, Cmd.host("friday.overlay.hide", asciiBytes(""))];
+      if (msg.droppedPending > 0 || msg.droppedTotal > 0) return [{ ...model, workflow: { kind: "not_ready" }, workflowMessage: asciiBytes("FridayHost event back-pressure invalidated the active session.") }, Cmd.batch([Cmd.cancel("audio-session"), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+      if (hasPrefix(msg.bytes, asciiBytes("permissions|"))) return [model, Cmd.batch([
+        Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
+        Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" }),
+      ])];
       if (hasPrefix(msg.bytes, asciiBytes("hotkey_down|"))) {
-        const generationEnd = findPipe(msg.bytes, 12), atEnd = findPipe(msg.bytes, generationEnd + 1), tokenEnd = findPipe(msg.bytes, atEnd + 1);
-        const rawGeneration = boundedInteger(msg.bytes, 12, generationEnd), rawAt = boundedInteger(msg.bytes, generationEnd + 1, atEnd);
-        const generation = Number.isFinite(rawGeneration) && rawGeneration > model.generation && rawGeneration <= 9007199254740991 ? Math.trunc(rawGeneration) : 0;
-        const at = Number.isFinite(rawAt) && rawAt > 0 && rawAt <= 9007199254740991 ? Math.trunc(rawAt) : 0;
+        const generationEnd = findPipe(msg.bytes, 12);
+        const atEnd = findPipe(msg.bytes, generationEnd + 1);
+        const tokenEnd = findPipe(msg.bytes, atEnd + 1);
+        const generation = parseUnsigned(msg.bytes, 12, generationEnd);
+        const at = parseUnsigned(msg.bytes, generationEnd + 1, atEnd);
+        const token = msg.bytes.slice(atEnd + 1, tokenEnd);
         if (generation === 0 || at === 0) return model;
-        if (model.recordingLocked) return [{ ...model, generation, hotkeyDown: false, recordingLocked: false, workflow: "transcribing" }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.request("friday.audio.finish", utf8Bytes(`session=${model.sessionId};generation=${generation}`), { key: "audio-session", ok: "audio_finished", err: "audio_failed" }), Cmd.host("friday.overlay.transcribing", asciiBytes(""))])];
-        const delta = at >= model.lastQuickReleaseAtMs ? at - model.lastQuickReleaseAtMs : model.doubleTapWindowMs + 1;
-        const lock = model.lastQuickReleaseAtMs > 0 && delta <= model.doubleTapWindowMs;
-        const nextDown = model.hotkeyDownCount < 1000000 ? model.hotkeyDownCount + 1 : model.hotkeyDownCount;
-        if (lock) {
-          const session = model.nextSessionId, next = session < 1000000 ? session + 1 : 1;
-          return [{ ...model, generation, hotkeyDown: true, recordingLocked: true, recordingActive: true, workflow: "locked", pressedAtMs: at, hotkeyDownCount: nextDown, sourceToken: msg.bytes.slice(atEnd + 1, tokenEnd), sessionId: session, nextSessionId: next, lastQuickReleaseAtMs: 0 }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${generation}`), { key: "audio-session", ok: "audio_started", err: "audio_failed" }), Cmd.host("friday.overlay.show", asciiBytes("locked"))])];
+        if (model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping") {
+          const old = model.workflow;
+          const session = generation;
+          const workflow: DictationWorkflow = { kind: "starting", lockCandidate: false };
+          return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
+            Cmd.cancel("audio-session"), Cmd.cancel("delivery"),
+            Cmd.host("friday.audio.discard", asciiBytes("")),
+            Cmd.host("friday.source.discard", model.sessionSourceToken),
+            Cmd.delay("hold-start", 300, "hold_elapsed"),
+            model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("held")) : Cmd.none,
+          ])];
         }
-        return [{ ...model, generation, hotkeyDown: true, recordingLocked: false, workflow: "waiting_hold", pressedAtMs: at, hotkeyDownCount: nextDown, sourceToken: msg.bytes.slice(atEnd + 1, tokenEnd) }, Cmd.batch([Cmd.delay("hold-start", model.minimumHoldMs, "hold_elapsed"), Cmd.host("friday.overlay.show", asciiBytes("held"))])];
+        if (model.workflow.kind === "recording" && model.workflow.control === "locked") {
+          const current = model.workflow;
+          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.batch([Cmd.host("friday.source.discard", token), Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" }), Cmd.host("friday.overlay.transcribing", asciiBytes(""))])];
+        }
+        if (model.workflow.kind !== "ready") return model;
+        const session = generation;
+        const delta = at >= model.lastQuickReleaseAtMs ? at - model.lastQuickReleaseAtMs : model.doubleTapWindowMs + 1;
+        const lockCandidate = model.doubleTapEnabled && model.lastQuickReleaseAtMs > 0 && delta <= model.doubleTapWindowMs;
+        const workflow: DictationWorkflow = { kind: "starting", lockCandidate };
+        if (lockCandidate) return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
+          Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" }),
+          model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("locked")) : Cmd.none,
+        ])];
+        return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
+          Cmd.delay("hold-start", 300, "hold_elapsed"),
+          model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("held")) : Cmd.none,
+        ])];
       }
       if (hasPrefix(msg.bytes, asciiBytes("hotkey_up|"))) {
-        const generationEnd = findPipe(msg.bytes, 10), rawGeneration = boundedInteger(msg.bytes, 10, generationEnd), rawAt = boundedInteger(msg.bytes, generationEnd + 1, msg.bytes.length);
-        const generation = Number.isFinite(rawGeneration) && rawGeneration >= 0 && rawGeneration <= 9007199254740991 ? Math.trunc(rawGeneration) : 0;
-        const at = Number.isFinite(rawAt) && rawAt >= 0 && rawAt <= 9007199254740991 ? Math.trunc(rawAt) : 0;
-        if (generation !== model.generation || !model.hotkeyDown || at < model.pressedAtMs) return model;
-        const nextUp = model.hotkeyUpCount < 1000000 ? model.hotkeyUpCount + 1 : model.hotkeyUpCount;
-        if (model.recordingLocked) return { ...model, hotkeyUpCount: nextUp };
-        const duration = at - model.pressedAtMs;
-        if (model.recordingActive) return [{ ...model, hotkeyDown: false, workflow: "transcribing", hotkeyUpCount: nextUp, lastQuickReleaseAtMs: 0 }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.request("friday.audio.finish", utf8Bytes(`session=${model.sessionId};generation=${generation}`), { key: "audio-session", ok: "audio_finished", err: "audio_failed" }), Cmd.host("friday.overlay.transcribing", asciiBytes(""))])];
-        const quickValue = duration < model.minimumHoldMs && duration <= model.doubleTapWindowMs ? at : 0;
-        const quickRelease = Number.isFinite(quickValue) && quickValue >= 0 && quickValue <= 9007199254740991 ? Math.trunc(quickValue) : 0;
-        return [{ ...model, hotkeyDown: false, workflow: "idle", hotkeyUpCount: nextUp, lastQuickReleaseAtMs: quickRelease }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+        const generationEnd = findPipe(msg.bytes, 10);
+        const generation = parseUnsigned(msg.bytes, 10, generationEnd);
+        const at = parseUnsigned(msg.bytes, generationEnd + 1, msg.bytes.length);
+        if (model.workflow.kind === "recording") {
+          if (generation !== model.generation || at < model.pressedAtMs) return model;
+          if (model.workflow.control === "locked") return model;
+          const current = model.workflow;
+          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.batch([Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" }), Cmd.host("friday.overlay.transcribing", asciiBytes(""))])];
+        }
+        if (model.workflow.kind === "starting") {
+          if (generation !== model.generation || at < model.pressedAtMs) return model;
+          const current = model.workflow;
+          const duration = at - model.pressedAtMs;
+          const quick = duration < model.minimumHoldMs && duration <= model.doubleTapWindowMs ? at / 1 : 0 / 1;
+          return [{ ...model, hasImmediateResult: false, sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes(""), lastQuickReleaseAtMs: quick, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+        }
+        return model;
       }
-      if (hasPrefix(msg.bytes, asciiBytes("hotkey_cancel|"))) return [{ ...model, hotkeyDown: false, recordingLocked: false, recordingActive: false, workflow: "failed", lastQuickReleaseAtMs: 0, sourceToken: asciiBytes("") }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", model.sourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
-      if (hasPrefix(msg.bytes, asciiBytes("overlay_stop|"))) return [{ ...model, hotkeyDown: false, recordingLocked: false, overlayAction: asciiBytes("stop"), workflow: model.recordingActive ? "transcribing" : "idle" }, model.recordingActive ? Cmd.request("friday.audio.finish", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_finished", err: "audio_failed" }) : Cmd.host("friday.overlay.hide", asciiBytes(""))];
-      if (hasPrefix(msg.bytes, asciiBytes("overlay_cancel|"))) return [{ ...model, hotkeyDown: false, recordingLocked: false, recordingActive: false, overlayAction: asciiBytes("cancel"), workflow: "idle", sourceToken: asciiBytes("") }, Cmd.batch([Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", model.sourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
-      if (hasPrefix(msg.bytes, asciiBytes("model_progress|"))) return { ...model, modelProgress: msg.bytes };
-      if (hasPrefix(msg.bytes, asciiBytes("duration_warning|"))) return { ...model, audioDetail: asciiBytes("Recording stops automatically in 15 seconds.") };
-      if (hasPrefix(msg.bytes, asciiBytes("duration_limit|")) && model.recordingActive) return [{ ...model, workflow: "transcribing" }, Cmd.request("friday.audio.finish", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_finished", err: "audio_failed" })];
+      if (hasPrefix(msg.bytes, asciiBytes("hotkey_cancel|")) || hasPrefix(msg.bytes, asciiBytes("overlay_cancel|"))) return update(model, { kind: "cancel_active" });
+      if (hasPrefix(msg.bytes, asciiBytes("overlay_stop|"))) return update(model, { kind: "stop_recording" });
+      if (hasPrefix(msg.bytes, asciiBytes("duration_warning|")) && model.workflow.kind === "recording") return { ...model, workflow: { ...model.workflow, warnedDurationLimit: true } };
+      if (hasPrefix(msg.bytes, asciiBytes("duration_limit|")) && model.workflow.kind === "recording") {
+        const current = model.workflow;
+        return [{ ...model, workflow: { kind: "stopping", disposition: "duration_limit" } }, Cmd.request("friday.audio.finish", asciiBytes(""), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+      }
+      if (hasPrefix(msg.bytes, asciiBytes("audio_interrupted|")) && model.workflow.kind === "recording") {
+        const current = model.workflow;
+        return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.bytes };
+      }
+      if (hasPrefix(msg.bytes, asciiBytes("audio_interrupted|")) && model.workflow.kind === "starting") {
+        const current = model.workflow;
+        return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.bytes };
+      }
       return model;
     }
   }

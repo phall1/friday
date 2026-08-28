@@ -2,7 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void (^FridayInputEventHandler)(NSString *event, NSDictionary<NSString *, id> *payload);
+typedef void (^FridayInputEventHandler)(NSString *event,
+                                        NSDictionary<NSString *, id> *payload);
 
 @interface FridayGlobalInputMonitor : NSObject
 @property(nonatomic, readonly) BOOL inputMonitoringUsable;

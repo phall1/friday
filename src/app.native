@@ -1,55 +1,69 @@
 <scroll>
-  <column gap="12" padding="20">
-    <text size="heading">Friday native interaction spikes</text>
-    <text wrap="true">Production FridayHost paths: global input, exact-source delivery, overlay, bounded audio, embedded NeMo, and verified model storage.</text>
+  <column gap="16" padding="20">
+    <row gap="8" cross="center">
+      <text size="heading" grow="1">Friday</text>
+      <badge>{workflowName}</badge>
+    </row>
+    <text wrap="true">{workflowDetail}</text>
+
     <card>
-      <column gap="6" padding="12">
-        <text>Bridge: {bridgeState}</text>
-        <text wrap="true">{detail}</text>
-        <text wrap="true">Permissions: {permissions}</text>
+      <column gap="8" padding="12">
+        <text>Setup</text>
+        <text wrap="true">{permissionSummary}</text>
+        <text wrap="true">{modelSummary}</text>
+        <text wrap="true">{ambientDetail}</text>
+        <row gap="8">
+          <button on-press="request_microphone">Grant Microphone</button>
+          <button on-press="request_accessibility">Grant Accessibility</button>
+          <button on-press="request_input_monitoring">Grant Input Monitoring</button>
+        </row>
+        <row gap="8">
+          <button variant="primary" on-press="confirm_hotkey">Confirm Command-Shift</button>
+          <button on-press="complete_onboarding">Complete onboarding</button>
+        </row>
+        <text>Permissions loaded: {permissionsLoaded} · models loaded: {modelsLoaded}</text>
+        <text>Mic {microphonePermission} · AX {accessibilityPermission} · Input {inputMonitoringPermission}</text>
+        <text>Model ready {modelReady} · selected model {selectedModelKey} · hotkey {hotkeyConfirmed}</text>
+        <text>Onboarding {onboardingComplete} · limited mode {limitedModeAccepted}</text>
       </column>
     </card>
-    <row gap="8">
-      <button variant="primary" on-press="confirm_hotkey">Confirm Command-Shift hotkey</button>
-      <button on-press="probe_hotkey">Run global-input probe</button>
-    </row>
-    <text>Confirmed: {hotkeyConfirmed} · down: {hotkeyDown} · locked: {recordingLocked}</text>
-    <text>Workflow: {workflow} · generation {generation} · recording {recordingActive}</text>
-    <text>Session: {sessionId} · next {nextSessionId} · hold {minimumHoldMs} ms · double tap {doubleTapWindowMs} ms</text>
-    <text>Events: {hotkeyDownCount} down / {hotkeyUpCount} up · pressed {pressedAtMs} · last release {lastQuickReleaseAtMs}</text>
-    <text wrap="true">Captured source token: {sourceToken}</text>
-    <row gap="8">
-      <button on-press="show_overlay">Show overlay</button>
-      <button on-press="hide_overlay">Hide overlay</button>
-      <button on-press="probe_overlay">Probe overlay click</button>
-    </row>
-    <text>Last overlay action: {overlayAction}</text>
-    <row gap="8">
-      <button on-press="probe_textedit">Paste probe: TextEdit</button>
-      <button on-press="probe_terminal">Paste probe: Terminal</button>
-    </row>
-    <row gap="8">
-      <button variant="primary" on-press="start_audio_probe">Start microphone</button>
-      <button on-press="stop_audio_probe">Stop and transcribe</button>
-      <button on-press="probe_audio_storage">Probe 10-minute storage</button>
-    </row>
-    <text wrap="true">Audio: {audioDetail}</text>
-    <row gap="8">
-      <button on-press="probe_models">Probe repository guards</button>
-      <button variant="primary" on-press="download_model">Download default model</button>
-      <button on-press="cancel_download">Cancel download</button>
-    </row>
-    <row gap="8">
-      <button on-press="transcribe_fixture">Transcribe fixture</button>
-      <button on-press="cancel_fixture">Cancel fixture</button>
-      <button on-press="unload_model">Unload NeMo</button>
-    </row>
-    <text wrap="true">Model: {modelDetail}</text>
-    <text wrap="true">Model operation: {modelProgress}</text>
+
     <card>
-      <column gap="6" padding="12">
-        <text>Most recent probe</text>
-        <text wrap="true">{probeResult}</text>
+      <column gap="8" padding="12">
+        <text>Dictation</text>
+        <if test="{isReady}">
+          <button variant="primary" on-press="start_recording">Start recording</button>
+        </if>
+        <if test="{isRecording}">
+          <button variant="primary" on-press="stop_recording">Stop recording</button>
+        </if>
+        <if test="{isBusy}">
+          <button variant="destructive" on-press="cancel_active">Cancel active session</button>
+        </if>
+        <if test="{canRetry}">
+          <button on-press="retry_transcription">Retry transcription</button>
+        </if>
+        <if test="{isLocked}">
+          <text>Locked recording is active.</text>
+        </if>
+        <button on-press="dismiss_failure">Dismiss failure</button>
+        <button on-press="dismiss_result">Dismiss immediate result</button>
+        <text>Session {sessionId} · generation {generation} · captured frames {capturedFrames}</text>
+        <text>Pressed {pressedAtMs} · last quick release {lastQuickReleaseAtMs}</text>
+        <text>Immediate result {hasImmediateResult} · {immediateResultKind}</text>
+        <text wrap="true">{immediateResultMessage}</text>
+      </column>
+    </card>
+
+    <card>
+      <column gap="8" padding="12">
+        <text>Preferences</text>
+        <switch checked="{doubleTapEnabled}" on-toggle="toggle_double_tap">Double-tap lock</switch>
+        <switch checked="{overlayEnabled}" on-toggle="toggle_overlay">Show recording overlay</switch>
+        <switch checked="{pasteAutomatically}" on-toggle="toggle_paste">Paste automatically when possible</switch>
+        <switch checked="{launchAtLogin}" on-toggle="toggle_launch_at_login">Launch at login</switch>
+        <text>Double-tap window {doubleTapWindowMs} ms · minimum hold {minimumHoldMs} ms</text>
+        <text>Dictation is local. Network access is used only for model downloads.</text>
       </column>
     </card>
   </column>
