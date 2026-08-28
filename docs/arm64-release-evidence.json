@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-08-28T20:16:04Z",
+  "recordedAt": "2026-08-28T20:23:42Z",
   "host": {
     "architecture": "arm64",
     "processTranslated": false,
@@ -16,7 +16,7 @@
     "lipoArchitectures": ["arm64"],
     "otoolCpuType": "ARM64",
     "containsX86_64": false,
-    "sha256": "02b39618e9bd3530c412f71e4396da5b5b390314be0f298823fc00477d0e5641"
+    "sha256": "3b260dc7bba9e31755651f074e57994a1550ea8e2906230f0f79bc25b7a915f5"
   },
   "embeddedRuntime": {
     "selection": "nemo-speech-0.1.0-macos-aarch64-metal",
@@ -34,7 +34,7 @@
   },
   "diskImage": {
     "path": "zig-out/package/Friday-0.1.0-arm64.dmg",
-    "sha256": "01bb7cf8bdb318b400a703f4e3f32063a03566751b8d3dc75557be2182f30dbd",
+    "sha256": "c5e362c1c60c2851ae5f43b7c5209102e6a8457a7e904c44a0a483c6517f0843",
     "teamSignedDevelopmentArtifact": true,
     "notarized": false
   },
