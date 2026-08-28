@@ -9,75 +9,59 @@ on:
 permissions:
   contents: read
 
-env:
-  # build.zig.zon expects the Native SDK framework checkout at this
-  # path, relative to the repository root. Adjust both together if
-  # your framework checkout lives elsewhere.
-  NATIVE_SDK_PATH: "../../.npm/_npx/9cfca3b09b9db586/node_modules/@native-sdk/cli"
-
 jobs:
-  test:
-    name: Logic Tests
-    runs-on: ubuntu-latest
+  macos:
+    name: Apple Silicon macOS Build, Contracts, and UI
+    runs-on: macos-14-xlarge
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: vercel-labs/setup-zig@v1
-        with:
-          version: 0.16.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Fetch native-sdk
-        run: |
-          if [ ! -f "$NATIVE_SDK_PATH/build.zig" ]; then
-            git clone --depth 1 https://github.com/vercel-labs/native.git "$NATIVE_SDK_PATH"
-          fi
-      - name: Install the core compiler dependency
-        # src/core.ts compiles to native code at build time: the
-        # @native-sdk/core frontend and the external core compiler
-        # run from the SDK dependency and arrive with one install.
-        run: npm ci --prefix "$NATIVE_SDK_PATH/packages/core"
-      - run: zig build test -Dplatform=null
-
-  smoke:
-    name: Automation Smoke (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: vercel-labs/setup-zig@v1
-        with:
-          version: 0.16.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Install GTK and Xvfb
-        # No WebKitGTK dev package: this app declares no web use, so its
-        # Linux host compiles without the embedded web layer and never
-        # links WebKitGTK (install it alongside a .frontend block or
-        # the "webview" capability if the app grows web content).
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev xvfb
-      - name: Fetch native-sdk
-        run: |
-          if [ ! -f "$NATIVE_SDK_PATH/build.zig" ]; then
-            git clone --depth 1 https://github.com/vercel-labs/native.git "$NATIVE_SDK_PATH"
-          fi
-      - name: Install the core compiler dependency
-        # src/core.ts compiles to native code at build time: the
-        # @native-sdk/core frontend and the external core compiler
-        # run from the SDK dependency and arrive with one install.
-        run: npm ci --prefix "$NATIVE_SDK_PATH/packages/core"
-      - name: Build the Native SDK CLI
-        run: cd "$NATIVE_SDK_PATH" && zig build
-      - name: Build and drive the app headless
+      - name: Refuse Intel and Rosetta runners
         run: |
           set -euo pipefail
-          cli="$NATIVE_SDK_PATH/zig-out/bin/native"
-          zig build -Dplatform=linux -Dweb-engine=system -Dautomation=true
-          rm -rf .zig-cache/native-sdk-automation
-          xvfb-run -a ./zig-out/bin/friday &
-          pid=$!
-          trap 'kill "$pid" >/dev/null 2>&1 || true' EXIT
-          "$cli" automate wait
-          "$cli" automate assert 'gpu_nonblank=true' 'role=button name="Reset"' 'total: 0'
-          "$cli" automate screenshot main-canvas
-          test -s .zig-cache/native-sdk-automation/screenshot-main-canvas.png
+          test "$(uname -m)" = arm64
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')" = 0
+      - uses: vercel-labs/setup-zig@v1
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install exact dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Verify and apply the pinned Native SDK patch
+        run: npx patch-package --error-on-fail
+      - name: Check Native core, markup, and manifest
+        run: npm run check
+      - name: Build the arm64-only macOS application
+        run: npm run build
+      - name: Run TypeScript and native contract tests
+        run: npm test
+      - name: Verify icon reproducibility
+        run: |
+          set -euo pipefail
+          generated="$(mktemp -t friday-icon).png"
+          trap 'rm -f "$generated"' EXIT
+          swift scripts/generate-icon.swift assets/icon.svg "$generated"
+          cmp "$generated" assets/icon.png
+      - name: Build and verify automation-enabled arm64 development binary
+        run: |
+          zig build -Dtarget=aarch64-macos -Dautomation=true
+          test "$(lipo -archs zig-out/bin/friday)" = arm64
+          file zig-out/bin/friday | grep -q arm64
+          ! file zig-out/bin/friday | grep -q x86_64
+      - name: Compare all UI, accessibility, and keyboard goldens
+        env:
+          FRIDAY_APP_BINARY: ${{ github.workspace }}/zig-out/bin/friday
+          FRIDAY_NATIVE_CLI: ${{ github.workspace }}/node_modules/.bin/native
+        run: |
+          set -euo pipefail
+          scenes=(
+            onboarding-light settings-dark model-light error-dark
+            recording-light transcribing-dark overlay-preview-light accessibility-dark
+            unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark
+          )
+          for scene in "${scenes[@]}"; do
+            tests/ui-automation.sh "$scene"
+          done

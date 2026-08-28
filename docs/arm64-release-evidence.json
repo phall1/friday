@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-28T20:16:04Z",
+  "host": {
+    "architecture": "arm64",
+    "processTranslated": false,
+    "hardware": "Apple M1 Max",
+    "os": "macOS 26.5"
+  },
+  "target": "aarch64-macos",
+  "deploymentMinimum": "macOS 13.0 (unsupported-message launch only)",
+  "productMinimum": "macOS 14.0",
+  "mainExecutable": {
+    "path": "zig-out/package/friday.app/Contents/MacOS/friday",
+    "file": "Mach-O 64-bit executable arm64",
+    "lipoArchitectures": ["arm64"],
+    "otoolCpuType": "ARM64",
+    "containsX86_64": false,
+    "sha256": "02b39618e9bd3530c412f71e4396da5b5b390314be0f298823fc00477d0e5641"
+  },
+  "embeddedRuntime": {
+    "selection": "nemo-speech-0.1.0-macos-aarch64-metal",
+    "libraries": [
+      "libggml-base.0.dylib",
+      "libggml-blas.0.dylib",
+      "libggml-cpu.0.dylib",
+      "libggml-metal.0.dylib",
+      "libggml.0.dylib",
+      "libnemo_speech_asr.dylib",
+      "libnemo_speech_asr_c.1.dylib"
+    ],
+    "lipoArchitectures": ["arm64"],
+    "containsX86_64": false
+  },
+  "diskImage": {
+    "path": "zig-out/package/Friday-0.1.0-arm64.dmg",
+    "sha256": "01bb7cf8bdb318b400a703f4e3f32063a03566751b8d3dc75557be2182f30dbd",
+    "teamSignedDevelopmentArtifact": true,
+    "notarized": false
+  },
+  "assertions": [
+    "file reports arm64 for the main executable and all seven embedded dylibs",
+    "lipo -archs reports exactly arm64 for the main executable and all seven embedded dylibs",
+    "otool -hv reports ARM64 for the main executable",
+    "sysctl.proc_translated is 0",
+    "codesign --verify --deep --strict passes for the app",
+    "codesign --verify --strict passes for the arm64 DMG",
+    "package resources contain no signing=none or unsigned-local-package claim"
+  ],
+  "externalBlockers": [
+    "Developer ID Application and notary credentials are unavailable, so notarization is not claimed"
+  ]
+}
