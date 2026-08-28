@@ -1,23 +1,24 @@
 {
     "$schema": "https://schema.native-sdk.dev/app/v1.json",
-    "id": "dev.native_sdk.friday",
+    "id": "com.phall.friday",
     "name": "friday",
     "display_name": "Friday",
-    "description": "A counter that lives in one native window.",
+    "description": "Fast, private, local speech-to-text for the app already in focus.",
     "version": "0.1.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
-    "permissions": ["view", "command"],
-    "capabilities": ["native_views", "gpu_surfaces"],
+    "permissions": ["view", "command", "microphone", "filesystem"],
+    "capabilities": ["native_module", "native_views", "gpu_surfaces", "menus", "shortcuts", "tray", "filesystem", "network", "clipboard", "open_url", "reveal_path"],
+    "dock_visible": false,
     "shell": {
         "windows": [
             {
                 "label": "main",
                 "title": "Friday",
-                "width": 480,
-                "height": 320,
+                "width": 640,
+                "height": 400,
                 "views": [
-                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Counter canvas", "accessibility_label": "Counter", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
+                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Friday onboarding and settings", "accessibility_label": "Friday", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]
             }
         ]

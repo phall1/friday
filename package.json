@@ -1,11 +1,19 @@
 {
   "name": "friday",
   "private": true,
-  "description": "Editor and versioning surface only: stock TypeScript tooling resolves @native-sdk/core from here. The native CLI never reads it and builds with node_modules absent.",
+  "description": "Friday local dictation app build toolchain.",
+  "scripts": {
+    "postinstall": "patch-package",
+    "check": "native check",
+    "test": "native test",
+    "build": "native build",
+    "package": "native package --target macos --archive"
+  },
   "dependencies": {
     "@native-sdk/core": "0.10.1"
   },
   "devDependencies": {
-    "@native-sdk/cli": "^0.10.1"
+    "@native-sdk/cli": "0.10.1",
+    "patch-package": "8.0.0"
   }
 }

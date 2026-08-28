@@ -18,6 +18,14 @@ Official assumptions:
 - [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp), [ASR C ABI](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/sdk.md), [build guide](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/build.md), and [model guide](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/cli.md). The C API uses opaque handles and accepts mono Float32 at 8–96 kHz.
 - [NeMo checkpoints](https://docs.nvidia.com/nemo/speech/nightly/asr/asr_checkpoints.html) and [Parakeet v3 model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) currently disagree on language scope. Pin an immutable artifact/revision/SHA and display capabilities from its manifest.
 
+### Measured implementation pins (2026-08-28)
+
+- Native SDK CLI/core `0.10.1`, Zig `0.16.0`, and Xcode `26.5`. Native SDK `0.10.1` does not ship the proposed Friday-specific typed Zig command constructors. `src/domain/host.ts` therefore provides local typed TypeScript helpers over raw `Cmd.request`, `Cmd.host`, and `Cmd.channelOpen`; the wire records below remain the contract.
+- The ejected build uses an app-owned runner and extension through `AppOptions.ts_runner` / `ts_extension`. Those two upstream-missing options and an app-specific macOS deployment-floor option are carried as the pinned `patch-package` patch `patches/@native-sdk+cli+0.10.1.patch`.
+- The NeMo runtime is the official `v0.1.0` `nemo-speech-0.1.0-macos-aarch64-metal.tar.gz` release (3,465,028 bytes, SHA-256 `f1dff4f9dd9c96214f8cb78b982812459132df8a4ad1a42409fd94de4a366244`). Its ASR dylib closure and notices are vendored under `third_party/nemo-speech`; the app links the C ABI and uses `@executable_path/../Frameworks`.
+- The default model is `nvidia/parakeet-tdt-0.6b-v3` at immutable revision `541d1f99c6b0c3cd0b11a95167540bb8edefd82b`, artifact `parakeet-tdt-0.6b-v3.q8_0.gguf`, 713,975,456 bytes, SHA-256 `e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e`; the checked-in manifest is `resources/models/parakeet-tdt-0.6b-v3.json`.
+- Local ad-hoc and Apple Development/Distribution signing are reachable. No Developer ID Application identity or configured notary profile exists on this workstation, so notarized direct distribution remains an external-credential blocker; local spike and release-candidate packages are ad-hoc signed without weakening hardened runtime or library validation.
+
 Native SDK does not document Friday's required system-global press/release hotkey or paste into a previously focused app. Its overlay flags also do not prove interactive Stop/Cancel can remain nonactivating. These requirements are **not reduced**: isolate them in `FridayHost` and prove them in signed-app spikes before the full build.
 
 Hex lessons transferred:
@@ -102,7 +110,7 @@ type HostEvent =
   | { readonly kind: "host_fault"; readonly sessionId: number; readonly code: Uint8Array; readonly message: Uint8Array };
 ```
 
-`friday_host.zig` supplies typed `Cmd<Msg>` constructors: `hostSubscribe`, `hostConfigureHotkey`, `hostStart`, `hostFinish`, `hostCancel`, `hostRetryTranscription`, `hostDeliver`, and `hostModelOperation`. `hostFinish` is deep: stop/drain capture, confirm active model, run final-only inference, and return one result. The core never coordinates WAV paths or NeMo handles.
+`src/domain/host.ts` supplies local typed helpers over the Native SDK `0.10.1` raw effect surface: `hostSubscribe` (`Cmd.channelOpen` plus a `friday.subscribe` request), `hostConfigureHotkey`, `hostStart`, `hostFinish`, `hostCancel`, `hostRetryTranscription`, `hostDeliver`, and `hostModelOperation`. `hostFinish` is deep: stop/drain capture, confirm active model, run final-only inference, and return one result. The core never coordinates WAV paths or NeMo handles.
 
 ## Single workflow
 

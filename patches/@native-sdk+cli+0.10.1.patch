@@ -1,0 +1,97 @@
+diff --git a/node_modules/@native-sdk/cli/build/app.zig b/node_modules/@native-sdk/cli/build/app.zig
+index 0ec7a26..ee01ec4 100644
+--- a/node_modules/@native-sdk/cli/build/app.zig
++++ b/node_modules/@native-sdk/cli/build/app.zig
+@@ -144,6 +144,16 @@ pub const AppOptions = struct {
+     /// step walks wuffs/translate_c and whose full build pulls harfbuzz)
+     /// — the load-bearing property for scaffolded apps.
+     terminal_sessions: bool = false,
++    /// App-owned generated TypeScript runner override, copied beside the
++    /// compiled core mirror. Null uses the SDK runner.
++    ts_runner: ?[]const u8 = null,
++    /// Optional app-owned Zig module imported as `app_extension` by a custom
++    /// TypeScript runner. The module can bind deep platform services without
++    /// replacing the deterministic TypeScript core.
++    ts_extension: ?[]const u8 = null,
++    /// Override the SDK's macOS 11 deployment floor for apps that require
++    /// newer platform APIs.
++    macos_minimum_version: ?std.SemanticVersion = null,
+ };
+ 
+ /// Which core the app tree carries. No flag and no config anywhere: the
+@@ -857,6 +867,7 @@ fn tsCoreStage(
+     service_pool_workers: ?u8,
+     build_trace: bool,
+     scriptc_optimization: ?[]const u8,
++    ts_runner: ?[]const u8,
+ ) TsCoreStage {
+     const node = tsCorePreflight(b, dep, app_root);
+     const window_views = collectTsWindowViews(b, app_root);
+@@ -1207,7 +1218,10 @@ fn tsCoreStage(
+         _ = staged.addCopyFile(b.path(appPath(b, app_root, source.source_path)), source.staged_path);
+     }
+     _ = staged.add("window_views.zig", tsWindowRegistrySource(b, window_views));
+-    const main_root = staged.addCopyFile(dep.path("src/app_runner/ts_core_main.zig"), "main.zig");
++    const main_root = staged.addCopyFile(
++        if (ts_runner) |path| b.path(appPath(b, app_root, path)) else dep.path("src/app_runner/ts_core_main.zig"),
++        "main.zig",
++    );
+     // The mobile wiring stages beside the desktop entry: same mirror, same
+     // registry, same carrier constant — only the shell differs (the embed
+     // host's AppDef contract instead of a process `main`).
+@@ -1468,7 +1482,7 @@ pub const MobileTsCore = struct {
+ /// a standalone build.zig (it registers the standard `target`/`optimize`
+ /// options itself).
+ pub fn addMobileLib(b: *std.Build, dep: *std.Build.Dependency, options: MobileLibOptions) void {
+-    const target = nativeSdkTarget(b);
++    const target = nativeSdkTarget(b, null);
+     const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
+     const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
+     addMobileLibWithTarget(b, dep, target, optimize, options);
+@@ -1613,7 +1627,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions
+ }
+ 
+ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions) AppArtifacts {
+-    const target = nativeSdkTarget(b);
++    const target = nativeSdkTarget(b, app_options.macos_minimum_version);
+     const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
+     const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
+     const app_optimize = exampleOptimizeMode(b, optimize_request, .ReleaseFast);
+@@ -1681,6 +1695,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+             service_pool_workers,
+             build_trace,
+             scriptc_optimization,
++            app_options.ts_runner,
+         )
+     else
+         null;
+@@ -2058,6 +2073,11 @@ fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.Resolv
+         // The wiring derives scene/identity/security from app.zon itself.
+         app_mod.addImport("app_manifest_zon", manifest_mod);
+     }
++    if (app_options.ts_extension) |path| {
++        const extension_mod = localModule(b, target, optimize, appPath(b, app_options.app_root, path));
++        extension_mod.addImport("native_sdk", native_sdk_mod);
++        app_mod.addImport("app_extension", extension_mod);
++    }
+     if (ts_stage) |stage| {
+         // The compiled-core archive links behind the staged mirror; the
+         // toolchain's runtime needs libc.
+@@ -2124,7 +2144,7 @@ fn addMacosInfoPlist(b: *std.Build, app_mod: *std.Build.Module, target: std.Buil
+     app_mod.addCSourceFile(.{ .file = generated, .flags = &.{} });
+ }
+ 
+-fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
++fn nativeSdkTarget(b: *std.Build, minimum_macos: ?std.SemanticVersion) std.Build.ResolvedTarget {
+     const target = b.standardTargetOptions(.{});
+     if (target.result.os.tag != .macos) return target;
+ 
+@@ -2134,7 +2154,7 @@ fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
+ 
+     var query = target.query;
+     query.os_tag = .macos;
+-    query.os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } };
++    query.os_version_min = .{ .semver = minimum_macos orelse .{ .major = 11, .minor = 0, .patch = 0 } };
+     return b.resolveTargetQuery(query);
+ }
+ 
