@@ -76,7 +76,7 @@
                 <separator/>
                 <row gap="16" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1" gap="2"><text size="heading">Accessibility</text><text foreground="text_muted">Return final text to the exact source app.</text></column><if test="{not accessibilityPermission}"><button on-press="request_accessibility">Grant Accessibility</button></if></row>
                 <separator/>
-                <row gap="16" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1" gap="2"><text size="heading">Input Monitoring</text><text foreground="text_muted">Hear the shortcut while another app is focused.</text></column><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Grant Input Monitoring</button></if></row>
+                <row gap="16" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1" gap="2"><text size="heading">Input Monitoring</text><text foreground="text_muted" wrap="true">Hear the shortcut while another app is focused.</text></column><if test="{not inputMonitoringPermission}"><button on-press="request_input_monitoring">Grant Input Monitoring</button></if></row>
                 <if test="{not inputMonitoringPermission or not accessibilityPermission}"><column padding="14" gap="8" background="surface_subtle" border-color="border"><text><span weight="medium">Limited mode</span></text><text foreground="text_muted" wrap="true">Manual Start remains available without Input Monitoring. Without Accessibility, final text is copied.</text><button variant="ghost" on-press="accept_limited_mode">I understand and want limited mode</button></column></if>
                 <row gap="8"><button variant="ghost" on-press="onboarding_back">Back</button><spacer grow="1"/><button variant="primary" on-press="onboarding_next" disabled="{not microphonePermission or ((not inputMonitoringPermission or not accessibilityPermission) and not limitedModeAccepted)}">Continue</button></row>
               </if>
@@ -100,7 +100,7 @@
               <if test="{onboardingStep == 3}">
                 <text foreground="accent"><span mono="true">04 / ENGINE</span></text>
                 <text size="heading" wrap="true">Install the voice engine</text>
-                <text foreground="text_muted">Parakeet runs final transcription on this Mac. The verified download is about 714 MB.</text>
+                <text foreground="text_muted" wrap="true">Parakeet runs final transcription on this Mac. The verified download is about 714 MB.</text>
                 <column padding="20" gap="12" background="surface" border-color="border">
                   <row gap="12" cross="center"><text foreground="accent"><span mono="true">●</span></text><column grow="1"><text size="heading">Parakeet TDT 0.6B v3</text><text foreground="text_muted">CC-BY-4.0 · 25 languages · 714 MB</text></column><text><span mono="true">{modelDownloadState}</span></text></row>
                   <separator/>

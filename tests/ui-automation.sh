@@ -21,7 +21,7 @@ MANAGED_STATE=0
 
 NO_ELLIPSIS=()
 case "$SCENE" in
-  onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Grant Accessibility"' 'role=button name="Grant Input Monitoring"' 'role=button name="Continue"') ;;
+  onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Grant Accessibility"' 'role=button name="Grant Input Monitoring"' 'role=button name="Continue"' 'Hear the shortcut while another app is focused.'); NO_ELLIPSIS=('Hear the shortcut while another app is focu…') ;;
   settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=text name="Default microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"'); NO_ELLIPSIS=('Default microph…') ;;
   model-*) REQUIRED=('role=text name="Model Manager"' 'role=button name="Add Local Model…"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
   error-*) REQUIRED=('Friday needs attention' 'Model: Parakeet TDT 0.6B v3' 'role=button name="Retry Transcription"' 'role=button name="Change Model"') ;;
@@ -31,7 +31,7 @@ case "$SCENE" in
   accessibility-*) REQUIRED=('role=text name="PERMISSION STATUS"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
   unsupported-intel-*) REQUIRED=('Friday needs Apple Silicon' 'Friday requires an Apple Silicon Mac.' 'Detected x86_64 · macOS 14.0' 'Setup, model downloads, and recording are disabled'); NO_ELLIPSIS=('Friday needs Apple…') ;;
   hotkey-conflict-*) REQUIRED=('Candidate: Command' 'That shortcut is reserved by macOS or a standard app command. Choose another shortcut.' 'role=button name="Save This Shortcut"' 'role=button name="Discard Candidate"'); NO_ELLIPSIS=('That shortcut is reserved by macOS or a standard app command. Choose another short…') ;;
-  resume-*) REQUIRED=('STEP 4 / 4' 'Install the voice engine' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"'); NO_ELLIPSIS=('Install the voice engi…') ;;
+  resume-*) REQUIRED=('STEP 4 / 4' 'Install the voice engine' 'Parakeet runs final transcription on this Mac. The verified download is about 714 MB.' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"'); NO_ELLIPSIS=('Install the voice engi…' 'Parakeet runs final transcription on this Mac. The verified download is about…') ;;
   hf-confirmation-*) REQUIRED=('role=text name="Model Manager"' 'UNVERIFIED CANDIDATE' 'community/parakeet-tdt-gguf' 'Hugging Face · CC-BY-4.0 · 702 MB' 'REV 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Download to verify locally.' 'role=switch name="Authorize this exact download for local verification"' 'role=button name="Download to Verify Locally"'); NO_ELLIPSIS=('UNVERIFIED CANDID…' 'Download to verify local…') ;;
   *) echo "unknown scene: $SCENE" >&2; exit 2 ;;
 esac
