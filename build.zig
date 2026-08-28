@@ -46,6 +46,10 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
         "-fblocks",
         "-fno-sanitize=builtin",
         "-Wno-deprecated-declarations",
+        "-Wno-availability",
+        "-Wno-unknown-attributes",
+        "-Wno-deprecated-enum-enum-conversion",
+        "-Wno-unguarded-availability-new",
         "-ObjC++",
         "-std=c++20",
         "-stdlib=libc++",
@@ -62,12 +66,19 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
         "-std=c++20",
         "-stdlib=libc++",
         "-mmacosx-version-min=14.0",
+        "-Wno-availability",
+        "-Wno-unknown-attributes",
+        "-Wno-deprecated-enum-enum-conversion",
+        "-Wno-unguarded-availability-new",
     };
     const sources = [_][]const u8{
         "native/macos/FridayHost.mm",
         "native/macos/GlobalInputMonitor.mm",
         "native/macos/TextDelivery.mm",
         "native/macos/OverlayWindow.mm",
+        "native/macos/AudioSession.mm",
+        "native/macos/NemoRecognizer.mm",
+        "native/macos/ModelRepository.mm",
     };
     for (sources) |source| module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
     if (b.sysroot) |sysroot| module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });

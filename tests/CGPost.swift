@@ -43,6 +43,13 @@ case "modifier-hold":
     modifier(keyCode, down: true, flags: eventFlags)
     usleep(duration)
     modifier(keyCode, down: false, flags: [])
+case "click-appkit":
+    let x = Double(arguments[2])!
+    let appKitY = Double(arguments[3])!
+    let point = CGPoint(x: x, y: appKitY)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+    usleep(60_000)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
 default:
     fatalError("unknown mode")
 }

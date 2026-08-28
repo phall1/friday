@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <libproc.h>
 
 @implementation FridaySourceTarget
 @end
@@ -15,26 +16,49 @@
     source.pid = app.processIdentifier;
     source.bundleID = app.bundleIdentifier ?: @"";
     source.appName = app.localizedName ?: @"Application";
+    source.launchDate = app.launchDate ?: NSDate.date;
+    source.capturedAt = NSDate.date;
+    char pathBuffer[PROC_PIDPATHINFO_MAXSIZE] = {};
+    int pathLength = proc_pidpath(source.pid, pathBuffer, sizeof(pathBuffer));
+    source.processPath = pathLength > 0 ? [NSString stringWithUTF8String:pathBuffer] : @"";
+    AXUIElementRef appElement = AXUIElementCreateApplication(source.pid);
+    CFTypeRef focused = NULL, window = NULL;
+    AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute, &focused);
+    AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute, &window);
+    CFRelease(appElement);
+    source.capturedElement = CFBridgingRelease(focused);
+    source.capturedWindow = CFBridgingRelease(window);
+    NSPoint mouse = NSEvent.mouseLocation;
+    for (NSScreen *screen in NSScreen.screens) if (NSPointInRect(mouse, screen.frame)) { source.sourceScreenFrame = [NSValue valueWithRect:screen.visibleFrame]; break; }
     return source;
 }
 
 - (NSRunningApplication *)liveApplication:(FridaySourceTarget *)source {
-    for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) if (app.processIdentifier == source.pid && !app.terminated) return app;
+    for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
+        if (app.processIdentifier != source.pid || app.terminated) continue;
+        if (![app.bundleIdentifier ?: @"" isEqualToString:source.bundleID]) return nil;
+        if (fabs([app.launchDate timeIntervalSinceDate:source.launchDate]) > 0.001) return nil;
+        char pathBuffer[PROC_PIDPATHINFO_MAXSIZE] = {};
+        int length = proc_pidpath(source.pid, pathBuffer, sizeof(pathBuffer));
+        NSString *path = length > 0 ? [NSString stringWithUTF8String:pathBuffer] : @"";
+        return [path isEqualToString:source.processPath] ? app : nil;
+    }
     return nil;
 }
 
 - (BOOL)accessibilityInsert:(NSString *)text source:(FridaySourceTarget *)source {
-    if (!AXIsProcessTrusted()) return NO;
+    if (!AXIsProcessTrusted() || !source.capturedElement) return NO;
+    AXUIElementRef element = (__bridge AXUIElementRef)source.capturedElement;
     AXUIElementRef app = AXUIElementCreateApplication(source.pid);
-    CFTypeRef focused = NULL;
-    AXError copied = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute, &focused);
+    CFTypeRef currentWindow = NULL;
+    AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute, &currentWindow);
     CFRelease(app);
-    if (copied != kAXErrorSuccess || !focused) return NO;
+    BOOL sameWindow = source.capturedWindow && currentWindow && CFEqual((__bridge CFTypeRef)source.capturedWindow, currentWindow);
+    if (currentWindow) CFRelease(currentWindow);
+    if (!sameWindow) return NO;
     Boolean settable = false;
-    AXError canSet = AXUIElementIsAttributeSettable((AXUIElementRef)focused, kAXSelectedTextAttribute, &settable);
-    AXError inserted = (canSet == kAXErrorSuccess && settable) ? AXUIElementSetAttributeValue((AXUIElementRef)focused, kAXSelectedTextAttribute, (__bridge CFStringRef)text) : kAXErrorAttributeUnsupported;
-    CFRelease(focused);
-    return inserted == kAXErrorSuccess;
+    AXError canSet = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute, &settable);
+    return canSet == kAXErrorSuccess && settable && AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute, (__bridge CFStringRef)text) == kAXErrorSuccess;
 }
 
 - (NSArray<NSDictionary<NSPasteboardType, NSData *> *> *)snapshot:(NSPasteboard *)pasteboard {
@@ -64,14 +88,18 @@
 
 - (BOOL)copyText:(NSString *)text changeCount:(NSInteger *)changeCount {
     NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+    NSArray *snapshot = [self snapshot:pasteboard];
     [pasteboard clearContents];
     BOOL ok = [pasteboard setString:text forType:NSPasteboardTypeString];
+    if (!ok) [self restore:snapshot changeCount:pasteboard.changeCount];
     if (ok && changeCount) *changeCount = pasteboard.changeCount;
     return ok;
 }
 
 - (NSDictionary<NSString *, id> *)deliverText:(NSString *)text toSource:(FridaySourceTarget *)source {
     if (!text.length) return @{@"kind":@"shown", @"ok":@NO, @"message":@"There is no final transcript to deliver."};
+    if (source.consumed || -[source.capturedAt timeIntervalSinceNow] > 900) return @{@"kind":@"shown", @"ok":@NO, @"message":@"The source token expired or was already consumed."};
+    source.consumed = YES;
     NSRunningApplication *app = [self liveApplication:source];
     if (!app) {
         BOOL copied = [self copyText:text changeCount:NULL];
@@ -147,6 +175,18 @@
     target.pid = application.processIdentifier;
     target.bundleID = application.bundleIdentifier ?: bundleID;
     target.appName = application.localizedName ?: applicationName;
+    target.launchDate = application.launchDate ?: NSDate.date;
+    target.capturedAt = NSDate.date;
+    char targetPath[PROC_PIDPATHINFO_MAXSIZE] = {};
+    int targetPathLength = proc_pidpath(target.pid, targetPath, sizeof(targetPath));
+    target.processPath = targetPathLength > 0 ? [NSString stringWithUTF8String:targetPath] : @"";
+    AXUIElementRef targetApp = AXUIElementCreateApplication(target.pid);
+    CFTypeRef targetElement = NULL, targetWindow = NULL;
+    AXUIElementCopyAttributeValue(targetApp, kAXFocusedUIElementAttribute, &targetElement);
+    AXUIElementCopyAttributeValue(targetApp, kAXFocusedWindowAttribute, &targetWindow);
+    CFRelease(targetApp);
+    target.capturedElement = CFBridgingRelease(targetElement);
+    target.capturedWindow = CFBridgingRelease(targetWindow);
     BOOL sourceCaptureVerified = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == target.pid;
 
     CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);

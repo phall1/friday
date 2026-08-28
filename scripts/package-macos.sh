@@ -18,6 +18,7 @@ if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
   echo "Set FRIDAY_SIGN_IDENTITY to an Apple Development, Apple Distribution, or Developer ID Application identity hash." >&2
   exit 2
 fi
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 14.0" "$APP/Contents/Info.plist"
 
 mkdir -p "$FRAMEWORKS" "$RESOURCES/models" "$RESOURCES/licenses"
 for library in \

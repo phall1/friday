@@ -7,6 +7,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) pid_t pid;
 @property(nonatomic, copy) NSString *bundleID;
 @property(nonatomic, copy) NSString *appName;
+@property(nonatomic) uint64_t generation;
+@property(nonatomic, strong) NSDate *launchDate;
+@property(nonatomic, copy) NSString *processPath;
+@property(nonatomic, strong) NSDate *capturedAt;
+@property(nonatomic) BOOL consumed;
+@property(nonatomic, strong, nullable) id capturedElement;
+@property(nonatomic, strong, nullable) id capturedWindow;
+@property(nonatomic, strong, nullable) NSValue *sourceScreenFrame;
 @end
 
 @interface FridayTextDelivery : NSObject
