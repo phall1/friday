@@ -2,6 +2,8 @@ const std = @import("std");
 const native_sdk = @import("native_sdk");
 
 pub fn build(b: *std.Build) void {
+    const spotlight_exclusion = addSpotlightExclusionStep(b);
+
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{
         .name = "friday",
         .manifest = "app.json",
@@ -11,9 +13,33 @@ pub fn build(b: *std.Build) void {
         .macos_minimum_version = .{ .major = 13, .minor = 0, .patch = 0 },
         .macos_cpu_arch = .aarch64,
     });
+    artifacts.exe.step.dependOn(spotlight_exclusion);
+    artifacts.tests.step.dependOn(spotlight_exclusion);
+    artifacts.install.step.dependOn(spotlight_exclusion);
+    artifacts.run.step.dependOn(spotlight_exclusion);
     addFridayHost(b, artifacts.exe.root_module);
     addFridayHost(b, artifacts.tests.root_module);
     installNemoRuntime(b, artifacts);
+}
+
+fn addSpotlightExclusionStep(b: *std.Build) *std.Build.Step {
+    const mkdir = b.addSystemCommand(&.{
+        "mkdir",
+        "-p",
+        "zig-out",
+        "zig-out/package",
+        ".zig-cache",
+        ".native/cache",
+    });
+    const touch = b.addSystemCommand(&.{
+        "touch",
+        "zig-out/.metadata_never_index",
+        "zig-out/package/.metadata_never_index",
+        ".zig-cache/.metadata_never_index",
+        ".native/cache/.metadata_never_index",
+    });
+    touch.step.dependOn(&mkdir.step);
+    return &touch.step;
 }
 
 fn installNemoRuntime(b: *std.Build, artifacts: native_sdk.AppArtifacts) void {

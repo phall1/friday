@@ -7,7 +7,8 @@
     "check": "native check",
     "test": "tsx --test tests/*.test.ts && zig build test -Dtarget=aarch64-macos",
     "build": "zig build -Dtarget=aarch64-macos",
-    "package": "bash scripts/package-macos.sh"
+    "package": "bash scripts/package-macos.sh",
+    "clean:local": "bash scripts/clean-local-artifacts.sh"
   },
   "dependencies": {
     "@native-sdk/core": "0.10.1"

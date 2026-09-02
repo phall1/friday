@@ -31,7 +31,17 @@ assert_arm64_only() {
   fi
 }
 
+mark_never_indexed() {
+  local root="$1"
+  mkdir -p "$root"
+  touch "$root/.metadata_never_index"
+}
+
 rm -rf "$ROOT/zig-out"
+mark_never_indexed "$ROOT/zig-out"
+mark_never_indexed "$ROOT/zig-out/package"
+mark_never_indexed "$ROOT/.zig-cache"
+mark_never_indexed "$ROOT/.native/cache"
 BUILD_ARGS=("-Dtarget=aarch64-macos")
 if [[ "${FRIDAY_AUTOMATION:-0}" == "1" ]]; then BUILD_ARGS+=("-Dautomation=true"); fi
 zig build "${BUILD_ARGS[@]}"
