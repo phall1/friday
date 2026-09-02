@@ -21,18 +21,18 @@ MANAGED_STATE=0
 
 NO_ELLIPSIS=()
 case "$SCENE" in
-  onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Open Accessibility"' 'role=button name="Open Input Monitoring"' 'role=button name="Continue"' 'Hear the shortcut while another app is focused.' 'This page refreshes automatically.'); NO_ELLIPSIS=('Hear the shortcut while another app is focu…') ;;
+  onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Open Accessibility"' 'role=button name="Open Input Monitoring"' 'role=button name="Continue"' 'Hear the shortcut while another app is focused.' 'Status refreshes automatically.'); NO_ELLIPSIS=('Hear the shortcut while another app is focu…') ;;
   settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=text name="Default microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"'); NO_ELLIPSIS=('Default microph…') ;;
-  model-*) REQUIRED=('role=text name="Models"' 'role=button name="Add Local Model…"' 'role=button name="Use Parakeet CTC repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
+  model-*) REQUIRED=('role=button name="Models"' 'role=text name="Local models"' 'role=button name="Add Local Model…"' 'role=button name="Use Parakeet CTC repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
   error-*) REQUIRED=('attention required' 'Model: Parakeet TDT 0.6B v3' 'role=button name="Retry Transcription"' 'role=button name="Change Model"') ;;
   recording-*) REQUIRED=('role=text name="recording"' 'role=button name="Stop Recording"' 'role=button name="Cancel"') ;;
   transcribing-*) REQUIRED=('role=text name="transcribing"' 'role=button name="Cancel"' 'Transcribing locally') ;;
   overlay-preview-*) REQUIRED=('Recording capsule preview' 'role=button name="Stop"' 'role=button name="Hide"' 'role=button name="Cancel"') ;;
-  accessibility-*) REQUIRED=('role=text name="Access"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
-  unsupported-intel-*) REQUIRED=('Apple Silicon only.' 'Friday requires an Apple Silicon Mac.' 'Architecture' 'x86_64' 'macOS 14.0' 'Setup, model downloads, and recording are disabled'); NO_ELLIPSIS=('Apple Silicon on…') ;;
+  accessibility-*) REQUIRED=('role=button name="Access"' 'role=text name="Permissions"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
+  unsupported-intel-*) REQUIRED=('Apple Silicon required' 'Friday requires an Apple Silicon Mac.' 'Architecture' 'x86_64' 'macOS 14.0' 'Setup, model downloads, and recording are disabled'); NO_ELLIPSIS=('Apple Silicon requir…') ;;
   hotkey-conflict-*) REQUIRED=('You pressed: Command' 'That shortcut is reserved by macOS or a standard app command. Choose another shortcut.' 'role=button name="Use This Shortcut"' 'role=button name="Try Something Else"'); NO_ELLIPSIS=('That shortcut is reserved by macOS or a standard app command. Choose another short…') ;;
   resume-*) REQUIRED=('STEP 4 / 4' 'Run the model here.' 'Parakeet turns speech into final text on this Mac. The verified download is about 714 MB.' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"'); NO_ELLIPSIS=('Run the model he…' 'Parakeet turns speech into final text on this Mac. The verified download is about…') ;;
-  hf-confirmation-*) REQUIRED=('role=text name="Models"' 'unverified candidate' 'community/parakeet-tdt-gguf' 'CC-BY-4.0 · 702 MB' 'rev 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Download to verify locally.' 'role=switch name="Authorize this exact download for local verification"' 'role=button name="Download to Verify Locally"'); NO_ELLIPSIS=('unverified candid…' 'Download to verify local…') ;;
+  hf-confirmation-*) REQUIRED=('role=button name="Models"' 'role=text name="Local models"' 'unverified candidate' 'community/parakeet-tdt-gguf' 'CC-BY-4.0 · 702 MB' 'rev 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Download to verify locally.' 'role=switch name="Authorize this exact download for local verification"' 'role=button name="Download to Verify Locally"'); NO_ELLIPSIS=('unverified candid…' 'Download to verify local…') ;;
   *) echo "unknown scene: $SCENE" >&2; exit 2 ;;
 esac
 
@@ -80,7 +80,7 @@ FRIDAY_AUTOMATION_SCENE="$SCENE" "$APP" >"${TMPDIR:-/tmp}/friday-ui-$SCENE.log" 
 PID=$!
 cd "$ROOT"
 "$CLI" automate wait
-"$CLI" automate assert 'window @w1 "Friday" bounds=.* 840x640' "${REQUIRED[@]}"
+"$CLI" automate assert 'window @w1 "Friday" bounds=.* 640x480' "${REQUIRED[@]}"
 "$CLI" automate assert --absent 'error event='
 if [[ "${#NO_ELLIPSIS[@]}" -gt 0 ]]; then "$CLI" automate assert --absent "${NO_ELLIPSIS[@]}"; fi
 "$CLI" automate screenshot main-canvas

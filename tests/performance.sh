@@ -117,10 +117,13 @@ done
 
 # Exercise rebuild/layout/a11y paths while profiling, without changing durable
 # user preferences.
-for tab_name in Models Access Controls Diagnostics Controls; do
-  tab_id="$(widget_id button "$tab_name")"
-  "$CLI" automate widget-action main-canvas "$tab_id" press >/dev/null
-done
+"$CLI" automate tray-action 21 >/dev/null
+"$CLI" automate tray-action 22 >/dev/null
+"$CLI" automate tray-action 20 >/dev/null
+"$CLI" automate snapshot >/dev/null
+diagnostics_id="$(widget_id button Diagnostics)"
+"$CLI" automate widget-action main-canvas "$diagnostics_id" toggle >/dev/null
+"$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate snapshot >"$PROFILE"
 "$CLI" automate assert --absent 'error event=' >/dev/null
 if [[ ! -s "$RAW_METRICS" ]]; then echo "Host timing evidence was not written." >&2; exit 1; fi

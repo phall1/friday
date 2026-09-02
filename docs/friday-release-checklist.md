@@ -79,7 +79,7 @@ scripts/verify-icon.sh
 
 ## UI and behavior evidence
 
-Build the raw automation binary and compare all twelve committed 840×640 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
+Build the raw automation binary and compare all twelve committed 640×480 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
 
 ```sh
 zig build -Dtarget=aarch64-macos -Dautomation=true

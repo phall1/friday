@@ -22,7 +22,7 @@ All notable changes to Friday are documented here.
 - Replaced Native SDK scaffold documentation and unsigned package metadata with Friday-specific, signature-truthful content.
 - Development packaging now signs embedded dylibs, app, and DMG with a real team identity while preserving hardened runtime and library validation.
 - Persistence schema advances with safe migration and continues to scrub transient source/audio/transcript/result/diagnostic/automation/model-resolution facts.
-- Recast the app as a monochrome Geist voice instrument: one continuous canvas, editorial hierarchy, compact navigation rail, thin evidence rules, measured status plate, and color reserved for live or exceptional state.
+- Recast the app as a compact monochrome Geist utility: a 640×480 window, small-scale horizontal toolbar, restrained workflow strip, native-density settings rows, and color reserved for live or exceptional state.
 - Forced arm64/aarch64 throughout Zig target resolution, the direct macOS C/NeMo host, CI, packaging, diagnostics, and release. Intel, universal Mach-O slices, and Rosetta translation now fail closed; architecture-bearing artifacts use the `-arm64` suffix.
 - Replaced the Friday-owned Objective-C/Objective-C++ host and Swift validation helpers with a pure-Zig host: CoreAudio/CGEvent/AX/NeMo C APIs, `std.http` model storage, Native SDK platform services, and a narrow typed dynamic runtime adapter for unavoidable AppKit objects. CI rejects tracked `.swift`, `.m`, and `.mm` implementation.
 

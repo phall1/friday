@@ -123,7 +123,7 @@ done
 # The process owns a live menu-only status item, and its explicit Open Friday
 # row routes the app window back to the settings page.
 launch_scene model-light
-"$CLI" automate assert 'role=text name="Models"' >/dev/null
+"$CLI" automate assert 'role=button name="Models"' 'role=text name="Local models"' >/dev/null
 "$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate assert 'role=button name="Check Microphone"' 'role=switch name="Launch at Login"' >/dev/null
 
@@ -196,8 +196,8 @@ launch_scene settings-light FRIDAY_AUTOMATION_LOGIN=cycle
 # Diagnostics must expose safe facts and explicit exclusion flags only.
 "$CLI" automate tray-action 20 >/dev/null
 diag_id="$(widget_id button Diagnostics)"
-"$CLI" automate widget-action main-canvas "$diag_id" press >/dev/null
-"$CLI" automate assert 'role=text name="Diagnostics"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
+"$CLI" automate widget-action main-canvas "$diag_id" toggle >/dev/null
+"$CLI" automate assert 'role=text name="Safe export"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
 "$CLI" automate assert --absent "$WORK/fixture.f32" 'Friday local dictation works' >/dev/null
 
 # Cleanup runs against an isolated downloads directory and cannot touch Models.
