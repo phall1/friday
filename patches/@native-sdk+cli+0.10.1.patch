@@ -1,8 +1,8 @@
 diff --git a/node_modules/@native-sdk/cli/build/app.zig b/node_modules/@native-sdk/cli/build/app.zig
-index 0ec7a26..6369d3e 100644
+index 0ec7a26..63b3d34 100644
 --- a/node_modules/@native-sdk/cli/build/app.zig
 +++ b/node_modules/@native-sdk/cli/build/app.zig
-@@ -144,6 +144,18 @@ pub const AppOptions = struct {
+@@ -144,6 +144,21 @@ pub const AppOptions = struct {
      /// step walks wuffs/translate_c and whose full build pulls harfbuzz)
      /// — the load-bearing property for scaffolded apps.
      terminal_sessions: bool = false,
@@ -13,6 +13,9 @@ index 0ec7a26..6369d3e 100644
 +    /// TypeScript runner. The module can bind deep platform services without
 +    /// replacing the deterministic TypeScript core.
 +    ts_extension: ?[]const u8 = null,
++    /// Header search roots needed only by the app-owned TypeScript extension.
++    /// Paths are resolved relative to `app_root`.
++    ts_extension_include_paths: []const []const u8 = &.{},
 +    /// Override the SDK's macOS 11 deployment floor for apps that require
 +    /// newer platform APIs.
 +    macos_minimum_version: ?std.SemanticVersion = null,
@@ -21,7 +24,7 @@ index 0ec7a26..6369d3e 100644
  };
  
  /// Which core the app tree carries. No flag and no config anywhere: the
-@@ -857,6 +869,7 @@ fn tsCoreStage(
+@@ -857,6 +872,7 @@ fn tsCoreStage(
      service_pool_workers: ?u8,
      build_trace: bool,
      scriptc_optimization: ?[]const u8,
@@ -29,7 +32,7 @@ index 0ec7a26..6369d3e 100644
  ) TsCoreStage {
      const node = tsCorePreflight(b, dep, app_root);
      const window_views = collectTsWindowViews(b, app_root);
-@@ -1207,7 +1220,10 @@ fn tsCoreStage(
+@@ -1207,7 +1223,10 @@ fn tsCoreStage(
          _ = staged.addCopyFile(b.path(appPath(b, app_root, source.source_path)), source.staged_path);
      }
      _ = staged.add("window_views.zig", tsWindowRegistrySource(b, window_views));
@@ -41,7 +44,7 @@ index 0ec7a26..6369d3e 100644
      // The mobile wiring stages beside the desktop entry: same mirror, same
      // registry, same carrier constant — only the shell differs (the embed
      // host's AppDef contract instead of a process `main`).
-@@ -1468,7 +1484,7 @@ pub const MobileTsCore = struct {
+@@ -1468,7 +1487,7 @@ pub const MobileTsCore = struct {
  /// a standalone build.zig (it registers the standard `target`/`optimize`
  /// options itself).
  pub fn addMobileLib(b: *std.Build, dep: *std.Build.Dependency, options: MobileLibOptions) void {
@@ -50,7 +53,7 @@ index 0ec7a26..6369d3e 100644
      const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
      const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
      addMobileLibWithTarget(b, dep, target, optimize, options);
-@@ -1613,7 +1629,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions
+@@ -1613,7 +1632,7 @@ pub fn addApp(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions
  }
  
  pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: AppOptions) AppArtifacts {
@@ -59,7 +62,7 @@ index 0ec7a26..6369d3e 100644
      const optimize_request = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size");
      const optimize = exampleOptimizeMode(b, optimize_request, .Debug);
      const app_optimize = exampleOptimizeMode(b, optimize_request, .ReleaseFast);
-@@ -1681,6 +1697,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+@@ -1681,6 +1700,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
              service_pool_workers,
              build_trace,
              scriptc_optimization,
@@ -67,19 +70,45 @@ index 0ec7a26..6369d3e 100644
          )
      else
          null;
-@@ -2058,6 +2075,11 @@ fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.Resolv
+@@ -1852,6 +1872,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+         appModule(b, dep, target, optimize, app_options, manifest_name, options_mod, ts_stage, relational_migrations, app_config)
+     else
+         app_mod;
++    addPlatformLinkSearchPaths(b, selected_platform, web_engine, cef_dir, test_app_mod);
+     if (ts_stage) |stage| test_app_mod.addObject(markupDataObject(b, target, optimize, stage.markup_c));
+     const tests = b.addTest(.{ .root_module = test_app_mod, .use_llvm = useLlvmWorkaround(target) });
+     const test_step = b.step("test", "Run tests");
+@@ -1880,6 +1901,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+         .target = target,
+         .optimize = optimize,
+     });
++    addPlatformLinkSearchPaths(b, selected_platform, web_engine, cef_dir, analysis_mod);
+     analysis_mod.addImport("app", test_app_mod);
+     const analysis_obj = b.addObject(.{
+         .name = b.fmt("{s}-analysis", .{app_options.name}),
+@@ -1915,6 +1937,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
+         .target = target,
+         .optimize = optimize,
+     });
++    addPlatformLinkSearchPaths(b, selected_platform, web_engine, cef_dir, contract_mod);
+     contract_mod.addImport("app", test_app_mod);
+     if (test_app_mod.import_table.get("native_sdk")) |sdk_mod| {
+         contract_mod.addImport("native_sdk", sdk_mod);
+@@ -2058,6 +2081,13 @@ fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.Resolv
          // The wiring derives scene/identity/security from app.zon itself.
          app_mod.addImport("app_manifest_zon", manifest_mod);
      }
 +    if (app_options.ts_extension) |path| {
 +        const extension_mod = localModule(b, target, optimize, appPath(b, app_options.app_root, path));
 +        extension_mod.addImport("native_sdk", native_sdk_mod);
++        for (app_options.ts_extension_include_paths) |include_path|
++            extension_mod.addIncludePath(b.path(appPath(b, app_options.app_root, include_path)));
 +        app_mod.addImport("app_extension", extension_mod);
 +    }
      if (ts_stage) |stage| {
          // The compiled-core archive links behind the staged mirror; the
          // toolchain's runtime needs libc.
-@@ -2124,9 +2146,16 @@ fn addMacosInfoPlist(b: *std.Build, app_mod: *std.Build.Module, target: std.Buil
+@@ -2124,9 +2154,16 @@ fn addMacosInfoPlist(b: *std.Build, app_mod: *std.Build.Module, target: std.Buil
      app_mod.addCSourceFile(.{ .file = generated, .flags = &.{} });
  }
  
@@ -99,7 +128,7 @@ index 0ec7a26..6369d3e 100644
  
      if (b.sysroot == null) {
          b.sysroot = macosSdkPath(b) orelse b.sysroot;
-@@ -2134,7 +2163,8 @@ fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
+@@ -2134,7 +2171,8 @@ fn nativeSdkTarget(b: *std.Build) std.Build.ResolvedTarget {
  
      var query = target.query;
      query.os_tag = .macos;
@@ -109,6 +138,32 @@ index 0ec7a26..6369d3e 100644
      return b.resolveTargetQuery(query);
  }
  
+diff --git a/node_modules/@native-sdk/cli/src/platform/macos/appkit_host.m b/node_modules/@native-sdk/cli/src/platform/macos/appkit_host.m
+index 3225c78..75c7e1c 100644
+--- a/node_modules/@native-sdk/cli/src/platform/macos/appkit_host.m
++++ b/node_modules/@native-sdk/cli/src/platform/macos/appkit_host.m
+@@ -57,7 +57,7 @@ static id NativeSdkMainAppService(void) {
+     });
+     if (!serviceManagementHandle) return nil;
+     Class serviceClass = NSClassFromString(@"SMAppService");
+-    SEL selector = NSSelectorFromString(@"mainApp");
++    SEL selector = NSSelectorFromString(@"mainAppService");
+     if (!serviceClass || ![serviceClass respondsToSelector:selector]) return nil;
+     IMP implementation = [serviceClass methodForSelector:selector];
+     return ((id (*)(id, SEL))implementation)(serviceClass, selector);
+diff --git a/node_modules/@native-sdk/cli/src/platform/macos/cef_host.mm b/node_modules/@native-sdk/cli/src/platform/macos/cef_host.mm
+index 280ed14..e8f1386 100644
+--- a/node_modules/@native-sdk/cli/src/platform/macos/cef_host.mm
++++ b/node_modules/@native-sdk/cli/src/platform/macos/cef_host.mm
+@@ -63,7 +63,7 @@ static id NativeSdkMainAppService(void) {
+     });
+     if (!serviceManagementHandle) return nil;
+     Class serviceClass = NSClassFromString(@"SMAppService");
+-    SEL selector = NSSelectorFromString(@"mainApp");
++    SEL selector = NSSelectorFromString(@"mainAppService");
+     if (!serviceClass || ![serviceClass respondsToSelector:selector]) return nil;
+     IMP implementation = [serviceClass methodForSelector:selector];
+     return ((id (*)(id, SEL))implementation)(serviceClass, selector);
 diff --git a/node_modules/@native-sdk/cli/src/root.zig b/node_modules/@native-sdk/cli/src/root.zig
 index 2da935a..c1fa0c0 100644
 --- a/node_modules/@native-sdk/cli/src/root.zig

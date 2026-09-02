@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
         .manifest = "app.json",
         .ts_runner = "native/friday_main.zig",
         .ts_extension = "native/friday_host.zig",
+        .ts_extension_include_paths = &.{"third_party/nemo-speech/include"},
         .macos_minimum_version = .{ .major = 13, .minor = 0, .patch = 0 },
         .macos_cpu_arch = .aarch64,
     });
@@ -37,66 +38,24 @@ fn installNemoRuntime(b: *std.Build, artifacts: native_sdk.AppArtifacts) void {
 }
 
 fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
-    module.addIncludePath(b.path("native/include"));
     module.addIncludePath(b.path("third_party/nemo-speech/include"));
     module.addObjectFile(b.path("third_party/nemo-speech/lib/libnemo_speech_asr_c.dylib"));
     module.addRPathSpecial("@executable_path/../Frameworks");
     module.addRPathSpecial("@executable_path/../../../third_party/nemo-speech/lib");
-    const flags: []const []const u8 = if (b.sysroot) |sysroot| &.{
-        "-fobjc-arc",
-        "-fblocks",
-        "-fno-sanitize=builtin",
-        "-Wno-deprecated-declarations",
-        "-Wno-availability",
-        "-Wno-unknown-attributes",
-        "-Wno-deprecated-enum-enum-conversion",
-        "-Wno-unguarded-availability-new",
-        "-ObjC++",
-        "-std=c++17",
-        "-stdlib=libc++",
-        "-mmacosx-version-min=13.0",
-        "-arch",
-        "arm64",
-        "-isysroot",
-        sysroot,
-        b.fmt("-isystem{s}/usr/include", .{sysroot}),
-    } else &.{
-        "-fobjc-arc",
-        "-fblocks",
-        "-fno-sanitize=builtin",
-        "-Wno-deprecated-declarations",
-        "-ObjC++",
-        "-std=c++17",
-        "-stdlib=libc++",
-        "-mmacosx-version-min=13.0",
-        "-Wno-availability",
-        "-Wno-unknown-attributes",
-        "-arch",
-        "arm64",
-        "-Wno-deprecated-enum-enum-conversion",
-        "-Wno-unguarded-availability-new",
-    };
-    const sources = [_][]const u8{
-        "native/macos/FridayHost.mm",
-        "native/macos/GlobalInputMonitor.mm",
-        "native/macos/TextDelivery.mm",
-        "native/macos/OverlayWindow.mm",
-        "native/macos/AudioSession.mm",
-        "native/macos/NemoRecognizer.mm",
-        "native/macos/ModelRepository.mm",
-    };
-    for (sources) |source| module.addCSourceFile(.{ .file = b.path(source), .flags = flags });
-    if (b.sysroot) |sysroot| module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
-    module.link_libcpp = true;
+    if (b.sysroot) |sysroot| {
+        module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        module.addLibraryPath(.{ .cwd_relative = "/usr/lib/system" });
+        module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
+    }
+    module.link_libc = true;
+    module.linkSystemLibrary("objc", .{});
+    module.linkSystemLibrary("dispatch", .{});
     module.linkFramework("Accelerate", .{});
-    module.linkFramework("AVFoundation", .{});
-    module.linkFramework("AVFAudio", .{});
     module.linkFramework("AppKit", .{});
     module.linkFramework("ApplicationServices", .{});
-    module.linkFramework("Carbon", .{});
+    module.linkFramework("AudioToolbox", .{});
     module.linkFramework("CoreAudio", .{});
-    module.linkFramework("Foundation", .{});
-    module.linkFramework("Metal", .{});
-    module.linkFramework("MetalKit", .{});
+    module.linkFramework("CoreFoundation", .{});
+    module.linkFramework("CoreGraphics", .{});
     module.linkFramework("ServiceManagement", .{});
 }
