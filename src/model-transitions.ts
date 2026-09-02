@@ -54,6 +54,15 @@ export function updateModelState(model: Model, msg: Msg): Model | null {
       return model;
     case "toggle_hf_source_confirmation":
       return { ...model, hfSourceConfirmed: !model.hfSourceConfirmed };
+    case "choose_parakeet_ctc":
+      return {
+        ...model,
+        hfDraft: asciiBytes("nvidia/parakeet-ctc-1.1b"),
+        hfSourceConfirmed: false,
+        hfResolved: false,
+        hfResolvedConfirmed: false,
+        modelDownloadMessage: utf8Bytes("Parakeet CTC selected. Authorize one metadata request to continue."),
+      };
     case "model_cleanup_finished":
       return { ...model, modelDownloadState: "idle", modelDownloadedBytes: 0 / 1, modelTotalBytes: 0 / 1, modelDownloadedBytesLabel: asciiBytes("0"), modelTotalBytesLabel: asciiBytes("0"), modelDownloadMessage: contains(msg.body, asciiBytes("\"removed\":true")) ? utf8Bytes("Failed and partial downloads removed.") : utf8Bytes("No failed or partial downloads were present.") };
     case "model_cleanup_failed":

@@ -24,12 +24,12 @@
             {
                 "label": "main",
                 "title": "Friday",
-                "width": 760,
+                "width": 840,
                 "close_policy": "hide",
-                "height": 620,
+                "height": 640,
                 "initially_hidden": true,
                 "views": [
-                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Friday onboarding and settings", "accessibility_label": "Friday", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
+                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Friday onboarding and controls", "accessibility_label": "Friday", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]
             }
         ]

@@ -222,8 +222,8 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(labels.includes("Stop Recording"), false);
   assert.equal(labels.includes("Cancel"), false);
   assert.equal(labels.includes("Open Friday…"), true);
-  assert.equal(labels.includes("Model Manager…"), true);
-  assert.equal(labels.includes("Permission Status…"), true);
+  assert.equal(labels.includes("Models…"), true);
+  assert.equal(labels.includes("Access…"), true);
   assert.equal(labels.includes("Quit Friday"), true);
   assert.equal(readyMenu.iconPath.length, 0);
   assert.equal(new TextDecoder().decode(readyMenu.presentation.title), "F");
@@ -458,6 +458,16 @@ test("Hugging Face add requires explicit source confirmation", () => {
   assert.equal(commandOf(requested)?.op, "request");
 });
 
+test("known Parakeet alternatives seed a safe unconfirmed repository", () => {
+  const ready = readyModel();
+  const chosen = dispatch({ ...ready, hfSourceConfirmed: true, hfResolved: true, hfResolvedConfirmed: true }, { kind: "choose_parakeet_ctc" });
+  assert.equal(new TextDecoder().decode(chosen.hfDraft), "nvidia/parakeet-ctc-1.1b");
+  assert.equal(chosen.hfSourceConfirmed, false);
+  assert.equal(chosen.hfResolved, false);
+  assert.equal(chosen.hfResolvedConfirmed, false);
+  assert.equal(new TextDecoder().decode(chosen.modelDownloadMessage).includes("Authorize one metadata request"), true);
+});
+
 test("busy model actions explain why they cannot run", () => {
   const ready = readyModel();
   const busy: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: false, disposition: "transcribe" } };
@@ -488,7 +498,8 @@ test("appearance and overlay-preview contracts retain accessibility state", () =
   assert.equal(appearance.reduceMotion, true);
   assert.equal(appearance.highContrast, true);
   assert.equal(appearance.systemColorScheme, "dark");
-  assert.equal(themeState(appearance).accent, "#e7685f");
+  assert.equal(themeState(appearance).pack, "geist");
+  assert.equal(themeState(appearance).accent, undefined);
   const preview = dispatch(initial, { kind: "automation_scene_requested", value: bytes("overlay-preview-light") });
   assert.equal(preview.automationOverlayPreview, true);
   const dismissed = dispatch(preview, { kind: "dismiss_overlay_preview" });

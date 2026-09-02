@@ -79,7 +79,7 @@ scripts/verify-icon.sh
 
 ## UI and behavior evidence
 
-Build the raw automation binary and compare all twelve committed 760×620 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
+Build the raw automation binary and compare all twelve committed 840×640 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
 
 ```sh
 zig build -Dtarget=aarch64-macos -Dautomation=true
@@ -96,7 +96,7 @@ unset FRIDAY_APP_BINARY
 - [ ] Every scene has required accessible roles/names.
 - [ ] Tab and Shift-Tab traversal succeeds.
 - [ ] No automation dispatch error is present.
-- [ ] `docs/friday-behavior-coverage.md` has a row for each PRODUCT invariant 1–154 and no external item is represented as an automated pass.
+- [ ] `docs/friday-behavior-coverage.md` has a row for each PRODUCT invariant 1–156 and no external item is represented as an automated pass.
 
 ## Signed packaged E2E and privacy
 

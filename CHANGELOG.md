@@ -11,23 +11,24 @@ All notable changes to Friday are documented here.
 - Safe public Hugging Face `owner/repository` candidate resolution with immutable revision, one top-level GGUF, ASR/GGUF hints, LFS SHA/size, license, attribution, explicit download-for-verification authorization, resumable transfer, bounded GGUF inspection, real runtime probe, and atomic publication only after verification.
 - Visible paused/resumable model downloads with exact downloaded/total byte labels after relaunch.
 - Explicit recording → stop/drain → visible transcribing → local ASR sequencing and persistent 10-minute-limit outcome copy.
-- State-preserving signed packaged E2E, packaged negative probes, PRODUCT 1–154 coverage matrix, and measured p95 performance harness.
+- State-preserving signed packaged E2E, packaged negative probes, PRODUCT 1–156 coverage matrix, and measured p95 performance harness.
 - Strict macOS CI for dependency/patch verification, Native check/build/tests, icon reproducibility, and twelve accessibility/keyboard/golden scenes.
 - Developer ID/notarytool release script with nested/app/DMG timestamps, app and DMG notarization/stapling, and Gatekeeper assessment.
 - Friday user guide and release checklist.
+- A one-click Parakeet CTC 1.1B repository choice that still requires explicit metadata access and exact local verification before installation.
 
 ### Changed
 
 - Replaced Native SDK scaffold documentation and unsigned package metadata with Friday-specific, signature-truthful content.
 - Development packaging now signs embedded dylibs, app, and DMG with a real team identity while preserving hardened runtime and library validation.
 - Persistence schema advances with safe migration and continues to scrub transient source/audio/transcript/result/diagnostic/automation/model-resolution facts.
-- Replaced the settings-dashboard/card stack with a precision-studio interface: compact navigation rail, live waveform transport stage, etched settings rows, audio-rack model library, focused onboarding ceremony, and technical diagnostic ledger.
+- Recast the app as a monochrome Geist voice instrument: one continuous canvas, editorial hierarchy, compact navigation rail, thin evidence rules, measured status plate, and color reserved for live or exceptional state.
 - Forced arm64/aarch64 throughout Zig target resolution, the direct macOS C/NeMo host, CI, packaging, diagnostics, and release. Intel, universal Mach-O slices, and Rosetta translation now fail closed; architecture-bearing artifacts use the `-arm64` suffix.
 - Replaced the Friday-owned Objective-C/Objective-C++ host and Swift validation helpers with a pure-Zig host: CoreAudio/CGEvent/AX/NeMo C APIs, `std.http` model storage, Native SDK platform services, and a narrow typed dynamic runtime adapter for unavoidable AppKit objects. CI rejects tracked `.swift`, `.m`, and `.mm` implementation.
 
 ### Fixed
 
-- Kept Friday alive behind its menu-bar item when the Settings window closes, and made the status item use an unclipped text presentation with Settings as its activation target.
+- Kept Friday alive behind its menu-bar item when the main window closes, made status-item activation menu-only, and added an explicit **Open Friday…** action.
 - Removed the development-tree rpath from packaged binaries, standardized the bundle as `Friday.app`, and added package-time metadata/rpath assertions.
 - Disabled ggml 0.12's broken Metal residency-set path before recognizer startup, preventing its deterministic `ggml_metal_rsets_free` abort during application shutdown on macOS 26.
 

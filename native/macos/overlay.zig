@@ -259,14 +259,14 @@ const State = struct {
         objc.send1(void, NSInteger, self.effect_view, objc.selector("setState:"), visual_effect_state_active);
         objc.send1(void, bool, self.effect_view, objc.selector("setWantsLayer:"), true);
         const effect_layer = objc.send0(Id, self.effect_view, objc.selector("layer"));
-        objc.send1(void, CGFloat, effect_layer, objc.selector("setCornerRadius:"), 16);
+        objc.send1(void, CGFloat, effect_layer, objc.selector("setCornerRadius:"), 12);
         objc.send1(void, bool, effect_layer, objc.selector("setMasksToBounds:"), true);
         objc.send1(void, Id, self.panel, objc.selector("setContentView:"), self.effect_view);
         objc.release(self.effect_view);
 
-        self.status_dot = makeView(Rect.init(12, 21, 10, 10));
+        self.status_dot = makeView(Rect.init(13, 22, 8, 8));
         if (self.status_dot == null) return false;
-        objc.send1(void, CGFloat, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setCornerRadius:"), 5);
+        objc.send1(void, CGFloat, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setCornerRadius:"), 2);
         addSubview(self.effect_view, self.status_dot);
 
         const initial_heights = [_]CGFloat{ 6, 12, 18, 10, 7 };
@@ -322,10 +322,17 @@ const State = struct {
         const border_color = objc.send0(?*anyopaque, border, objc.selector("CGColor"));
         objc.send1(void, ?*anyopaque, layer, objc.selector("setBorderColor:"), border_color);
 
-        const coral = objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.91, 0.35, 0.31, 1);
-        const coral_color = objc.send0(?*anyopaque, coral, objc.selector("CGColor"));
-        objc.send1(void, ?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setBackgroundColor:"), coral_color);
-        for (self.bars) |bar| objc.send1(void, ?*anyopaque, objc.send0(Id, bar, objc.selector("layer")), objc.selector("setBackgroundColor:"), coral_color);
+        self.updateSignalStyle();
+    }
+
+    fn updateSignalStyle(self: *State) void {
+        const signal = if (self.mode == .transcribing)
+            objc.send0(Id, objc.class("NSColor"), objc.selector("labelColor"))
+        else
+            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.745, 0.949, 0.392, 1);
+        const signal_color = objc.send0(?*anyopaque, signal, objc.selector("CGColor"));
+        objc.send1(void, ?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
+        for (self.bars) |bar| objc.send1(void, ?*anyopaque, objc.send0(Id, bar, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
     }
 
     fn position(self: *State) void {
@@ -353,6 +360,7 @@ const State = struct {
         const was_visible = objc.send0(bool, self.panel, objc.selector("isVisible"));
         self.cancelScheduledHide();
         self.mode = if (locked) .locked else .held;
+        self.updateSignalStyle();
         setHidden(self.stop_button, !locked);
         setHidden(self.cancel_button, false);
         setHidden(self.dismiss_button, false);
@@ -457,6 +465,7 @@ const State = struct {
         self.cancelScheduledHide();
         self.invalidateTimer();
         self.mode = .transcribing;
+        self.updateSignalStyle();
         setHidden(self.stop_button, true);
         setHidden(self.cancel_button, false);
         setHidden(self.dismiss_button, false);

@@ -16,13 +16,13 @@ Friday asks separately for:
 - **Input Monitoring** — required for the system-global shortcut. Manual menu-bar Start remains available in acknowledged limited mode.
 - **Accessibility** — used to return final text to the exact source app. Without it, Friday copies the final text and shows the recovery action.
 
-Recover a revoked permission from Friday’s **Permission Status** page or System Settings → Privacy & Security, then return to Friday; it rechecks live.
+Recover a revoked permission from Friday’s **Access** page or System Settings → Privacy & Security, then return to Friday; it rechecks live.
 
-Closing Friday’s window hides it without quitting. Use the always-on **F** menu-bar item to reopen Settings, manage models or permissions, start recording, or quit Friday.
+Closing Friday’s window hides it without quitting. Clicking the always-on **F** menu-bar item opens only its menu; choose **Open Friday…** for the main window, or use the menu to manage models and permissions, start recording, or quit.
 
 ## Dictation
 
-The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Settings offers Command + Shift and Control + Option conveniences, plus a recorder for Fn/Globe by itself, an F-key, or another key combination. Presets apply immediately. Friday reviews custom candidates, warns about ordinary typing and known reserved/unreliable combinations, and changes the active shortcut only after explicit confirmation.
+The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Controls offers Command + Shift and Control + Option conveniences, plus a recorder for Fn/Globe by itself, an F-key, or another key combination. Presets apply immediately. Friday reviews custom candidates, warns about ordinary typing and known reserved/unreliable combinations, and changes the active shortcut only after explicit confirmation.
 
 Normal stop drains capture, visibly enters **transcribing**, runs local final-only ASR, then pastes to the exact captured source when safe. If exact-source paste is unavailable, Friday reports a clipboard fallback. Cancel invalidates the generation immediately; stale results cannot become current. Friday warns at 9:45 and stops at exactly 10:00 while preserving a visible 10-minute explanation through the final outcome.
 
@@ -30,9 +30,10 @@ Normal stop drains capture, visibly enters **transcribing**, runs local final-on
 
 On first setup Friday offers its pinned, verified default model automatically when the model step becomes visible. Downloads are user-visible, cancellable, SHA-256 verified, resumable after relaunch, runtime-probed, and atomically installed.
 
-Model Manager also supports:
+The Models page also supports:
 
 - **Local model** — select a compatible Parakeet TDT GGUF plus its matching Friday manifest sidecar. Friday references the original file and never deletes it.
+- **Known Parakeet alternative** — choose Parakeet CTC 1.1B to fill its official repository identifier, then explicitly authorize metadata resolution and exact local verification.
 - **Public Hugging Face identifier** — enter `owner/repository`; Friday may resolve only an **unverified immutable candidate** when the public metadata has an exact revision, exactly one top-level GGUF, ASR/GGUF hints, LFS SHA/size, license, and attribution. That metadata never proves compatibility. A separately authorized download must pass exact integrity, bounded GGUF inspection, and the real local NeMo create/destroy probe before Friday publishes, lists, selects, or calls it compatible.
 
 After a verified model is installed and active, recording and transcription work offline. Network access is limited to explicit model metadata/download actions. Remove from Friday drops a reference. Delete Friday’s Copy is shown only for Friday-managed files. Failed/partial downloads can be cleaned without deleting installed models.

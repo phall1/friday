@@ -265,9 +265,9 @@ Figma: none provided
 
 118. The menu-bar menu provides Settings.
 
-119. The menu-bar menu provides Model Manager.
+119. The menu-bar menu provides Models.
 
-120. The menu-bar menu provides Permission Status.
+120. The menu-bar menu provides Access.
 
 121. The menu-bar menu provides Launch at Login toggle.
 
@@ -275,7 +275,7 @@ Figma: none provided
 
 123. If Friday is not ready, the menu-bar menu shows the specific blocking reason: missing microphone permission, missing input monitoring permission for global hotkey, missing model, failed model download, or unsupported platform.
 
-124. Settings show the active hotkey, double-tap-lock setting, selected model, model storage summary, permission status, paste behavior, overlay preference, launch-at-login setting, and privacy statement.
+124. Controls, Models, and Access show the active hotkey, double-tap-lock setting, selected model, model storage summary, permission status, paste behavior, overlay preference, launch-at-login setting, and privacy statement.
 
 125. Launch at Login is off until the user enables it or accepts it during onboarding.
 
@@ -285,7 +285,7 @@ Figma: none provided
 
 128. Friday is keyboard accessible.
 
-129. Every interactive control in onboarding, settings, model manager, menu, and overlay has an accessible name.
+129. Every interactive control in onboarding, Controls, Models, Access, menu, and overlay has an accessible name.
 
 130. Friday supports keyboard navigation through onboarding and settings without requiring the mouse.
 
@@ -336,3 +336,7 @@ Figma: none provided
 153. Friday never hides a failed paste by claiming success.
 
 154. Friday always gives the user a way back to ready state after cancelable errors, permission denials, failed downloads, failed transcription, failed paste, or unsupported model selection.
+
+155. Friday presents one calm, native voice-instrument surface whose hierarchy remains clear in light, dark, high-contrast, and reduced-motion environments; color communicates live or exceptional state rather than decoration.
+
+156. Friday offers Parakeet CTC 1.1B as a known repository shortcut without weakening the consent, immutable-metadata, integrity, or local runtime-verification requirements for non-default Hugging Face models.

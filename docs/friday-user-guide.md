@@ -20,7 +20,7 @@ Friday does not mark a permission usable merely because a request was made. It p
 
 If access is denied or later revoked:
 
-1. Open Friday → **Permission Status**.
+1. Open Friday → **Access**.
 2. Choose the recovery action for the missing permission.
 3. In System Settings → Privacy & Security, enable Friday for that permission.
 4. Return to Friday. It rechecks automatically; use the page action again if macOS has not refreshed yet.
@@ -84,6 +84,8 @@ Choose **Add Local Model…** and select a compatible Parakeet TDT GGUF with its
 
 ### Public Hugging Face model
 
+The Models page offers **Parakeet CTC 1.1B** as a known English-language repository. **Use this repository** fills its official Hugging Face identifier; it does not bypass consent or verification.
+
 Enter a public `owner/repository` identifier. Friday first asks permission to contact Hugging Face for public metadata. Resolution can produce only an **Unverified candidate**, and only when metadata establishes:
 
 - a public, ungated repository and immutable 40-hex revision,
@@ -129,7 +131,7 @@ Review the JSON before sharing it. Audio or transcript collection is never impli
 ## Recovery
 
 - **Unsupported Mac/system:** use a supported Apple Silicon Mac on macOS 14+. Setup and recording remain disabled.
-- **Permission denied/revoked:** use Permission Status and System Settings; Friday rechecks live.
+- **Permission denied/revoked:** use Access and System Settings; Friday rechecks live.
 - **Shortcut conflict:** record a different candidate and explicitly save it.
 - **Download failed/canceled:** use Retry/Resume or remove the partial. Friday does not silently loop.
 - **Model incompatible/corrupt:** choose a compatible verified model; it cannot become active.

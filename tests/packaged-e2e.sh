@@ -123,7 +123,7 @@ done
 # The process owns a live menu-only status item, and its explicit Open Friday
 # row routes the app window back to the settings page.
 launch_scene model-light
-"$CLI" automate assert 'role=text name="Model Manager"' >/dev/null
+"$CLI" automate assert 'role=text name="Models"' >/dev/null
 "$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate assert 'role=button name="Check Microphone"' 'role=switch name="Launch at Login"' >/dev/null
 
@@ -187,16 +187,17 @@ if [[ -z "$(pbpaste)" ]]; then echo "Fixture ASR did not leave a clipboard fallb
 
 # An installed verified model remains ready with network endpoints disabled.
 launch_scene model-light HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY='*'
-"$CLI" automate assert 'role=text name="ready"' 'ACTIVE · Hugging Face · managed by Friday' 'Parakeet TDT 0.6B v3' >/dev/null
+"$CLI" automate assert 'role=text name="ready"' 'role=text name="● active"' 'Hugging Face · managed by Friday' 'Parakeet TDT 0.6B v3' >/dev/null
 
 # SMAppService cycle must restore its exact prior registration state.
 launch_scene settings-light FRIDAY_AUTOMATION_LOGIN=cycle
 "$CLI" automate assert 'restored' >/dev/null
 
 # Diagnostics must expose safe facts and explicit exclusion flags only.
+"$CLI" automate tray-action 20 >/dev/null
 diag_id="$(widget_id button Diagnostics)"
 "$CLI" automate widget-action main-canvas "$diag_id" press >/dev/null
-"$CLI" automate assert 'Safe Diagnostics' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
+"$CLI" automate assert 'role=text name="Diagnostics"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
 "$CLI" automate assert --absent "$WORK/fixture.f32" 'Friday local dictation works' >/dev/null
 
 # Cleanup runs against an isolated downloads directory and cannot touch Models.
@@ -205,7 +206,7 @@ mkdir -p "$DOWNLOADS/e2e-invalid"
 printf 'partial' >"$DOWNLOADS/e2e-invalid/download.partial"
 printf '{"invalid":true}' >"$DOWNLOADS/e2e-invalid/resume.json"
 launch_scene model-light
-cleanup_id="$(widget_id button 'Clean Failed and Partial Downloads')"
+cleanup_id="$(widget_id button 'Clean Partial Downloads')"
 "$CLI" automate widget-action main-canvas "$cleanup_id" press >/dev/null
 "$CLI" automate assert 'Failed and partial downloads removed.' >/dev/null
 if [[ -e "$DOWNLOADS/e2e-invalid" ]]; then echo "Model cleanup left the E2E partial behind." >&2; exit 1; fi

@@ -206,6 +206,7 @@ export type Msg =
   | { readonly kind: "local_model_failed"; readonly error: Uint8Array }
   | { readonly kind: "hf_draft_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "toggle_hf_source_confirmation" }
+  | { readonly kind: "choose_parakeet_ctc" }
   | { readonly kind: "add_hugging_face_model" }
   | { readonly kind: "hf_model_added"; readonly body: Uint8Array }
   | { readonly kind: "hf_model_failed"; readonly error: Uint8Array }
@@ -436,7 +437,7 @@ export function elapsedLabel(model: Model): Uint8Array {
 export function hasDiagnosticsExport(model: Model): boolean { return model.diagnosticsExported; }
 export function showOverlayPreview(model: Model): boolean { return model.automationSceneActive && model.automationOverlayPreview; }
 export function themeState(model: Model): ThemeState {
-  return { pack: "house", colorScheme: model.appearanceOverride, accent: "#e7685f" };
+  return { pack: "geist", colorScheme: model.appearanceOverride };
 }
 
 function statusRow(id: number, label: Uint8Array, command: Uint8Array, enabled: boolean, detail: Uint8Array, role: "command" | "info"): StatusItemMenuItem {
@@ -468,8 +469,8 @@ export function statusItem(model: Model): StatusItemState {
   if (isBusy(model)) items[items.length] = statusRow(12, utf8Bytes("Cancel"), asciiBytes("friday.cancel"), true, asciiBytes(""), "command");
   items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
   items[items.length] = statusRow(20, utf8Bytes("Open Friday…"), asciiBytes("friday.settings"), true, asciiBytes(""), "command");
-  items[items.length] = statusRow(21, utf8Bytes("Model Manager…"), asciiBytes("friday.models"), true, asciiBytes(""), "command");
-  items[items.length] = statusRow(22, utf8Bytes("Permission Status…"), asciiBytes("friday.permissions"), true, asciiBytes(""), "command");
+  items[items.length] = statusRow(21, utf8Bytes("Models…"), asciiBytes("friday.models"), true, asciiBytes(""), "command");
+  items[items.length] = statusRow(22, utf8Bytes("Access…"), asciiBytes("friday.permissions"), true, asciiBytes(""), "command");
   items[items.length] = statusRow(23, model.launchAtLogin ? utf8Bytes("Disable Launch at Login") : utf8Bytes("Enable Launch at Login"), asciiBytes("friday.login"), model.loginStatus !== "checking", asciiBytes(""), "command");
   items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
   items[items.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");

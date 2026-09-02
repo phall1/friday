@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Friday listening waveform">
   <!-- Transparent outer margin preserves the macOS app-icon safe area. -->
-  <rect x="64" y="64" width="896" height="896" rx="210" fill="#181A1D"/>
-  <!-- The recessed capsule repeats Friday's single recording-status motif. -->
-  <rect x="184" y="288" width="656" height="448" rx="224" fill="#24272B" stroke="#363A40" stroke-width="24"/>
-  <!-- Five coral bars remain a clear listening waveform at 16–32 px. -->
-  <g fill="#E7685F">
-    <rect x="258" y="432" width="44" height="160" rx="22"/>
-    <rect x="374" y="382" width="44" height="260" rx="22"/>
-    <rect x="490" y="332" width="44" height="360" rx="22"/>
-    <rect x="606" y="382" width="44" height="260" rx="22"/>
-    <rect x="722" y="432" width="44" height="160" rx="22"/>
+  <rect x="64" y="64" width="896" height="896" rx="210" fill="#090B0F"/>
+  <rect x="65" y="65" width="894" height="894" rx="209" fill="none" stroke="#2C2C31" stroke-width="6"/>
+  <!-- A compact instrument face: five measured bars and one live signal. -->
+  <rect x="184" y="306" width="656" height="412" rx="72" fill="#0F131B" stroke="#3A4250" stroke-width="12"/>
+  <g fill="#F2F2F4">
+    <rect x="258" y="438" width="44" height="148" rx="14"/>
+    <rect x="374" y="388" width="44" height="248" rx="14"/>
+    <rect x="606" y="388" width="44" height="248" rx="14"/>
+    <rect x="722" y="438" width="44" height="148" rx="14"/>
   </g>
+  <rect x="490" y="338" width="44" height="348" rx="14" fill="#BEF264"/>
 </svg>
