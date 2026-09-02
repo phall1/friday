@@ -22,7 +22,8 @@ All notable changes to Friday are documented here.
 - Development packaging now signs embedded dylibs, app, and DMG with a real team identity while preserving hardened runtime and library validation.
 - Persistence schema advances with safe migration and continues to scrub transient source/audio/transcript/result/diagnostic/automation/model-resolution facts.
 - Replaced the settings-dashboard/card stack with a precision-studio interface: compact navigation rail, live waveform transport stage, etched settings rows, audio-rack model library, focused onboarding ceremony, and technical diagnostic ledger.
-- Forced arm64/aarch64 throughout target resolution, Objective-C++ compilation, aarch64 NeMo Metal selection, CI, packaging, diagnostics, and release. Intel, universal Mach-O slices, and Rosetta translation now fail closed; architecture-bearing artifacts use the `-arm64` suffix.
+- Forced arm64/aarch64 throughout Zig target resolution, the direct macOS C/NeMo host, CI, packaging, diagnostics, and release. Intel, universal Mach-O slices, and Rosetta translation now fail closed; architecture-bearing artifacts use the `-arm64` suffix.
+- Replaced the Friday-owned Objective-C/Objective-C++ host and Swift validation helpers with a pure-Zig host: CoreAudio/CGEvent/AX/NeMo C APIs, `std.http` model storage, Native SDK platform services, and a narrow typed dynamic runtime adapter for unavoidable AppKit objects. CI rejects tracked `.swift`, `.m`, and `.mm` implementation.
 
 ### Security and privacy
 

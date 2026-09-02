@@ -8,7 +8,7 @@ See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday
 
 A public release must be the arm64-only, Developer ID-signed, notarized, and stapled `Friday-0.1.0-arm64.dmg`. Open the DMG, move Friday to Applications, then launch Friday. The current repository can produce a team-signed arm64 development package, but public release remains blocked until Developer ID and notary credentials are supplied and the external checks in the release checklist pass.
 
-Friday is arm64/aarch64 end to end and requires Apple Silicon and macOS 14+. The build graph, Objective-C++ compilation, NeMo Metal runtime, package, CI, and release scripts reject Intel, universal Mach-O slices, and Rosetta translation. The bundle permits launch on macOS 13 only so it can show a clear unsupported-system explanation; setup, downloads, and recording remain disabled there.
+Friday is arm64/aarch64 end to end and requires Apple Silicon and macOS 14+. The pure-Zig application host, direct macOS C APIs, NeMo Metal runtime, package, CI, and release scripts reject Intel, universal Mach-O slices, and Rosetta translation. The bundle permits launch on macOS 13 only so it can show a clear unsupported-system explanation; setup, downloads, and recording remain disabled there.
 
 Friday asks separately for:
 
@@ -73,13 +73,10 @@ for scene in onboarding-light settings-dark model-light error-dark \
 done
 ```
 
-Regenerate an intentionally reviewed golden only with `tests/ui-automation.sh --update <scene>`. Verify icon reproducibility with:
+Regenerate an intentionally reviewed golden only with `tests/ui-automation.sh --update <scene>`. Verify the checked-in SVG and 1024×1024 PNG icon pair with:
 
 ```sh
-generated="$(mktemp -t friday-icon).png"
-swift scripts/generate-icon.swift assets/icon.svg "$generated"
-cmp "$generated" assets/icon.png
-rm -f "$generated"
+scripts/verify-icon.sh
 ```
 
 ## Package and release
@@ -121,12 +118,14 @@ Both harnesses refuse to race a running Friday process, preserve and restore app
 
 - `src/core.ts` — deterministic Model/Msg/update workflow, readiness, stale-generation rules, persistence projection, menus, and automation routes. It compiles to native code; no JavaScript runtime ships.
 - `src/app.native` — Native markup for unsupported/setup/settings/model/permission/diagnostic/result surfaces.
-- `native/friday_host.zig` — exactly-once bridge between Native SDK effects and the Objective-C++ host.
-- `native/macos/GlobalInputMonitor.mm` — global shortcut capture, validation, press/release, sleep/wake.
-- `native/macos/AudioSession.mm` — realtime-safe AVAudioEngine capture, conversion, bounded storage, drain, route/failure cleanup.
-- `native/macos/ModelRepository.mm` — verified default/local/Hugging Face models, resume, atomic publication, bounded deletion.
-- `native/macos/NemoRecognizer.mm` — one serialized in-process NeMo recognizer.
-- `native/macos/TextDelivery.mm` — exact-source AX/pasteboard delivery and truthful fallback.
-- `native/macos/OverlayWindow.mm` — nonactivating recording/transcribing capsule.
+- `native/friday_host.zig` — direct pure-Zig Native SDK host, session owner, command dispatcher, and exactly-once completion registry.
+- `native/macos/system.zig` and `json.zig` — platform-service adapter plus typed wire JSON/base64.
+- `native/macos/input.zig` — CGEvent/TCC global shortcut capture, validation, press/release, and sleep/wake handling.
+- `native/macos/audio.zig` and `ring.zig` — capture/conversion, allocation-free Zig SPSC, bounded storage, drain, and route/failure cleanup.
+- `native/macos/models.zig` — `std.http`/files/hash/JSON verified default/local/Hugging Face models, resume, atomic publication, and bounded deletion.
+- `native/macos/nemo.zig` — one serialized in-process NeMo C-ABI recognizer.
+- `native/macos/delivery.zig` — exact-source AX and Native SDK clipboard delivery with truthful fallback.
+- `native/macos/overlay.zig` — nonactivating recording/transcribing capsule.
+- `native/macos/objc.zig` — one narrow typed dynamic runtime wrapper per unavoidable AppKit selector; no Objective-C source or bridge.
 
 Known system-context gaps are not hidden: external pointer acceptance for the overlay and successful AX insertion into TextEdit/Terminal/browser fields have not been observed in this loginwindow-bound harness; public notarization cannot run without Developer ID/notary credentials; energy remains an Instruments check. These are release-checklist items, not inferred passes.

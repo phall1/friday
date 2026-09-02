@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-08-28T21:15:14Z",
+  "recordedAt": "2026-09-02T01:57:19Z",
   "host": {
     "architecture": "arm64",
     "processTranslated": false,
@@ -16,7 +16,7 @@
     "lipoArchitectures": ["arm64"],
     "otoolCpuType": "ARM64",
     "containsX86_64": false,
-    "sha256": "9a5ced8d4232c90b5128b4e2059e3cd088aabca2f6a59c78c60378a64f6df466"
+    "sha256": "7ca1ad8db596627e5208504e8b4cc44273d057dd43ea4aaf6f274d78f244daf9"
   },
   "embeddedRuntime": {
     "selection": "nemo-speech-0.1.0-macos-aarch64-metal",
@@ -34,7 +34,7 @@
   },
   "diskImage": {
     "path": "zig-out/package/Friday-0.1.0-arm64.dmg",
-    "sha256": "bce8310eb92796bfba52aea20e19321e266c87880af4ff55175409abbb650819",
+    "sha256": "da4ab676ea8eab27dc681196d4094c03c874587f7be0c63c7ac6d2d0b1f2b171",
     "teamSignedDevelopmentArtifact": true,
     "notarized": false
   },
@@ -45,7 +45,8 @@
     "sysctl.proc_translated is 0",
     "codesign --verify --deep --strict passes for the app",
     "codesign --verify --strict passes for the arm64 DMG",
-    "package resources contain no signing=none or unsigned-local-package claim"
+    "package resources contain no signing=none or unsigned-local-package claim",
+    "Friday-owned host, scripts, and tests contain no tracked .swift, .m, or .mm implementation"
   ],
   "externalBlockers": [
     "Developer ID Application and notary credentials are unavailable, so notarization is not claimed"

@@ -4,7 +4,7 @@ A checked box means the exact artifact under release was observed. Do not infer 
 
 ## Current release state
 
-- [x] Apple Silicon-only target enforced across Zig target resolution, Objective-C++ `-arch arm64`, Native packaging, the aarch64 NeMo Metal runtime, CI, diagnostics, and release. Intel, universal slices, and Rosetta are refused. The bundle minimum remains macOS 13 only to render the unsupported-system explanation; product support starts at macOS 14.
+- [x] Apple Silicon-only target enforced across Zig target resolution, the pure-Zig macOS host, Native packaging, the aarch64 NeMo Metal runtime, CI, diagnostics, and release. Intel, universal slices, and Rosetta are refused. CI also rejects tracked `.swift`, `.m`, and `.mm` implementation. The bundle minimum remains macOS 13 only to render the unsupported-system explanation; product support starts at macOS 14.
 
 - [x] Hardened runtime and library validation stay enabled.
 - [x] Embedded NeMo/ggml dylibs and app can be signed with the current Apple Development team identity.
@@ -70,13 +70,10 @@ npm run build
 npm test
 ```
 
-- [ ] Icon source reproduces the committed PNG exactly:
+- [ ] Canonical icon SVG and 1024×1024 PNG pass their pinned integrity check:
 
 ```sh
-generated="$(mktemp -t friday-icon).png"
-swift scripts/generate-icon.swift assets/icon.svg "$generated"
-cmp "$generated" assets/icon.png
-rm -f "$generated"
+scripts/verify-icon.sh
 ```
 
 ## UI and behavior evidence
