@@ -115,6 +115,7 @@ fn ensureClasses() !Classes {
         inline for (methods) |method| {
             if (!objc.addMethod(target_class, objc.selector(method[0]), method[1], "v@:@")) return error.ObjectiveCClassCreationFailed;
         }
+        if (!objc.addMethod(target_class, objc.selector("observeValueForKeyPath:ofObject:change:context:"), &targetObserveAppearance, "v@:@@@^v")) return error.ObjectiveCClassCreationFailed;
         objc.registerClassPair(target_class);
     }
     return .{ .panel = panel_class, .target = target_class };
@@ -183,6 +184,9 @@ fn targetPanelMoved(target: Id, _: Sel, _: Id) callconv(.c) void {
 fn targetAccessibilityChanged(target: Id, _: Sel, _: Id) callconv(.c) void {
     if (stateFor(target)) |state| state.updateVisualStyle();
 }
+fn targetObserveAppearance(target: Id, _: Sel, _: Id, _: Id, _: Id, _: ?*anyopaque) callconv(.c) void {
+    if (stateFor(target)) |state| state.updateVisualStyle();
+}
 
 fn onMainThread() bool {
     return objc.send0(bool, objc.class("NSThread"), objc.selector("isMainThread"));
@@ -222,6 +226,7 @@ const State = struct {
     preferred_frame: ?ScreenFrame = null,
     restored_position: bool = false,
     build_ok: bool = false,
+    appearance_observer_registered: bool = false,
     mode: Mode = .held,
     elapsed_seed: u64 = 0,
     last_elapsed_second: u64 = std.math.maxInt(u64),
@@ -300,9 +305,16 @@ const State = struct {
         const move_name = objc.nsString("NSWindowDidMoveNotification");
         objc.send4(void, Id, Sel, Id, Id, center, objc.selector("addObserver:selector:name:object:"), self.target, objc.selector("fridayPanelMoved:"), move_name, self.panel);
         objc.release(move_name);
+        const workspace = objc.send0(Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        const workspace_center = objc.send0(Id, workspace, objc.selector("notificationCenter"));
         const display_name = objc.nsString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
-        objc.send4(void, Id, Sel, Id, Id, center, objc.selector("addObserver:selector:name:object:"), self.target, objc.selector("fridayAccessibilityDisplayChanged:"), display_name, null);
+        objc.send4(void, Id, Sel, Id, Id, workspace_center, objc.selector("addObserver:selector:name:object:"), self.target, objc.selector("fridayAccessibilityDisplayChanged:"), display_name, null);
         objc.release(display_name);
+        const app = objc.send0(Id, objc.class("NSApplication"), objc.selector("sharedApplication"));
+        const appearance_key = objc.nsString("effectiveAppearance");
+        objc.send4(void, Id, Id, NSUInteger, ?*anyopaque, app, objc.selector("addObserver:forKeyPath:options:context:"), self.target, appearance_key, 0, null);
+        objc.release(appearance_key);
+        self.appearance_observer_registered = true;
 
         self.updateVisualStyle();
         self.applyAmplitude(0, false);
@@ -326,13 +338,39 @@ const State = struct {
     }
 
     fn updateSignalStyle(self: *State) void {
+        const workspace = objc.send0(Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        const reduce_transparency = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceTransparency"));
+        const appearance = objc.send0(Id, self.effect_view, objc.selector("effectiveAppearance"));
+        const appearance_name = if (appearance != null) objc.send0(Id, appearance, objc.selector("name")) else null;
+        var appearance_buffer: [64]u8 = undefined;
+        const appearance_bytes = if (appearance_name != null) objc.copyUtf8Into(appearance_name, &appearance_buffer) else "";
+        const dark_appearance = std.mem.indexOf(u8, appearance_bytes, "Dark") != null;
+        const bright_live_signal = !reduce_transparency or dark_appearance;
         const signal = if (self.mode == .transcribing)
             objc.send0(Id, objc.class("NSColor"), objc.selector("labelColor"))
+        else if (bright_live_signal)
+            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.745, 0.949, 0.392, 1)
         else
-            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.745, 0.949, 0.392, 1);
+            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.302, 0.486, 0.059, 1);
         const signal_color = objc.send0(?*anyopaque, signal, objc.selector("CGColor"));
         objc.send1(void, ?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
         for (self.bars) |bar| objc.send1(void, ?*anyopaque, objc.send0(Id, bar, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
+    }
+
+    fn linearized(component: CGFloat) CGFloat {
+        return if (component <= 0.04045) component / 12.92 else std.math.pow(CGFloat, (component + 0.055) / 1.055, 2.4);
+    }
+
+    fn luminance(red: CGFloat, green: CGFloat, blue: CGFloat) CGFloat {
+        return 0.2126 * linearized(red) + 0.7152 * linearized(green) + 0.0722 * linearized(blue);
+    }
+
+    fn signalContrastContract() bool {
+        const bright_luminance = luminance(0.745, 0.949, 0.392);
+        const dark_luminance = luminance(0.302, 0.486, 0.059);
+        const bright_on_black = (bright_luminance + 0.05) / 0.05;
+        const dark_on_white = 1.05 / (dark_luminance + 0.05);
+        return bright_on_black >= 4.5 and dark_on_white >= 4.5;
     }
 
     fn position(self: *State) void {
@@ -558,18 +596,21 @@ const State = struct {
         self.updateMeter(500, 4321);
         const meter_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
         const meter_ok = std.mem.eql(u8, meter_label, "Locked 0:04");
+        const live_signal_applied = objc.send0(?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("backgroundColor")) != null;
         self.showTranscribing();
         const transcribing_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
         const transcribing_ok = std.mem.eql(u8, transcribing_label, "Transcribing");
         const controls_correct = objc.send0(bool, self.stop_button, objc.selector("isHidden")) and !objc.send0(bool, self.cancel_button, objc.selector("isHidden")) and !objc.send0(bool, self.dismiss_button, objc.selector("isHidden"));
         const reduced_motion_contract = if (self.reduceMotion()) self.timer == null else self.timer != null;
+        const transcribing_signal_applied = objc.send0(?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("backgroundColor")) != null;
+        const signal_contract = live_signal_applied and transcribing_signal_applied and signalContrastContract();
 
         const reduce_transparency = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceTransparency"));
         const increase_contrast = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldIncreaseContrast"));
         const layer = objc.send0(Id, self.effect_view, objc.selector("layer"));
         const material = objc.send0(NSInteger, self.effect_view, objc.selector("material"));
         const border_width = objc.send0(CGFloat, layer, objc.selector("borderWidth"));
-        const appearance_contract = material == (if (reduce_transparency) material_window_background else material_hud_window) and border_width == (if (increase_contrast) @as(CGFloat, 1.5) else @as(CGFloat, 0.5));
+        const appearance_contract = material == (if (reduce_transparency) material_window_background else material_hud_window) and border_width == (if (increase_contrast) @as(CGFloat, 1.5) else @as(CGFloat, 0.5)) and signal_contract;
 
         self.performAction(.dismiss);
         self.orderOutNow();
@@ -597,6 +638,16 @@ const State = struct {
         }
         const center = objc.send0(Id, objc.class("NSNotificationCenter"), objc.selector("defaultCenter"));
         objc.send1(void, Id, center, objc.selector("removeObserver:"), self.target);
+        const workspace = objc.send0(Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        const workspace_center = objc.send0(Id, workspace, objc.selector("notificationCenter"));
+        objc.send1(void, Id, workspace_center, objc.selector("removeObserver:"), self.target);
+        if (self.appearance_observer_registered) {
+            const app = objc.send0(Id, objc.class("NSApplication"), objc.selector("sharedApplication"));
+            const appearance_key = objc.nsString("effectiveAppearance");
+            objc.send2(void, Id, Id, app, objc.selector("removeObserver:forKeyPath:"), self.target, appearance_key);
+            objc.release(appearance_key);
+            self.appearance_observer_registered = false;
+        }
         if (self.stop_button != null) objc.send1(void, Id, self.stop_button, objc.selector("setTarget:"), null);
         if (self.dismiss_button != null) objc.send1(void, Id, self.dismiss_button, objc.selector("setTarget:"), null);
         if (self.cancel_button != null) objc.send1(void, Id, self.cancel_button, objc.selector("setTarget:"), null);

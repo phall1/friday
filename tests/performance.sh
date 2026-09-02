@@ -117,7 +117,7 @@ done
 
 # Exercise rebuild/layout/a11y paths while profiling, without changing durable
 # user preferences.
-for tab_name in Models Permissions Studio Diagnostics Studio; do
+for tab_name in Models Access Controls Diagnostics Controls; do
   tab_id="$(widget_id button "$tab_name")"
   "$CLI" automate widget-action main-canvas "$tab_id" press >/dev/null
 done

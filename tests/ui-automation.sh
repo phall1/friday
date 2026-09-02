@@ -23,7 +23,7 @@ NO_ELLIPSIS=()
 case "$SCENE" in
   onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Open Accessibility"' 'role=button name="Open Input Monitoring"' 'role=button name="Continue"' 'Hear the shortcut while another app is focused.' 'This page refreshes automatically.'); NO_ELLIPSIS=('Hear the shortcut while another app is focu…') ;;
   settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=text name="Default microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"'); NO_ELLIPSIS=('Default microph…') ;;
-  model-*) REQUIRED=('role=text name="Models"' 'role=button name="Add Local Model…"' 'role=button name="Use this repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
+  model-*) REQUIRED=('role=text name="Models"' 'role=button name="Add Local Model…"' 'role=button name="Use Parakeet CTC repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Resolve Candidate Metadata"') ;;
   error-*) REQUIRED=('attention required' 'Model: Parakeet TDT 0.6B v3' 'role=button name="Retry Transcription"' 'role=button name="Change Model"') ;;
   recording-*) REQUIRED=('role=text name="recording"' 'role=button name="Stop Recording"' 'role=button name="Cancel"') ;;
   transcribing-*) REQUIRED=('role=text name="transcribing"' 'role=button name="Cancel"' 'Transcribing locally') ;;

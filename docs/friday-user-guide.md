@@ -31,7 +31,7 @@ A missing Microphone permission blocks recording. Missing Input Monitoring disab
 
 The initial convenience is **Command + Shift**. **Control + Option** is also available. The two presets apply immediately. To choose Fn/Globe, an F-key, or another key combination:
 
-1. Open Settings → Shortcut.
+1. Open Friday → **Controls**.
 2. Choose **Change Shortcut…**.
 3. Press and release **Fn/Globe** by itself, an F-key, or another key combination.
 4. Review the displayed candidate and any warning.
@@ -43,7 +43,7 @@ Friday rejects ordinary unmodified typing and warns about known macOS-reserved, 
 
 - Press and hold the shortcut; recording begins after the deliberate hold threshold. Release to stop and transcribe.
 - A very short first press seeds double-tap detection without recording usable audio.
-- Press again within the selected Fast (250 ms), Balanced (300 ms), or Deliberate (400 ms) window to lock recording.
+- Press again within the selected 250 ms, 300 ms, or 400 ms window to lock recording.
 - A locked session continues after release. Use **Stop Recording** to transcribe or **Cancel** to discard.
 - A normal long hold never seeds a later lock.
 
@@ -84,7 +84,7 @@ Choose **Add Local Model…** and select a compatible Parakeet TDT GGUF with its
 
 ### Public Hugging Face model
 
-The Models page offers **Parakeet CTC 1.1B** as a known English-language repository. **Use this repository** fills its official Hugging Face identifier; it does not bypass consent or verification.
+The Models page offers **Parakeet CTC 1.1B** as a known English-language repository. **Use Parakeet CTC repository** fills its official Hugging Face identifier; it does not bypass consent or verification.
 
 Enter a public `owner/repository` identifier. Friday first asks permission to contact Hugging Face for public metadata. Resolution can produce only an **Unverified candidate**, and only when metadata establishes:
 
@@ -107,7 +107,7 @@ $HOME/Library/Application Support/com.phall.friday/Models
 $HOME/Library/Application Support/com.phall.friday/ModelDownloads
 ```
 
-**Delete Friday’s Copy** appears only for Friday-managed models and refuses paths outside that root. **Clean Failed and Partial Downloads** removes only failed/partial download staging, not installed models. Do not hand-edit `index.json`, managed manifests, or partial resume metadata.
+**Delete Friday’s Copy** appears only for Friday-managed models and refuses paths outside that root. **Clean Partial Downloads** removes only failed/partial download staging, not installed models. Do not hand-edit `index.json`, managed manifests, or partial resume metadata.
 
 ## Privacy and retention
 
@@ -118,9 +118,9 @@ $HOME/Library/Application Support/com.phall.friday/ModelDownloads
 - Temporary audio is removed on cancel, silence, success, fallback, dismissal, superseding session, converter/route failure, launch sweep, and exit. Only the current failed transcription may retain retry audio until the user retries or dismisses it.
 - Friday does not include transcript text, audio, clipboard data, document names, or raw paths in diagnostics.
 
-## Safe Diagnostics
+## Diagnostics
 
-Open **Safe Diagnostics** to inspect versions, platform/permission usability, model identity/integrity/storage, bounded timing/RSS/drop counters, and safe error codes. The diagnostic object includes explicit `transcriptIncluded=false`, `audioIncluded=false`, and `rawPathsIncluded=false` flags.
+Open **Diagnostics** to inspect versions, platform/permission usability, model identity/integrity/storage, bounded timing/RSS/drop counters, and safe error codes. The diagnostic object includes explicit `transcriptIncluded=false`, `audioIncluded=false`, and `rawPathsIncluded=false` flags.
 
 - **Refresh** obtains current facts.
 - **Copy Diagnostics** copies the safe diagnostic JSON.
