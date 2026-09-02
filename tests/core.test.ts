@@ -225,6 +225,10 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(labels.includes("Model Manager…"), true);
   assert.equal(labels.includes("Permission Status…"), true);
   assert.equal(labels.includes("Quit Friday"), true);
+  assert.equal(readyMenu.iconPath.length, 0);
+  assert.equal(new TextDecoder().decode(readyMenu.presentation.title), "F");
+  assert.equal(new TextDecoder().decode(readyMenu.activationCommand), "friday.settings");
+  assert.equal(new TextDecoder().decode(readyMenu.openCommand), "friday.settings");
 
   const recording: Model = {
     ...ready,

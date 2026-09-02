@@ -25,6 +25,12 @@ All notable changes to Friday are documented here.
 - Forced arm64/aarch64 throughout Zig target resolution, the direct macOS C/NeMo host, CI, packaging, diagnostics, and release. Intel, universal Mach-O slices, and Rosetta translation now fail closed; architecture-bearing artifacts use the `-arm64` suffix.
 - Replaced the Friday-owned Objective-C/Objective-C++ host and Swift validation helpers with a pure-Zig host: CoreAudio/CGEvent/AX/NeMo C APIs, `std.http` model storage, Native SDK platform services, and a narrow typed dynamic runtime adapter for unavoidable AppKit objects. CI rejects tracked `.swift`, `.m`, and `.mm` implementation.
 
+### Fixed
+
+- Kept Friday alive behind its menu-bar item when the Settings window closes, and made the status item use an unclipped text presentation with Settings as its activation target.
+- Removed the development-tree rpath from packaged binaries, standardized the bundle as `Friday.app`, and added package-time metadata/rpath assertions.
+- Disabled ggml 0.12's broken Metal residency-set path before recognizer startup, preventing its deterministic `ggml_metal_rsets_free` abort during application shutdown on macOS 26.
+
 ### Security and privacy
 
 - Diagnostics and performance evidence explicitly exclude transcript text, microphone audio, clipboard contents, document names, and raw paths.

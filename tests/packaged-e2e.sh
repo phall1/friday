@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${FRIDAY_E2E_APP_BINARY:-$ROOT/zig-out/package/friday.app/Contents/MacOS/friday}"
+APP="${FRIDAY_E2E_APP_BINARY:-$ROOT/zig-out/package/Friday.app/Contents/MacOS/friday}"
 CLI="${FRIDAY_NATIVE_CLI:-$ROOT/node_modules/.bin/native}"
 SUPPORT_ROOT="$HOME/Library/Application Support/com.phall.friday"
 STATE_DIR="$SUPPORT_ROOT/State"
@@ -119,6 +119,13 @@ launch_scene() {
 for scene in onboarding-light unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark; do
   FRIDAY_APP_BINARY="$APP" FRIDAY_NATIVE_CLI="$CLI" "$ROOT/tests/ui-automation.sh" "$scene" >/dev/null
 done
+
+# The process owns a live status item, and its Settings row routes the app
+# window back to the settings page.
+launch_scene model-light
+"$CLI" automate assert 'role=text name="Model Manager"' >/dev/null
+"$CLI" automate tray-action 20 >/dev/null
+"$CLI" automate assert 'role=button name="Check Microphone"' 'role=switch name="Launch at Login"' >/dev/null
 
 # Manual real-microphone capture, drain, observable transcribing, silence result,
 # and temp-audio deletion.

@@ -765,7 +765,7 @@ export function statusItem(model: Model): StatusItemState {
     unsupportedItems[unsupportedItems.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
     unsupportedItems[unsupportedItems.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
     return {
-      iconPath: asciiBytes("assets/icon.png"),
+      iconPath: asciiBytes(""),
       tooltip: model.platformMessage,
       activationCommand: asciiBytes(""),
       alternateActivationCommand: asciiBytes(""),
@@ -786,10 +786,10 @@ export function statusItem(model: Model): StatusItemState {
   items[items.length] = statusRow(23, model.launchAtLogin ? utf8Bytes("Disable Launch at Login") : utf8Bytes("Enable Launch at Login"), asciiBytes("friday.login"), model.loginStatus !== "checking", asciiBytes(""), "command");
   items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
   items[items.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
-  const title = model.workflow.kind === "recording" ? utf8Bytes("●") : model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping" ? utf8Bytes("···") : model.workflow.kind === "failed" ? utf8Bytes("!") : model.workflow.kind === "ready" ? utf8Bytes("F") : utf8Bytes("○");
+  const title = model.workflow.kind === "recording" ? utf8Bytes("●") : model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping" ? utf8Bytes("···") : model.workflow.kind === "failed" ? utf8Bytes("!") : utf8Bytes("F");
   const tone = model.workflow.kind === "failed" ? "critical" : model.workflow.kind === "not_ready" ? "warning" : model.workflow.kind === "recording" ? "critical" : "normal";
   return {
-    iconPath: asciiBytes("assets/icon.png"),
+    iconPath: asciiBytes(""),
     tooltip: workflowDetail(model),
     activationCommand: asciiBytes("friday.settings"),
     alternateActivationCommand: model.workflow.kind === "ready" ? asciiBytes("friday.start") : asciiBytes("friday.settings"),

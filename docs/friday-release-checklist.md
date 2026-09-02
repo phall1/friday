@@ -10,6 +10,7 @@ A checked box means the exact artifact under release was observed. Do not infer 
 - [x] Embedded NeMo/ggml dylibs and app can be signed with the current Apple Development team identity.
 - [x] Development app and DMG signatures are verified by `scripts/package-macos.sh`.
 - [x] Generated unsigned Native SDK resource notes are overwritten before signing; no shipped resource claims `signing=none`.
+- [x] The Apple Development-signed 0.1.0 candidate was installed as `/Applications/Friday.app` on 2026-09-01; LaunchServices registered it, Control Center created its visible **F** status item, close hid the Settings window without ending the process, Settings reopened from the status menu, and Quit exited without a crash report.
 - [ ] **External blocker:** no Developer ID Application identity is installed in the current environment.
 - [ ] **External blocker:** no authenticated `FRIDAY_NOTARY_PROFILE` is configured.
 - [ ] **External blocker:** external-pointer overlay Stop/Cancel acceptance is not observed in a normal GUI session.
@@ -106,18 +107,18 @@ FRIDAY_AUTOMATION=1 FRIDAY_SIGN_IDENTITY='<team identity hash>' npm run package
 FRIDAY_REQUIRE_EXTERNAL_HOTKEY=1 tests/packaged-e2e.sh
 ```
 
-- [ ] Fresh setup/recovery surfaces pass.
-- [ ] Real microphone manual Start/Stop reaches recording → transcribing → ready and silence leaves no temp audio.
+- [x] Fresh setup/recovery surfaces pass.
+- [x] Real microphone manual Start/Stop reaches recording → transcribing → ready and silence leaves no temp audio.
 - [ ] External CGEvent hold and double-tap reach held/locked behavior without changing TCC grants.
-- [ ] Cancel/stale recovery returns to ready and no canceled result is delivered.
-- [ ] Five-second fixture ASR reaches truthful clipboard fallback and pasteboard contents are restored afterward.
-- [ ] Installed active model remains ready with network endpoints disabled.
-- [ ] Packaged repository probes reject malformed, corrupt, SHA-failed, private, gated, ambiguous, incompatible, and unhashed inputs and hydrate resumable state.
-- [ ] Exact 9:45/10:00/drop and route/converter cleanup probes pass.
-- [ ] Launch-at-login register/unregister cycle reports `restored=true` and leaves the prior state unchanged.
-- [ ] Diagnostics redaction flags are false for transcript/audio/raw paths and known fixture text/path are absent.
-- [ ] Model cleanup removes only the isolated partial; installed model SHA is unchanged.
-- [ ] Harness restores app snapshots/window state/download partials/model index/pasteboard and does not mutate TCC grants.
+- [x] Cancel/stale recovery returns to ready and no canceled result is delivered.
+- [x] Five-second fixture ASR reaches truthful clipboard fallback and pasteboard contents are restored afterward.
+- [x] Installed active model remains ready with network endpoints disabled.
+- [x] Packaged repository probes reject malformed, corrupt, SHA-failed, private, gated, ambiguous, incompatible, and unhashed inputs and hydrate resumable state.
+- [x] Exact 9:45/10:00/drop and route/converter cleanup probes pass.
+- [x] Launch-at-login register/unregister cycle reports `restored=true` and leaves the prior state unchanged.
+- [x] Diagnostics redaction flags are false for transcript/audio/raw paths and known fixture text/path are absent.
+- [x] Model cleanup removes only the isolated partial; installed model SHA is unchanged.
+- [x] Harness restores app snapshots/window state/download partials/model index/pasteboard and does not mutate TCC grants.
 
 Inspect cleanup directly after the run:
 
@@ -136,14 +137,14 @@ Run at least twenty samples on the Apple M1 baseline with the signed automation 
 tests/performance.sh
 ```
 
-- [ ] `docs/performance-results.json` contains raw samples, p95 summary, baseline, method, budgets, privacy flags, and an explicit energy external check.
-- [ ] Hotkey receipt → first converted sample p95 ≤75 ms.
-- [ ] Stop request → drained capture p95 ≤100 ms.
-- [ ] Warm exact-five-second fixture Stop → final text p95 ≤1,000 ms, including the shipped 250 ms presentation fence.
-- [ ] Final text → delivery p95 ≤75 ms.
-- [ ] Dropped frames total is zero.
-- [ ] Native UI dispatch errors are zero and the worst profiled rebuild/layout/reconcile/emit/a11y/plan/patch/encode/present/host stage is ≤16 ms. Record the runtime’s stricter 8.33 ms input-latency counter separately; it is evidence, not the TECH 16 ms stall threshold.
-- [ ] RSS maximum is recorded, not treated as a configurable pass threshold.
+- [x] `docs/performance-results.json` contains raw samples, p95 summary, baseline, method, budgets, privacy flags, and an explicit energy external check.
+- [x] Hotkey receipt → first converted sample p95 ≤75 ms.
+- [x] Stop request → drained capture p95 ≤100 ms.
+- [x] Warm exact-five-second fixture Stop → final text p95 ≤1,000 ms, including the shipped 250 ms presentation fence.
+- [x] Final text → delivery p95 ≤75 ms.
+- [x] Dropped frames total is zero.
+- [x] Native UI dispatch errors are zero and the worst profiled rebuild/layout/reconcile/emit/a11y/plan/patch/encode/present/host stage is ≤16 ms. Record the runtime’s stricter 8.33 ms input-latency counter separately; it is evidence, not the TECH 16 ms stall threshold.
+- [x] RSS maximum is recorded, not treated as a configurable pass threshold.
 - [ ] Instruments Energy Log is attached as external release evidence.
 
 If a deterministic budget fails, optimize the implementation and rerun. Do not change the budget to fit the result.
@@ -175,12 +176,12 @@ The script must perform and pass all of the following:
 Independent inspection commands:
 
 ```sh
-codesign -d --verbose=4 zig-out/package/friday.app
-codesign --verify --deep --strict --verbose=2 zig-out/package/friday.app
+codesign -d --verbose=4 zig-out/package/Friday.app
+codesign --verify --deep --strict --verbose=2 zig-out/package/Friday.app
 codesign --verify --strict --verbose=2 zig-out/package/Friday-0.1.0-arm64.dmg
-xcrun stapler validate zig-out/package/friday.app
+xcrun stapler validate zig-out/package/Friday.app
 xcrun stapler validate zig-out/package/Friday-0.1.0-arm64.dmg
-spctl --assess --type execute --verbose=4 zig-out/package/friday.app
+spctl --assess --type execute --verbose=4 zig-out/package/Friday.app
 spctl --assess --type open --verbose=4 zig-out/package/Friday-0.1.0-arm64.dmg
 ```
 

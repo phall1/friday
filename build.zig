@@ -41,7 +41,11 @@ fn addFridayHost(b: *std.Build, module: *std.Build.Module) void {
     module.addIncludePath(b.path("third_party/nemo-speech/include"));
     module.addObjectFile(b.path("third_party/nemo-speech/lib/libnemo_speech_asr_c.dylib"));
     module.addRPathSpecial("@executable_path/../Frameworks");
-    module.addRPathSpecial("@executable_path/../../../third_party/nemo-speech/lib");
+    // Cache-local test and model-contract executables cannot resolve the
+    // installed Frameworks directory. Packaging strips this absolute
+    // development rpath before signing; shipped binaries retain only the
+    // bundle-relative Frameworks path above.
+    module.addRPath(b.path("third_party/nemo-speech/lib"));
     if (b.sysroot) |sysroot| {
         module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
         module.addLibraryPath(.{ .cwd_relative = "/usr/lib/system" });

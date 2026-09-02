@@ -18,6 +18,8 @@ Friday asks separately for:
 
 Recover a revoked permission from Friday’s **Permission Status** page or System Settings → Privacy & Security, then return to Friday; it rechecks live.
 
+Closing Friday’s window hides it without quitting. Use the always-on **F** menu-bar item to reopen Settings, manage models or permissions, start recording, or quit Friday.
+
 ## Dictation
 
 The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Settings offers Command + Shift and Control + Option conveniences, plus a recorder for a key or function key with optional modifiers. Friday shows the captured candidate, warns about ordinary typing and known reserved/unreliable combinations, and saves only after explicit confirmation.
@@ -85,17 +87,17 @@ A local development package requires a real team signing identity because harden
 
 ```sh
 FRIDAY_SIGN_IDENTITY="<Apple Development identity hash or name>" npm run package
-codesign --verify --deep --strict --verbose=2 zig-out/package/friday.app
+codesign --verify --deep --strict --verbose=2 zig-out/package/Friday.app
 ```
 
-The package script signs every embedded dylib, the app, and the development DMG and replaces the Native SDK’s unsigned scaffold metadata. It does **not** claim notarization.
+The package script signs every embedded dylib, the `Friday.app` bundle, and the development DMG with one team identity, verifies the release-only framework rpath and menu-bar bundle metadata, and replaces the Native SDK’s unsigned scaffold metadata. It does **not** claim notarization.
 
 The public release path is intentionally strict and fails before building if credentials are absent:
 
 ```sh
-file zig-out/package/friday.app/Contents/MacOS/friday
-lipo -archs zig-out/package/friday.app/Contents/MacOS/friday
-otool -hv zig-out/package/friday.app/Contents/MacOS/friday
+file zig-out/package/Friday.app/Contents/MacOS/friday
+lipo -archs zig-out/package/Friday.app/Contents/MacOS/friday
+otool -hv zig-out/package/Friday.app/Contents/MacOS/friday
 sysctl -in sysctl.proc_translated
 export FRIDAY_DEVELOPER_ID="Developer ID Application: Example (TEAMID)"
 export FRIDAY_NOTARY_PROFILE="friday-notary"

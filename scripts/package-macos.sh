@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+VERSION="$(node -p "require('./app.json').version")"
 
 if [[ "$(uname -m)" != "arm64" ]]; then
   echo "Friday packaging requires a native Apple Silicon shell; x86_64 hosts and Rosetta are refused." >&2
@@ -35,11 +36,12 @@ BUILD_ARGS=("-Dtarget=aarch64-macos")
 if [[ "${FRIDAY_AUTOMATION:-0}" == "1" ]]; then BUILD_ARGS+=("-Dautomation=true"); fi
 zig build "${BUILD_ARGS[@]}"
 assert_arm64_only "$ROOT/zig-out/bin/friday"
-npx native package --target macos --manifest app.json --output zig-out/package/friday.app --binary zig-out/bin/friday --web-layer exclude --web-engine system
+npx native package --target macos --manifest app.json --output zig-out/package/Friday.app --binary zig-out/bin/friday --web-layer exclude --web-engine system
 
-APP="$ROOT/zig-out/package/friday.app"
+APP="$ROOT/zig-out/package/Friday.app"
 FRAMEWORKS="$APP/Contents/Frameworks"
 RESOURCES="$APP/Contents/Resources"
+install_name_tool -delete_rpath "$ROOT/third_party/nemo-speech/lib" "$APP/Contents/MacOS/friday"
 IDENTITY="${FRIDAY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/"Apple Development:/{print $2; exit}')}"
 if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
   echo "Friday requires a real Apple signing identity because hardened runtime library validation must accept the embedded NeMo dylibs." >&2
@@ -80,11 +82,11 @@ hardened-runtime=enabled
 library-validation=enabled
 notarization=release-script-only
 EOF
-cat >"$RESOURCES/package-manifest.zon" <<'EOF'
+cat >"$RESOURCES/package-manifest.zon" <<EOF
 .{
-  .artifact = "friday.app",
+  .artifact = "Friday.app",
   .target = "aarch64-macos",
-  .version = "0.1.0",
+  .version = "$VERSION",
   .app_id = "com.phall.friday",
   .executable = "friday",
   .optimize = "ReleaseFast",
@@ -103,13 +105,26 @@ codesign "${SIGN_ARGS[@]}" --entitlements "$ROOT/resources/Friday.entitlements" 
 codesign --verify --deep --strict --verbose=2 "$APP"
 assert_arm64_only "$APP/Contents/MacOS/friday"
 for library in "$FRAMEWORKS"/*.dylib; do assert_arm64_only "$library"; done
+PLIST="$APP/Contents/Info.plist"
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" != "Friday" ||
+      "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")" != "$VERSION" ||
+      "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")" != "$VERSION" ||
+      "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST")" != "true" ]]; then
+  echo "Friday bundle metadata assertion failed." >&2
+  exit 2
+fi
+RPATHS="$(otool -l "$APP/Contents/MacOS/friday" | awk '/LC_RPATH/{getline; getline; print $2}')"
+if [[ "$RPATHS" != "@executable_path/../Frameworks" ]]; then
+  echo "Friday release rpath assertion failed: $RPATHS" >&2
+  exit 2
+fi
 MACH_HEADER="$(otool -hv "$APP/Contents/MacOS/friday")"
 if [[ "$MACH_HEADER" != *"ARM64"* ]]; then
   echo "Friday otool assertion failed: main executable is not ARM64." >&2
   exit 2
 fi
 
-DMG="$ROOT/zig-out/package/Friday-0.1.0-arm64.dmg"
+DMG="$ROOT/zig-out/package/Friday-$VERSION-arm64.dmg"
 rm -f "$DMG"
 hdiutil create -quiet -volname Friday -srcfolder "$APP" -ov -format UDZO "$DMG"
 codesign --force --timestamp --sign "$IDENTITY" "$DMG"

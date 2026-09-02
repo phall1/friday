@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${FRIDAY_PERF_APP_BINARY:-$ROOT/zig-out/package/friday.app/Contents/MacOS/friday}"
+APP="${FRIDAY_PERF_APP_BINARY:-$ROOT/zig-out/package/Friday.app/Contents/MacOS/friday}"
 CLI="${FRIDAY_NATIVE_CLI:-$ROOT/node_modules/.bin/native}"
 SUPPORT_ROOT="$HOME/Library/Application Support/com.phall.friday"
 STATE_DIR="$SUPPORT_ROOT/State"

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-09-02T01:57:19Z",
+  "recordedAt": "2026-09-02T04:14:25Z",
   "host": {
     "architecture": "arm64",
     "processTranslated": false,
@@ -11,12 +11,12 @@
   "deploymentMinimum": "macOS 13.0 (unsupported-message launch only)",
   "productMinimum": "macOS 14.0",
   "mainExecutable": {
-    "path": "zig-out/package/friday.app/Contents/MacOS/friday",
+    "path": "zig-out/package/Friday.app/Contents/MacOS/friday",
     "file": "Mach-O 64-bit executable arm64",
     "lipoArchitectures": ["arm64"],
     "otoolCpuType": "ARM64",
     "containsX86_64": false,
-    "sha256": "7ca1ad8db596627e5208504e8b4cc44273d057dd43ea4aaf6f274d78f244daf9"
+    "sha256": "e1fb5c63e11723fe73faf6e056d6e8fed29088b020914d8720de94c3578d14a9"
   },
   "embeddedRuntime": {
     "selection": "nemo-speech-0.1.0-macos-aarch64-metal",
@@ -34,9 +34,19 @@
   },
   "diskImage": {
     "path": "zig-out/package/Friday-0.1.0-arm64.dmg",
-    "sha256": "da4ab676ea8eab27dc681196d4094c03c874587f7be0c63c7ac6d2d0b1f2b171",
+    "sha256": "fdb7dbb85160e3edf8f2c397ae48a35bdf6c97ebfcd39238c74d9dd1ee81bcc3",
     "teamSignedDevelopmentArtifact": true,
     "notarized": false
+  },
+  "installedDevelopmentVerification": {
+    "path": "/Applications/Friday.app",
+    "binarySha256MatchesCandidate": true,
+    "launchServicesRegistered": true,
+    "controlCenterStatusItemCreated": true,
+    "accessibilityStatusTitle": "F",
+    "closePolicyKeptProcessAlive": true,
+    "settingsReopenedFromStatusMenu": true,
+    "quitCrashReportCreated": false
   },
   "assertions": [
     "file reports arm64 for the main executable and all seven embedded dylibs",
@@ -46,6 +56,8 @@
     "codesign --verify --deep --strict passes for the app",
     "codesign --verify --strict passes for the arm64 DMG",
     "package resources contain no signing=none or unsigned-local-package claim",
+    "packaged executable contains only @executable_path/../Frameworks and no development-tree rpath",
+    "installed team-signed candidate exposes a visible F status item and reopens Settings after close",
     "Friday-owned host, scripts, and tests contain no tracked .swift, .m, or .mm implementation"
   ],
   "externalBlockers": [

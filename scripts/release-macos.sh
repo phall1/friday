@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+VERSION="$(node -p "require('./app.json').version")"
 
 if [[ "$(uname -m)" != "arm64" ]]; then
   echo "Release blocked: Friday releases require a native Apple Silicon shell, never x86_64 or Rosetta." >&2
@@ -59,11 +60,11 @@ fi
 
 FRIDAY_SIGN_IDENTITY="$IDENTITY" npm run package
 
-APP="$ROOT/zig-out/package/friday.app"
+APP="$ROOT/zig-out/package/Friday.app"
 FRAMEWORKS="$APP/Contents/Frameworks"
 RESOURCES="$APP/Contents/Resources"
-ZIP="$ROOT/zig-out/package/Friday-0.1.0-arm64.app.zip"
-DMG="$ROOT/zig-out/package/Friday-0.1.0-arm64.dmg"
+ZIP="$ROOT/zig-out/package/Friday-$VERSION-arm64.app.zip"
+DMG="$ROOT/zig-out/package/Friday-$VERSION-arm64.dmg"
 assert_arm64_only "$APP/Contents/MacOS/friday"
 for library in "$FRAMEWORKS"/*.dylib; do assert_arm64_only "$library"; done
 

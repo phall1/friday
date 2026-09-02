@@ -8,6 +8,7 @@ const c = @cImport({
     @cInclude("sys/mman.h");
     @cInclude("sys/stat.h");
     @cInclude("unistd.h");
+    @cInclude("stdlib.h");
     @cInclude("time.h");
 });
 
@@ -35,6 +36,11 @@ pub const NemoRecognizer = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         const state = try allocator.create(State);
         errdefer allocator.destroy(state);
+        // ggml 0.12's Metal residency-set teardown aborts on macOS 26 when
+        // buffers are destroyed before the process-global Metal device. The
+        // runtime's supported opt-out keeps the same Metal backend while
+        // avoiding that broken residency API path.
+        if (c.setenv("GGML_METAL_NO_RESIDENCY", "1", 1) != 0) return error.SystemResources;
         state.* = .{ .allocator = allocator };
         if (c.pthread_mutex_init(&state.mutex, null) != 0) return error.SystemResources;
         errdefer _ = c.pthread_mutex_destroy(&state.mutex);
