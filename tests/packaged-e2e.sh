@@ -10,6 +10,12 @@ SNAPSHOT="$SUPPORT_ROOT/snapshot.nsd"
 SNAPSHOT_BAK="$SUPPORT_ROOT/snapshot.nsd.bak"
 DOWNLOADS="$SUPPORT_ROOT/ModelDownloads"
 INDEX="$SUPPORT_ROOT/Models/index.json"
+if [[ "$(uname -m)" != "arm64" || "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')" == "1" ]]; then
+  echo "Packaged E2E Zig helpers require native arm64 macOS; Intel and Rosetta are unsupported." >&2
+  exit 2
+fi
+MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/friday-e2e.XXXXXX")"
 BACKUP="$WORK/backup"
 RUN_TMP="$WORK/tmp"
@@ -31,8 +37,17 @@ if pgrep -x friday >/dev/null; then
   exit 2
 fi
 
-swiftc "$ROOT/tests/PasteboardSnapshot.swift" -o "$WORK/pasteboard-snapshot"
-swiftc "$ROOT/tests/CGPost.swift" -o "$WORK/cg-post"
+zig build-exe -target aarch64-macos "$ROOT/tests/PasteboardSnapshot.zig" \
+  -F "$MACOS_SDK/System/Library/Frameworks" \
+  -F "$MACOS_SDK/System/Library/Frameworks/ApplicationServices.framework/Frameworks" \
+  -L "$MACOS_SDK/usr/lib" \
+  -framework ApplicationServices -framework CoreFoundation -lc -O ReleaseSafe \
+  -femit-bin="$WORK/pasteboard-snapshot"
+zig build-exe -target aarch64-macos "$ROOT/tests/CGPost.zig" \
+  -F "$MACOS_SDK/System/Library/Frameworks" \
+  -L "$MACOS_SDK/usr/lib" \
+  -framework CoreGraphics -framework CoreFoundation -lc -O ReleaseSafe \
+  -femit-bin="$WORK/cg-post"
 HELPER_IDENTITY="${FRIDAY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/\"Apple Development:/{print $2; exit}')}"
 if [[ -z "$HELPER_IDENTITY" ]]; then echo "Packaged E2E requires the package team signing identity for the external CGEvent helper." >&2; exit 2; fi
 codesign --force --identifier com.phall.friday --sign "$HELPER_IDENTITY" "$WORK/cg-post" >/dev/null

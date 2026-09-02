@@ -32,25 +32,32 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Verify and apply the pinned Native SDK patch
         run: npx patch-package --error-on-fail
+      - name: Enforce the pure Zig tracked host
+        run: |
+          set -euo pipefail
+          test -z "$(git ls-files '*.swift' '*.m' '*.mm')"
+          test -z "$(git ls-files 'native/macos/*.h' 'native/include/friday_host.h')"
+          if git grep -nE '#import|@interface|@implementation|__bridge|-fobjc|-ObjC\+\+' -- build.zig native scripts tests; then
+            echo "Non-Zig Apple host implementation remains tracked." >&2
+            exit 1
+          fi
+
       - name: Check Native core, markup, and manifest
         run: npm run check
       - name: Build the arm64-only macOS application
         run: npm run build
       - name: Run TypeScript and native contract tests
         run: npm test
-      - name: Verify icon reproducibility
-        run: |
-          set -euo pipefail
-          generated="$(mktemp -t friday-icon).png"
-          trap 'rm -f "$generated"' EXIT
-          swift scripts/generate-icon.swift assets/icon.svg "$generated"
-          cmp "$generated" assets/icon.png
+      - name: Verify canonical icon integrity
+        run: scripts/verify-icon.sh
       - name: Build and verify automation-enabled arm64 development binary
         run: |
           zig build -Dtarget=aarch64-macos -Dautomation=true
           test "$(lipo -archs zig-out/bin/friday)" = arm64
           file zig-out/bin/friday | grep -q arm64
           ! file zig-out/bin/friday | grep -q x86_64
+          ! nm -gU zig-out/bin/friday | grep -q 'friday_host_native_'
+          ! otool -L zig-out/bin/friday | grep -q 'FridayHost'
       - name: Compare all UI, accessibility, and keyboard goldens
         env:
           FRIDAY_APP_BINARY: ${{ github.workspace }}/zig-out/bin/friday

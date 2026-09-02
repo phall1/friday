@@ -9,6 +9,12 @@ STATE_DIR="$SUPPORT_ROOT/State"
 SNAPSHOT="$SUPPORT_ROOT/snapshot.nsd"
 SNAPSHOT_BAK="$SUPPORT_ROOT/snapshot.nsd.bak"
 INDEX="$SUPPORT_ROOT/Models/index.json"
+if [[ "$(uname -m)" != "arm64" || "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')" == "1" ]]; then
+  echo "Performance Zig helpers require native arm64 macOS; Intel and Rosetta are unsupported." >&2
+  exit 2
+fi
+MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/friday-performance.XXXXXX")"
 BACKUP="$WORK/backup"
 RUN_TMP="$WORK/tmp"
@@ -33,7 +39,12 @@ if pgrep -x friday >/dev/null; then
   exit 2
 fi
 
-swiftc "$ROOT/tests/PasteboardSnapshot.swift" -o "$WORK/pasteboard-snapshot"
+zig build-exe -target aarch64-macos "$ROOT/tests/PasteboardSnapshot.zig" \
+  -F "$MACOS_SDK/System/Library/Frameworks" \
+  -F "$MACOS_SDK/System/Library/Frameworks/ApplicationServices.framework/Frameworks" \
+  -L "$MACOS_SDK/usr/lib" \
+  -framework ApplicationServices -framework CoreFoundation -lc -O ReleaseSafe \
+  -femit-bin="$WORK/pasteboard-snapshot"
 "$WORK/pasteboard-snapshot" save "$BACKUP/pasteboard.plist"
 stop_process() {
   if [[ -n "$PID" ]]; then
@@ -166,7 +177,7 @@ result = {
     "baseline": {"hardware": "Apple M1 Max", "os": f"macOS {os.environ['OS_VERSION']}", "architecture": platform.machine()},
     "iterations": int(os.environ["ITERATIONS"]),
     "method": {
-        "hotkeyToFirstSample": "production CGEvent session-tap receipt to AVAudioEngine first converted sample using the signed app's deterministic modifier probe",
+        "hotkeyToFirstSample": "production CGEvent session-tap receipt to the pure-Zig 16 kHz capture path's first converted sample using the signed app's deterministic modifier probe",
         "stopToDrain": "friday.audio.stop receipt to drained capture completion",
         "warmFiveSecondStopToText": "twenty in-process warm recognitions of an exact five-second 16 kHz Float32 fixture plus the shipped 250 ms presentation fence",
         "textToDelivery": "final transcript ready to truthful clipboard delivery completion",
