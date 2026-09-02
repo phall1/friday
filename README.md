@@ -22,7 +22,7 @@ Closing Friday’s window hides it without quitting. Use the always-on **F** men
 
 ## Dictation
 
-The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Settings offers Command + Shift and Control + Option conveniences, plus a recorder for a key or function key with optional modifiers. Friday shows the captured candidate, warns about ordinary typing and known reserved/unreliable combinations, and saves only after explicit confirmation.
+The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Settings offers Command + Shift and Control + Option conveniences, plus a recorder for Fn/Globe by itself, an F-key, or another key combination. Presets apply immediately. Friday reviews custom candidates, warns about ordinary typing and known reserved/unreliable combinations, and changes the active shortcut only after explicit confirmation.
 
 Normal stop drains capture, visibly enters **transcribing**, runs local final-only ASR, then pastes to the exact captured source when safe. If exact-source paste is unavailable, Friday reports a clipboard fallback. Cancel invalidates the generation immediately; stale results cannot become current. Friday warns at 9:45 and stops at exactly 10:00 while preserving a visible 10-minute explanation through the final outcome.
 
@@ -118,7 +118,11 @@ Both harnesses refuse to race a running Friday process, preserve and restore app
 
 ## Architecture
 
-- `src/core.ts` — deterministic Model/Msg/update workflow, readiness, stale-generation rules, persistence projection, menus, and automation routes. It compiles to native code; no JavaScript runtime ships.
+- `src/core.ts` — Native SDK entry adapter: Model/Msg contract, effect routing, dictation workflow, and exported view bindings. It compiles to native code; no JavaScript runtime ships.
+- `src/state.ts` — default and durable state projections plus readiness invariants.
+- `src/protocol.ts` — bounded byte/wire decoding for host responses and events.
+- `src/model-transitions.ts` and `src/app-transitions.ts` — pure domain transitions, separate from Native SDK effects.
+- `src/automation.ts` — deterministic visual-test fixtures, isolated from production transitions.
 - `src/app.native` — Native markup for unsupported/setup/settings/model/permission/diagnostic/result surfaces.
 - `native/friday_host.zig` — direct pure-Zig Native SDK host, session owner, command dispatcher, and exactly-once completion registry.
 - `native/macos/system.zig` and `json.zig` — platform-service adapter plus typed wire JSON/base64.

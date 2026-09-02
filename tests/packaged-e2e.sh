@@ -120,8 +120,8 @@ for scene in onboarding-light unsupported-intel-light hotkey-conflict-light resu
   FRIDAY_APP_BINARY="$APP" FRIDAY_NATIVE_CLI="$CLI" "$ROOT/tests/ui-automation.sh" "$scene" >/dev/null
 done
 
-# The process owns a live status item, and its Settings row routes the app
-# window back to the settings page.
+# The process owns a live menu-only status item, and its explicit Open Friday
+# row routes the app window back to the settings page.
 launch_scene model-light
 "$CLI" automate assert 'role=text name="Model Manager"' >/dev/null
 "$CLI" automate tray-action 20 >/dev/null

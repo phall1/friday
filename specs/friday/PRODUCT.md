@@ -139,6 +139,12 @@ Figma: none provided
 
 58. Friday warns the user when the chosen hotkey appears to conflict with a system-reserved shortcut or cannot be reliably distinguished.
 
+58a. Friday supports the Mac Fn/Globe key by itself as a global dictation shortcut and records it when the user presses and releases it.
+
+58b. After setup, clicking Friday's menu-bar item opens its menu without opening the main window; the menu provides an explicit Open Friday action.
+
+58c. The recording capsule dismisses automatically after every terminal success or failure, animates continuous speech energy without stepped jitter, and honors Reduce Motion when appearing or disappearing.
+
 59. Friday supports press-and-hold recording for the configured hotkey.
 
 60. In press-and-hold mode, recording starts when the user presses and holds the configured hotkey.

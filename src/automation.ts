@@ -1,0 +1,150 @@
+import { asciiBytes, utf8Bytes } from "@native-sdk/core";
+import type { Model, ModelDownloadState } from "./core.ts";
+import { contains } from "./protocol.ts";
+
+export function automationScene(model: Model, value: Uint8Array): Model {
+  const dark = contains(value, asciiBytes("-dark"));
+  const base: Model = {
+    ...model,
+    page: "settings",
+    platformLoaded: true,
+    platformSupported: true,
+    platformArchitecture: asciiBytes("arm64"),
+    platformOSVersion: asciiBytes("14.0"),
+    platformMessage: utf8Bytes("Apple Silicon and macOS 14 or later detected."),
+    onboardingComplete: true,
+    onboardingStep: 0 / 1,
+    permissionsLoaded: true,
+    hotkeyConfig: asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"),
+    hotkeyDisplay: utf8Bytes("Command + Shift"),
+    durationLimitReached: false,
+    hotkeyCandidateConfig: asciiBytes(""),
+    hotkeyCandidateDisplay: asciiBytes(""),
+    hotkeyCandidateWarning: asciiBytes(""),
+    hotkeyCandidateValid: false,
+    modelsLoaded: true,
+    microphonePermission: true,
+    accessibilityPermission: true,
+    inputMonitoringPermission: true,
+    hotkeyConfirmed: true,
+    hotkeyPracticed: true,
+    modelReady: true,
+    selectedModelKey: 1 / 1,
+    activeModelName: utf8Bytes("Parakeet TDT 0.6B v3"),
+    hotkeyCaptureActive: false,
+    activeModelSource: utf8Bytes("Hugging Face · managed by Friday"),
+    activeModelLicense: utf8Bytes("CC-BY-4.0"),
+    activeModelLanguages: utf8Bytes("25 European languages"),
+    activeModelBytes: 713975456 / 1,
+    automationSceneActive: true,
+    automationOverlayPreview: false,
+    hfSourceConfirmed: false,
+    managedModelBytes: 713975456 / 1,
+    modelCount: 1 / 1,
+    modelDownloadState: "installed",
+    modelDownloadedBytes: 713975456 / 1,
+    hfResolved: false,
+    hfResolvedIdentifier: asciiBytes(""),
+    hfResolvedRevision: asciiBytes(""),
+    hfResolvedArtifact: asciiBytes(""),
+    hfResolvedSize: asciiBytes(""),
+    hfResolvedLicense: asciiBytes(""),
+    hfResolvedProvider: asciiBytes(""),
+    hfResolvedAttribution: asciiBytes(""),
+    hfResolvedConfirmed: false,
+    modelRows: [{
+      modelKey: asciiBytes("1"),
+      name: utf8Bytes("Parakeet TDT 0.6B v3"),
+      source: utf8Bytes("Hugging Face · managed by Friday"),
+      license: utf8Bytes("CC-BY-4.0"),
+      languages: utf8Bytes("25 languages"),
+      size: utf8Bytes("714 MB"),
+      managed: true,
+      active: true,
+    }],
+    modelTotalBytes: 713975456 / 1,
+    workflow: { kind: "ready", modelKey: 1 / 1 },
+    activeModelSizeText: utf8Bytes("714 MB"),
+    modelDownloadedBytesLabel: asciiBytes("713,975,456"),
+    modelTotalBytesLabel: asciiBytes("713,975,456"),
+    managedModelSizeText: utf8Bytes("714 MB"),
+    appearanceOverride: dark ? "dark" : "light",
+    systemColorScheme: dark ? "dark" : "light",
+  };
+  if (contains(value, asciiBytes("unsupported-intel"))) return {
+    ...base,
+    platformSupported: false,
+    platformArchitecture: asciiBytes("x86_64"),
+    platformMessage: utf8Bytes("Friday requires an Apple Silicon Mac."),
+    workflow: { kind: "not_ready" },
+  };
+  if (contains(value, asciiBytes("unsupported-old"))) return {
+    ...base,
+    platformSupported: false,
+    platformOSVersion: asciiBytes("13.6"),
+    platformMessage: utf8Bytes("Friday requires macOS 14 or later."),
+    workflow: { kind: "not_ready" },
+  };
+  if (contains(value, asciiBytes("hf-confirmation"))) return {
+    ...base,
+    page: "models",
+    hfDraft: asciiBytes("community/parakeet-tdt-gguf"),
+    hfSourceConfirmed: true,
+    hfResolved: true,
+    hfResolvedIdentifier: asciiBytes("community/parakeet-tdt-gguf"),
+    hfResolvedRevision: asciiBytes("0123456789abcdef0123456789abcdef01234567"),
+    hfResolvedArtifact: asciiBytes("parakeet-tdt-q8.gguf"),
+    hfResolvedSize: asciiBytes("702 MB"),
+    hfResolvedLicense: asciiBytes("CC-BY-4.0"),
+    hfResolvedProvider: asciiBytes("Hugging Face"),
+    hfResolvedAttribution: asciiBytes("Community Maintainer"),
+    hfResolvedConfirmed: false,
+  };
+  if (contains(value, asciiBytes("onboarding"))) return {
+    ...base,
+    onboardingComplete: false,
+    onboardingStep: 1 / 1,
+    accessibilityPermission: false,
+    inputMonitoringPermission: false,
+    hotkeyConfirmed: false,
+    hotkeyPracticed: false,
+    modelReady: false,
+    selectedModelKey: 0 / 1,
+    activeModelName: asciiBytes(""),
+    modelDownloadState: "idle",
+    modelDownloadedBytes: 0 / 1,
+    modelTotalBytes: 0 / 1,
+    workflow: { kind: "not_ready" },
+  };
+  if (contains(value, asciiBytes("hotkey-conflict"))) return {
+    ...base,
+    hotkeyChoice: "custom",
+    hotkeyConfirmed: false,
+    hotkeyCandidateConfig: asciiBytes("key=49;command=1;shift=0;option=0;control=0;fn=0"),
+    hotkeyCandidateDisplay: utf8Bytes("Command + Space"),
+    hotkeyCandidateWarning: utf8Bytes("That shortcut is reserved by macOS or a standard app command. Choose another shortcut."),
+    hotkeyCandidateValid: false,
+  };
+  if (contains(value, asciiBytes("resume"))) return {
+    ...base,
+    onboardingComplete: false,
+    onboardingStep: 3 / 1,
+    modelReady: false,
+    selectedModelKey: 0 / 1,
+    activeModelName: asciiBytes(""),
+    modelRows: [],
+    modelDownloadState: "paused",
+    modelDownloadedBytes: 321000000 / 1,
+    modelTotalBytes: 713975456 / 1,
+    modelDownloadedBytesLabel: asciiBytes("321,000,000"),
+    modelTotalBytesLabel: asciiBytes("713,975,456"),
+    workflow: { kind: "not_ready" },
+  };
+  if (contains(value, asciiBytes("overlay-preview"))) return { ...base, automationOverlayPreview: true, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
+  if (contains(value, asciiBytes("accessibility"))) return { ...base, page: "permissions", accessibilityPermission: false };
+  if (contains(value, asciiBytes("model"))) return { ...base, page: "models" };
+  if (contains(value, asciiBytes("error"))) return { ...base, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true }, workflowMessage: utf8Bytes("Local transcription stopped before a final result.") };
+  if (contains(value, asciiBytes("recording"))) return { ...base, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
+  if (contains(value, asciiBytes("transcribing"))) return { ...base, workflow: { kind: "transcribing", retryAudioAvailable: false, disposition: "transcribe" }, elapsedMilliseconds: 43000 / 1, meterLevel: "quiet" };
+  return base;
+}

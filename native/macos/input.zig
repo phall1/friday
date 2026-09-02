@@ -87,6 +87,7 @@ const option_flag: u64 = 1 << 19;
 const control_flag: u64 = 1 << 18;
 const function_flag: u64 = 1 << 23;
 const relevant_flags = command_flag | shift_flag | option_flag | control_flag | function_flag;
+const fn_synthetic_key_code: i64 = 179;
 
 const Candidate = struct {
     key: i64,
@@ -123,6 +124,7 @@ pub const GlobalInputMonitor = struct {
     probe_down: usize = 0,
     probe_up: usize = 0,
     capture: ?AsyncCompletion = null,
+    capture_modifier_flags: u64 = 0,
     capture_bytes: [768]u8 = undefined,
     capture_length: usize = 0,
     capture_pending: bool = false,
@@ -190,6 +192,7 @@ pub const GlobalInputMonitor = struct {
         self.is_running = false;
         self.chord_down = false;
         self.capture = null;
+        self.capture_modifier_flags = 0;
         self.capture_pending = false;
     }
 
@@ -207,9 +210,10 @@ pub const GlobalInputMonitor = struct {
             completion.complete(completion.context, false, self.capture_bytes[0..self.capture_length]);
             return;
         };
+        self.capture_modifier_flags = 0;
         self.capture = completion;
     }
-    pub fn cancelShortcutCapture(self: *GlobalInputMonitor) void { self.capture = null; }
+    pub fn cancelShortcutCapture(self: *GlobalInputMonitor) void { self.capture = null; self.capture_modifier_flags = 0; }
 
     pub fn writeSyntheticProbe(self: *GlobalInputMonitor, output: []u8) Error!usize {
         const before_down = self.probe_down;
@@ -231,6 +235,8 @@ pub const GlobalInputMonitor = struct {
         const modifier = makeCandidate(-1, command_flag | shift_flag, "").valid();
         const key_based = makeCandidate(0, command_flag | shift_flag, "").valid();
         const function_key = makeCandidate(96, 0, "").valid();
+        const fn_only = makeCandidate(-1, function_flag, "").valid();
+        const fn_synthetic_ignored = isFnSyntheticKey(179);
         const reserved = !makeCandidate(49, command_flag, "").valid();
         const bare = !makeCandidate(0, 0, "").valid();
         var emitted: usize = 0;
@@ -255,8 +261,8 @@ pub const GlobalInputMonitor = struct {
         if (function_down != null) c.CFRelease(function_down);
         if (function_up != null) c.CFRelease(function_up);
         const function_events = monitor.probe_down == 1 and monitor.probe_up == 1;
-        const ok = modifier and key_based and function_key and reserved and bare and key_events and function_events;
-        return print(output, "{{\"ok\":{s},\"modifierSafe\":{s},\"keyBasedSafe\":{s},\"functionKeySafe\":{s},\"reservedRejected\":{s},\"bareTypingRejected\":{s},\"keyDownUp\":{s},\"functionDownUp\":{s}}}", .{ jsonBool(ok), jsonBool(modifier), jsonBool(key_based), jsonBool(function_key), jsonBool(reserved), jsonBool(bare), jsonBool(key_events), jsonBool(function_events) });
+        const ok = modifier and key_based and function_key and fn_only and fn_synthetic_ignored and reserved and bare and key_events and function_events;
+        return print(output, "{{\"ok\":{s},\"modifierSafe\":{s},\"keyBasedSafe\":{s},\"functionKeySafe\":{s},\"fnOnlySafe\":{s},\"fnSyntheticIgnored\":{s},\"reservedRejected\":{s},\"bareTypingRejected\":{s},\"keyDownUp\":{s},\"functionDownUp\":{s}}}", .{ jsonBool(ok), jsonBool(modifier), jsonBool(key_based), jsonBool(function_key), jsonBool(fn_only), jsonBool(fn_synthetic_ignored), jsonBool(reserved), jsonBool(bare), jsonBool(key_events), jsonBool(function_events) });
     }
 
     fn installObserver(self: *GlobalInputMonitor) Error!void {
@@ -273,16 +279,23 @@ pub const GlobalInputMonitor = struct {
 
     fn handle(self: *GlobalInputMonitor, event_type: c.CGEventType, event: c.CGEventRef) void {
         const flags = @as(u64, @intCast(c.CGEventGetFlags(event))) & relevant_flags;
+        if (self.capture_pending) return;
         if (self.capture) |completion| {
+            if (event_type == c.kCGEventFlagsChanged) {
+                if (flags != 0) {
+                    self.capture_modifier_flags |= flags;
+                } else if (self.capture_modifier_flags != 0) {
+                    const candidate = makeCandidate(-1, self.capture_modifier_flags, "");
+                    self.queueCapturedCandidate(candidate, completion);
+                }
+                return;
+            }
             if (event_type == c.kCGEventKeyDown and c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventAutorepeat) == 0) {
                 const key = c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventKeycode);
+                if (isFnSyntheticKey(key)) return;
                 var fallback_bytes: [32]u8 = undefined;
                 const candidate = makeCandidate(key, flags, unicodeFallback(event, &fallback_bytes));
-                self.capture_length = writeCandidate(&self.capture_bytes, candidate) catch 0;
-                self.capture = null;
-                self.capture_pending = true;
-                self.mutex.lock(); self.capture = completion; self.mutex.unlock();
-                c.dispatch_async_f(c.dispatch_get_main_queue(), self, drainCapture);
+                self.queueCapturedCandidate(candidate, completion);
             }
             return;
         }
@@ -297,6 +310,16 @@ pub const GlobalInputMonitor = struct {
         const key = c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventKeycode);
         if (event_type == c.kCGEventKeyDown and key == self.key_code and flags == self.required_flags and c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventAutorepeat) == 0) self.emitDown(event);
         if (event_type == c.kCGEventKeyUp and key == self.key_code and self.accepted_down) self.emitUp(event);
+    }
+    fn queueCapturedCandidate(self: *GlobalInputMonitor, candidate: Candidate, completion: AsyncCompletion) void {
+        self.capture_length = writeCandidate(&self.capture_bytes, candidate) catch 0;
+        self.capture_modifier_flags = 0;
+        self.capture = null;
+        self.capture_pending = true;
+        self.mutex.lock();
+        self.capture = completion;
+        self.mutex.unlock();
+        c.dispatch_async_f(c.dispatch_get_main_queue(), self, drainCapture);
     }
 
     fn emitDown(self: *GlobalInputMonitor, event: c.CGEventRef) void {
@@ -396,6 +419,7 @@ fn parseConfiguration(configuration: []const u8) ParsedConfiguration {
     return result;
 }
 fn truthy(value: []const u8) bool { return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true") or std.ascii.eqlIgnoreCase(value, "yes"); }
+fn isFnSyntheticKey(key: i64) bool { return key == fn_synthetic_key_code; }
 fn isFunctionKey(key: i64) bool { return switch (key) { 122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90 => true, else => false }; }
 fn keyName(key: i64) ?[]const u8 { return switch (key) {
     0 => "A", 1 => "S", 2 => "D", 3 => "F", 4 => "H", 5 => "G", 6 => "Z", 7 => "X", 8 => "C", 9 => "V", 11 => "B", 12 => "Q", 13 => "W", 14 => "E", 15 => "R", 16 => "Y", 17 => "T", 31 => "O", 32 => "U", 34 => "I", 35 => "P", 37 => "L", 38 => "J", 40 => "K", 45 => "N", 46 => "M", 48 => "Tab", 49 => "Space", 36 => "Return", 53 => "Escape", 123 => "Left Arrow", 124 => "Right Arrow", 125 => "Down Arrow", 126 => "Up Arrow", 122 => "F1", 120 => "F2", 99 => "F3", 118 => "F4", 96 => "F5", 97 => "F6", 98 => "F7", 100 => "F8", 101 => "F9", 109 => "F10", 103 => "F11", 111 => "F12", 105 => "F13", 107 => "F14", 113 => "F15", 106 => "F16", 64 => "F17", 79 => "F18", 80 => "F19", 90 => "F20", else => null,
@@ -408,7 +432,7 @@ fn makeCandidate(key: i64, flags: u64, fallback: []const u8) Candidate {
     const modifier_count: usize = @intFromBool(command) + @intFromBool(shift) + @intFromBool(option) + @intFromBool(control) + @intFromBool(function);
     const reserved = command and (key == 49 or key == 48 or key == 12 or key == 13 or key == 4 or key == 46 or (option and key == 53));
     if (reserved) { result.code = "system_reserved"; result.warning = "That shortcut is reserved by macOS or a standard app command. Choose another shortcut."; }
-    else if (key == -1 and modifier_count < 2) { result.code = "unreliable_modifier_only"; result.warning = "Use at least two modifiers so Friday can distinguish the shortcut reliably."; }
+    else if (key == -1 and modifier_count < 2 and !function) { result.code = "unreliable_modifier_only"; result.warning = "Use at least two modifiers, or use Fn/Globe by itself, so Friday can distinguish the shortcut reliably."; }
     else if (key >= 0 and modifier_count == 0 and !isFunctionKey(key)) { result.code = "ordinary_typing"; result.warning = "A bare typing key would trigger while you type. Add a modifier or choose a function key."; }
     else if (key < -1 or key > 127 or result.display_len == 0) { result.code = "undistinguishable"; result.warning = "Friday could not distinguish that shortcut globally."; }
     return result;
@@ -464,4 +488,23 @@ fn wallMilliseconds() f64 {
         .SUCCESS => @as(f64, @floatFromInt(value.sec)) * 1000.0 + @as(f64, @floatFromInt(value.nsec)) / 1_000_000.0,
         else => 0,
     };
+}
+
+test "Fn or Globe is a valid modifier-only shortcut" {
+    const candidate = makeCandidate(-1, function_flag, "");
+    try std.testing.expect(candidate.valid());
+    try std.testing.expectEqualStrings("Fn", candidate.display[0..candidate.display_len]);
+
+    var output: [256]u8 = undefined;
+    const length = try writeCandidate(&output, candidate);
+    try std.testing.expect(std.mem.indexOf(u8, output[0..length], "\"config\":\"key=-1;command=0;shift=0;option=0;control=0;fn=1\"") != null);
+}
+
+test "single ordinary modifier remains invalid" {
+    try std.testing.expect(!makeCandidate(-1, command_flag, "").valid());
+}
+
+test "Fn synthetic key-down waits for modifier release" {
+    try std.testing.expect(isFnSyntheticKey(179));
+    try std.testing.expect(!isFnSyntheticKey(96));
 }

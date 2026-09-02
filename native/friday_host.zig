@@ -137,6 +137,8 @@ pub const FridayHost = struct {
     metrics_mutex: SpinMutex = .{},
     performance_output_path: ?[]u8 = null,
     event_post_failures: u64 = 0,
+    microphone_permission_probe_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    microphone_permission_probe_finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     generation: u64 = 0,
     current_audio_session: u64 = 0,
@@ -208,8 +210,11 @@ pub const FridayHost = struct {
         self.closing = true;
         self.event_handle = null;
         self.channels = null;
+        const services = self.services;
         self.services = null;
         self.mutex.unlock();
+        if (self.microphone_permission_probe_active.swap(false, .acq_rel))
+            if (services) |live| live.audioCaptureStop(.microphone) catch {};
         self.removeTerminationObserver();
 
         self.input.stop();
@@ -399,11 +404,23 @@ pub const FridayHost = struct {
     fn requestPermission(self: *FridayHost, payload: []const u8, output: []u8) usize {
         if (std.mem.eql(u8, payload, "input")) self.input.requestPermission();
         if (std.mem.eql(u8, payload, "accessibility")) system.requestAccessibility();
-        // AVAudioApplication exposes microphone state here; the Native SDK
-        // capture primitive performs the system-authorized request when opened.
+        if (std.mem.eql(u8, payload, "microphone")) self.requestMicrophonePermission();
         const length = self.writePermissions(output);
         self.emitPermissions();
         return length;
+    }
+
+    fn requestMicrophonePermission(self: *FridayHost) void {
+        if (system.microphoneGranted() or self.microphone_permission_probe_active.swap(true, .acq_rel)) return;
+        self.microphone_permission_probe_finished.store(false, .release);
+        const services = self.services orelse {
+            self.microphone_permission_probe_active.store(false, .release);
+            return;
+        };
+        services.audioCaptureStart(.microphone, .{ .sample_rate = 16_000, .channels = 1 }, .{
+            .context = self,
+            .push_fn = microphonePermissionProbe,
+        }) catch self.microphone_permission_probe_active.store(false, .release);
     }
 
     fn configureHotkey(self: *FridayHost, payload: []const u8, output: []u8) usize {
@@ -728,7 +745,12 @@ pub const FridayHost = struct {
         const prompt = objc.nsString("Add Model");
         const message = objc.nsString("Choose a GGUF file with a matching Friday manifest sidecar.");
         const gguf = objc.nsString("gguf");
-        defer { objc.release(title); objc.release(prompt); objc.release(message); objc.release(gguf); }
+        defer {
+            objc.release(title);
+            objc.release(prompt);
+            objc.release(message);
+            objc.release(gguf);
+        }
         objc.send1(void, objc.Id, panel, objc.selector("setTitle:"), title);
         objc.send1(void, objc.Id, panel, objc.selector("setPrompt:"), prompt);
         objc.send1(void, objc.Id, panel, objc.selector("setMessage:"), message);
@@ -931,6 +953,7 @@ pub const FridayHost = struct {
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *FridayHost = @ptrCast(@alignCast(context));
+        self.finishMicrophonePermissionProbe();
         self.mutex.lock();
         defer self.mutex.unlock();
         while (self.completion_count > 0) {
@@ -940,6 +963,14 @@ pub const FridayHost = struct {
             if (!slot.cancelled) return .{ .key = slot.key, .ok = slot.ok, .bytes = slot.bytes[0..slot.length] };
         }
         return null;
+    }
+
+    fn finishMicrophonePermissionProbe(self: *FridayHost) void {
+        if (!self.microphone_permission_probe_finished.swap(false, .acq_rel)) return;
+        self.microphone_permission_probe_active.store(false, .release);
+        const services = self.services orelse return;
+        services.audioCaptureStop(.microphone) catch {};
+        self.emitPermissions();
     }
 
     fn pending(context: *anyopaque) bool {
@@ -993,6 +1024,18 @@ pub const FridayHost = struct {
         }
     }
 
+    fn microphonePermissionProbe(context: ?*anyopaque, _: u64, event: native_sdk.AudioCaptureEvent) native_sdk.AudioCapturePushResult {
+        const self: *FridayHost = @ptrCast(@alignCast(context.?));
+        if (event.kind != .data and self.microphone_permission_probe_active.load(.acquire)) {
+            self.microphone_permission_probe_finished.store(true, .release);
+            self.mutex.lock();
+            const services = self.services;
+            self.mutex.unlock();
+            if (services) |live| live.wake() catch {};
+        }
+        return .closed;
+    }
+
     fn audioEvent(context: *anyopaque, event: []const u8, payload: []const u8) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         const session = json.unsignedValue(payload, "sessionId") orelse 0;
@@ -1000,8 +1043,10 @@ pub const FridayHost = struct {
         if (std.mem.eql(u8, event, "audio_meter")) {
             const elapsed = json.unsignedValue(payload, "elapsedMilliseconds") orelse 0;
             const level = json.unsignedValue(payload, "level") orelse 0;
+            const rms = @min(json.unsignedValue(payload, "rmsMilli") orelse 0, 1000);
+            const peak = @min(json.unsignedValue(payload, "peakMilli") orelse 0, 1000);
             const frames = json.unsignedValue(payload, "capturedFrames") orelse 0;
-            self.overlay.updateMeter(@intCast(@min(level, 3)), elapsed);
+            self.overlay.updateMeter(@intCast(@min(rms * 5 + peak, 1000)), elapsed);
             var output: [256]u8 = undefined;
             const wire = std.fmt.bufPrint(&output, "audio_meter|{d}|{d}|{d}|{d}|{d}", .{ generation, session, elapsed, level, frames }) catch return;
             self.emit(wire);
@@ -1453,6 +1498,8 @@ test "completion queue preserves order cancellation and pending state" {
     host.pending_count = 0;
     host.closing = false;
     host.services = null;
+    host.microphone_permission_probe_active = std.atomic.Value(bool).init(false);
+    host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
     host.completions = @splat(.{});
     host.enqueue(1, true, "first");
     host.enqueue(2, true, "second");
@@ -1472,6 +1519,8 @@ test "operation completion is consumed once and closing suppresses late delivery
     host.pending_count = 0;
     host.closing = false;
     host.services = null;
+    host.microphone_permission_probe_active = std.atomic.Value(bool).init(false);
+    host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
     host.completions = @splat(.{});
     host.operations = @splat(.{});
     const operation = host.beginOperation(77, .audio_start).?;
@@ -1482,4 +1531,20 @@ test "operation completion is consumed once and closing suppresses late delivery
     host.closing = true;
     host.finishOperation(late, false, "late");
     try std.testing.expectEqual(@as(usize, 1), host.completion_count);
+}
+
+test "microphone permission probe closes capture and schedules a refresh" {
+    var host: FridayHost = undefined;
+    host.mutex = .{};
+    host.services = null;
+    host.microphone_permission_probe_active = std.atomic.Value(bool).init(true);
+    host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
+
+    const result = FridayHost.microphonePermissionProbe(&host, 0, .{
+        .kind = .started,
+        .source = .microphone,
+        .format = .{ .sample_rate = 16_000, .channels = 1 },
+    });
+    try std.testing.expectEqual(native_sdk.AudioCapturePushResult.closed, result);
+    try std.testing.expect(host.microphone_permission_probe_finished.load(.acquire));
 }

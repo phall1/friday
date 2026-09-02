@@ -221,14 +221,15 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(labels.includes("Start Recording"), true);
   assert.equal(labels.includes("Stop Recording"), false);
   assert.equal(labels.includes("Cancel"), false);
-  assert.equal(labels.includes("Settings…"), true);
+  assert.equal(labels.includes("Open Friday…"), true);
   assert.equal(labels.includes("Model Manager…"), true);
   assert.equal(labels.includes("Permission Status…"), true);
   assert.equal(labels.includes("Quit Friday"), true);
   assert.equal(readyMenu.iconPath.length, 0);
   assert.equal(new TextDecoder().decode(readyMenu.presentation.title), "F");
-  assert.equal(new TextDecoder().decode(readyMenu.activationCommand), "friday.settings");
-  assert.equal(new TextDecoder().decode(readyMenu.openCommand), "friday.settings");
+  assert.equal(readyMenu.activationCommand.length, 0);
+  assert.equal(readyMenu.alternateActivationCommand.length, 0);
+  assert.equal(readyMenu.openCommand.length, 0);
 
   const recording: Model = {
     ...ready,
@@ -248,6 +249,25 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(transcribingLabels.includes("Cancel"), true);
   assert.deepEqual(commandMsg("friday.models"), { kind: "show_models" });
   assert.equal(commandMsg("unknown"), null);
+});
+
+test("terminal dictation outcomes always dismiss the recording capsule", () => {
+  const ready = readyModel();
+  const delivering: Model = { ...ready, workflow: { kind: "delivering", disposition: "transcribe" }, sessionId: 9, generation: 9 };
+  const delivered = update(delivering, { kind: "delivery_finished", body: bytes('{"sessionId":9,"generation":9,"kind":"pasted"}') });
+  assert.equal(modelOf(delivered).workflow.kind, "ready");
+  const command = commandOf(delivered) as unknown as { op: string; name: string };
+  assert.equal(command.op, "host_bytes");
+  assert.equal(command.name, "friday.overlay.hide");
+
+  const transcribing: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" }, sessionId: 10, generation: 10 };
+  const failed = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":10,"generation":10,"message":"failed"}') });
+  assert.equal(modelOf(failed).workflow.kind, "failed");
+  assert.equal((commandOf(failed) as unknown as { name: string }).name, "friday.overlay.hide");
+
+  const stale = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":8,"generation":8,"message":"stale"}') });
+  assert.deepEqual(modelOf(stale), transcribing);
+  assert.equal(commandOf(stale), null);
 });
 
 test("UI scene automation remains env-shaped and covers production surfaces", () => {
@@ -485,7 +505,7 @@ test("platform gate blocks Intel and old macOS without onboarding or network", (
   assert.equal(showUnsupported(intel), true);
   assert.equal(new TextDecoder().decode(blockerText(intel)), "Friday requires an Apple Silicon Mac.");
   const intelItems = statusItem(intel).items.map((item) => new TextDecoder().decode(item.label));
-  assert.deepEqual(intelItems.filter(Boolean), ["unsupported", "Quit Friday"]);
+  assert.deepEqual(intelItems.filter(Boolean), ["unsupported", "Open Friday…", "Quit Friday"]);
   assert.equal(commandOf(update(intel, { kind: "onboarding_next" })), null);
   assert.equal(commandOf(update(intel, { kind: "retry_model_download" })), null);
   assert.equal(commandOf(update(intel, { kind: "start_recording" })), null);
@@ -509,14 +529,18 @@ test("platform gate blocks Intel and old macOS without onboarding or network", (
   assert.equal(showUnsupported(current), false);
 });
 
-test("captured shortcuts warn before explicit save and persist safe key/F-key candidates", () => {
+test("captured shortcuts preserve the active shortcut until a reviewed replacement is used", () => {
   const ready = readyModel();
   const reserved = dispatch(ready, {
     kind: "hotkey_candidate",
     body: bytes('{"ok":true,"valid":false,"config":"key=49;command=1;shift=0;option=0;control=0;fn=0","display":"Command + Space","warning":"That shortcut is reserved by macOS."}'),
   });
   assert.equal(reserved.hotkeyCandidateValid, false);
+  assert.equal(reserved.hotkeyConfirmed, true);
   assert.equal(commandOf(update(reserved, { kind: "confirm_hotkey_candidate" })), null);
+  const discarded = modelOf(update(reserved, { kind: "cancel_hotkey_capture" }));
+  assert.equal(discarded.hotkeyConfirmed, true);
+  assert.equal(new TextDecoder().decode(discarded.hotkeyDisplay), "Command + Shift");
 
   const keyCandidate = dispatch(ready, {
     kind: "hotkey_candidate",
@@ -535,9 +559,23 @@ test("captured shortcuts warn before explicit save and persist safe key/F-key ca
     body: bytes('{"ok":true,"valid":true,"config":"key=96;command=0;shift=0;option=0;control=0;fn=0","display":"F5","warning":""}'),
   });
   assert.equal(functionCandidate.hotkeyCandidateValid, true);
+  const fnCandidate = dispatch(ready, {
+    kind: "hotkey_candidate",
+    body: bytes('{"ok":true,"valid":true,"config":"key=-1;command=0;shift=0;option=0;control=0;fn=1","display":"Fn","warning":""}'),
+  });
+  assert.equal(fnCandidate.hotkeyCandidateValid, true);
   const preset = update(ready, { kind: "choose_control_option" });
-  assert.equal(commandOf(preset), null);
+  assert.equal(commandOf(preset)?.op, "request");
   assert.equal(modelOf(preset).hotkeyCandidateValid, true);
+});
+
+test("microphone onboarding action invokes the permission-request host path", () => {
+  const [initial] = initialModel();
+  const result = update(initial, { kind: "request_microphone" });
+  const command = commandOf(result) as unknown as { op: string; name: string; payload: Uint8Array };
+  assert.equal(command.op, "request");
+  assert.equal(command.name, "friday.permissions.request");
+  assert.equal(new TextDecoder().decode(command.payload), "microphone");
 });
 
 test("schema migration seeds a safe confirmed-shortcut candidate model", () => {

@@ -6,7 +6,7 @@ Friday supports Apple Silicon Macs running macOS 14 or later. Intel Macs are uns
 
 For a public release, open the notarized arm64-only `Friday-0.1.0-arm64.dmg`, drag Friday to Applications, and launch it there. A development build may be team-signed but unnotarized; it is for local validation, not redistribution. Friday never ships an Intel or universal slice and refuses to run through Rosetta.
 
-Friday lives in the menu bar. Closing the settings window does not quit it. Use **Quit Friday** in the menu-bar menu to stop it.
+Friday lives in the menu bar and does not open its main window after completed setup. Clicking the menu-bar item opens only its menu; choose **Open Friday…** when you want the main window. Closing that window does not quit Friday. Use **Quit Friday** in the menu to stop it.
 
 ## Setup and permissions
 
@@ -29,15 +29,15 @@ A missing Microphone permission blocks recording. Missing Input Monitoring disab
 
 ## Shortcut behavior
 
-The initial convenience is **Command + Shift**. **Control + Option** is also available. To choose a key or function key:
+The initial convenience is **Command + Shift**. **Control + Option** is also available. The two presets apply immediately. To choose Fn/Globe, an F-key, or another key combination:
 
 1. Open Settings → Shortcut.
-2. Choose **Record a Key or Function Key…**.
-3. Press one key or function key, with any desired modifiers.
-4. Review the displayed candidate and warning.
-5. Choose **Save This Shortcut** only when enabled.
+2. Choose **Change Shortcut…**.
+3. Press and release **Fn/Globe** by itself, an F-key, or another key combination.
+4. Review the displayed candidate and any warning.
+5. Choose **Use This Shortcut** only when enabled. Until then, your existing shortcut remains active.
 
-Friday rejects ordinary unmodified typing and warns about known macOS-reserved, standard app-command, modifier-only reliability, and indistinguishable combinations. Capturing a candidate never saves it by itself.
+Friday rejects ordinary unmodified typing and warns about known macOS-reserved, standard app-command, modifier-only reliability, and indistinguishable combinations. Capturing or discarding a candidate never disables the active shortcut.
 
 ### Hold and double-tap
 

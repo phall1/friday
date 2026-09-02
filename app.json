@@ -27,6 +27,7 @@
                 "width": 760,
                 "close_policy": "hide",
                 "height": 620,
+                "initially_hidden": true,
                 "views": [
                     { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Friday onboarding and settings", "accessibility_label": "Friday", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]

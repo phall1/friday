@@ -44,6 +44,9 @@ const material_hud_window: NSInteger = 13;
 const bezel_inline: NSUInteger = 15;
 const line_break_truncating_tail: NSInteger = 4;
 const floating_window_level_key: i32 = 5;
+const fade_in_seconds: f64 = 0.14;
+const fade_out_seconds: f64 = 0.12;
+const meter_animation_seconds: f64 = 0.11;
 
 const Mode = enum { held, locked, transcribing };
 const Action = enum { none, stop, dismiss, cancel };
@@ -70,7 +73,6 @@ const Mutex = struct {
         self.inner.unlock();
     }
 };
-
 
 const Classes = struct { panel: objc.Class, target: objc.Class };
 var class_mutex: Mutex = .{};
@@ -100,6 +102,7 @@ fn ensureClasses() !Classes {
             .{ "fridayUpdateMeter:", &targetUpdateMeter },
             .{ "fridayShowTranscribing:", &targetShowTranscribing },
             .{ "fridayHide:", &targetHide },
+            .{ "fridayOrderOut:", &targetOrderOut },
             .{ "fridayRunProbe:", &targetRunProbe },
             .{ "fridayTeardown:", &targetTeardown },
             .{ "fridayStop:", &targetStop },
@@ -153,6 +156,9 @@ fn targetShowTranscribing(target: Id, _: Sel, _: Id) callconv(.c) void {
 fn targetHide(target: Id, _: Sel, _: Id) callconv(.c) void {
     if (stateFor(target)) |state| state.hide();
 }
+fn targetOrderOut(target: Id, _: Sel, _: Id) callconv(.c) void {
+    if (stateFor(target)) |state| state.orderOutNow();
+}
 fn targetRunProbe(target: Id, _: Sel, _: Id) callconv(.c) void {
     if (stateFor(target)) |state| state.probe = state.runProbe();
 }
@@ -183,6 +189,9 @@ fn onMainThread() bool {
 }
 fn performOnMain(target: Id, operation: [*:0]const u8, payload: Id) void {
     objc.send3(void, Sel, Id, bool, target, objc.selector("performSelectorOnMainThread:withObject:waitUntilDone:"), objc.selector(operation), payload, true);
+}
+fn performOnMainAsync(target: Id, operation: [*:0]const u8, payload: Id) void {
+    objc.send3(void, Sel, Id, bool, target, objc.selector("performSelectorOnMainThread:withObject:waitUntilDone:"), objc.selector(operation), payload, false);
 }
 fn pairPayload(first: u64, second: u64) Id {
     const array = objc.send1(Id, NSUInteger, objc.send0(Id, objc.class("NSMutableArray"), objc.selector("alloc")), objc.selector("initWithCapacity:"), 2);
@@ -215,6 +224,10 @@ const State = struct {
     build_ok: bool = false,
     mode: Mode = .held,
     elapsed_seed: u64 = 0,
+    last_elapsed_second: u64 = std.math.maxInt(u64),
+    meter_clock_synced: bool = false,
+    smoothed_amplitude: CGFloat = 0,
+    transcribing_phase: usize = 0,
     last_action: Action = .none,
     probe: ProbeSnapshot = .{},
     services_mutex: Mutex = .{},
@@ -292,7 +305,7 @@ const State = struct {
         objc.release(display_name);
 
         self.updateVisualStyle();
-        self.applyMeterLevel(0);
+        self.applyAmplitude(0, false);
         return true;
     }
 
@@ -337,15 +350,22 @@ const State = struct {
 
     fn showLocked(self: *State, locked: bool, elapsed: u64) void {
         self.position();
+        const was_visible = objc.send0(bool, self.panel, objc.selector("isVisible"));
+        self.cancelScheduledHide();
         self.mode = if (locked) .locked else .held;
         setHidden(self.stop_button, !locked);
         setHidden(self.cancel_button, false);
         setHidden(self.dismiss_button, false);
         self.elapsed_seed = elapsed;
+        self.last_elapsed_second = std.math.maxInt(u64);
+        self.meter_clock_synced = false;
+        self.smoothed_amplitude = 0;
         self.replaceShownAt();
         self.updateElapsed(elapsed);
         self.replaceTimer();
+        if (!was_visible and !self.reduceMotion()) objc.send1(void, CGFloat, self.panel, objc.selector("setAlphaValue:"), 0);
         objc.send0(void, self.panel, objc.selector("orderFrontRegardless"));
+        self.reveal(was_visible);
     }
     fn replaceShownAt(self: *State) void {
         if (self.shown_at != null) objc.release(self.shown_at);
@@ -353,7 +373,8 @@ const State = struct {
     }
     fn replaceTimer(self: *State) void {
         self.invalidateTimer();
-        const timer = objc.send5(Id, f64, Id, Sel, Id, bool, objc.class("NSTimer"), objc.selector("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"), 0.25, self.target, objc.selector("fridayTick:"), null, true);
+        const interval: f64 = if (self.mode == .transcribing) 0.12 else 0.2;
+        const timer = objc.send5(Id, f64, Id, Sel, Id, bool, objc.class("NSTimer"), objc.selector("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"), interval, self.target, objc.selector("fridayTick:"), null, true);
         self.timer = objc.retain(timer);
     }
     fn invalidateTimer(self: *State) void {
@@ -364,38 +385,76 @@ const State = struct {
         }
     }
     fn tick(self: *State) void {
-        if (self.shown_at == null or self.mode == .transcribing) return;
+        if (self.mode == .transcribing) {
+            self.applyTranscribingFrame();
+            return;
+        }
+        if (self.shown_at == null) return;
         const interval = objc.send0(f64, self.shown_at, objc.selector("timeIntervalSinceNow"));
         const delta: u64 = @intFromFloat(@max(@as(f64, 0), @round(-interval * 1000)));
         self.updateElapsed(self.elapsed_seed +| delta);
     }
     fn updateElapsed(self: *State, elapsed: u64) void {
+        const elapsed_second = elapsed / 1000;
+        if (elapsed_second == self.last_elapsed_second) return;
+        self.last_elapsed_second = elapsed_second;
         var buffer: [64]u8 = undefined;
         const prefix = if (self.mode == .locked) "Locked" else "Listening";
         const text = std.fmt.bufPrint(&buffer, "{s} {d}:{d:0>2}", .{ prefix, elapsed / 60000, (elapsed / 1000) % 60 }) catch return;
         setStringValue(self.label, text);
         setAccessibilityValue(self.label, text);
     }
-    fn applyMeterLevel(self: *State, level: NSUInteger) void {
-        const quiet = [_]CGFloat{ 4, 7, 9, 7, 4 };
-        const low = [_]CGFloat{ 5, 10, 15, 10, 6 };
-        const medium = [_]CGFloat{ 7, 15, 23, 16, 9 };
-        const high = [_]CGFloat{ 10, 22, 30, 25, 13 };
-        const heights: *const [5]CGFloat = if (level >= 3) &high else if (level == 2) &medium else if (level == 1) &low else &quiet;
-        for (self.bars, heights.*) |bar, height| {
+    fn applyBarHeights(self: *State, heights: [5]CGFloat, animated: bool) void {
+        const should_animate = animated and !self.reduceMotion();
+        if (should_animate) {
+            objc.send0(void, objc.class("NSAnimationContext"), objc.selector("beginGrouping"));
+            const context = objc.send0(Id, objc.class("NSAnimationContext"), objc.selector("currentContext"));
+            objc.send1(void, f64, context, objc.selector("setDuration:"), meter_animation_seconds);
+        }
+        for (self.bars, heights) |bar, height| {
             var frame = objc.send0(Rect, bar, objc.selector("frame"));
             frame.size.height = height;
             frame.origin.y = 26 - height / 2;
-            objc.send1(void, Rect, bar, objc.selector("setFrame:"), frame);
+            const destination = if (should_animate) objc.send0(Id, bar, objc.selector("animator")) else bar;
+            objc.send1(void, Rect, destination, objc.selector("setFrame:"), frame);
         }
+        if (should_animate) objc.send0(void, objc.class("NSAnimationContext"), objc.selector("endGrouping"));
     }
-    fn updateMeter(self: *State, level: NSUInteger, elapsed: u64) void {
+    fn applyAmplitude(self: *State, amplitude: CGFloat, animated: bool) void {
+        const bases = [_]CGFloat{ 4, 5, 6, 5, 4 };
+        const ranges = [_]CGFloat{ 11, 21, 25, 19, 12 };
+        var heights: [5]CGFloat = undefined;
+        for (&heights, bases, ranges) |*height, base, range| height.* = base + range * amplitude;
+        self.applyBarHeights(heights, animated);
+    }
+    fn applyTranscribingFrame(self: *State) void {
+        const frames = [_][5]CGFloat{
+            .{ 5, 9, 15, 10, 6 },
+            .{ 6, 14, 9, 17, 7 },
+            .{ 8, 11, 18, 9, 13 },
+            .{ 5, 16, 10, 14, 6 },
+        };
+        self.applyBarHeights(frames[self.transcribing_phase % frames.len], true);
+        self.transcribing_phase += 1;
+    }
+    fn updateMeter(self: *State, amplitude_milli: NSUInteger, elapsed: u64) void {
         if (self.mode == .transcribing) return;
-        self.applyMeterLevel(level);
-        self.updateElapsed(elapsed);
+        const raw = @min(@as(CGFloat, @floatFromInt(amplitude_milli)) / 650.0, 1.0);
+        const target = @sqrt(raw);
+        self.smoothed_amplitude += (target - self.smoothed_amplitude) * 0.42;
+        self.applyAmplitude(self.smoothed_amplitude, true);
+        if (!self.meter_clock_synced) {
+            self.elapsed_seed = elapsed;
+            self.replaceShownAt();
+            self.last_elapsed_second = std.math.maxInt(u64);
+            self.updateElapsed(elapsed);
+            self.meter_clock_synced = true;
+        }
     }
     fn showTranscribing(self: *State) void {
         self.position();
+        const was_visible = objc.send0(bool, self.panel, objc.selector("isVisible"));
+        self.cancelScheduledHide();
         self.invalidateTimer();
         self.mode = .transcribing;
         setHidden(self.stop_button, true);
@@ -403,12 +462,47 @@ const State = struct {
         setHidden(self.dismiss_button, false);
         setStringValue(self.label, "Transcribing");
         setAccessibilityValue(self.label, "Transcribing locally");
-        self.applyMeterLevel(1);
+        self.transcribing_phase = 0;
+        self.applyTranscribingFrame();
+        if (!self.reduceMotion()) self.replaceTimer();
+        if (!was_visible and !self.reduceMotion()) objc.send1(void, CGFloat, self.panel, objc.selector("setAlphaValue:"), 0);
         objc.send0(void, self.panel, objc.selector("orderFrontRegardless"));
+        self.reveal(was_visible);
     }
     fn hide(self: *State) void {
         self.invalidateTimer();
-        if (self.panel != null) objc.send1(void, Id, self.panel, objc.selector("orderOut:"), null);
+        if (self.panel == null or !objc.send0(bool, self.panel, objc.selector("isVisible"))) return;
+        self.cancelScheduledHide();
+        if (self.reduceMotion()) return self.orderOutNow();
+        self.animateAlpha(0, fade_out_seconds);
+        objc.send3(void, Sel, Id, f64, self.target, objc.selector("performSelector:withObject:afterDelay:"), objc.selector("fridayOrderOut:"), null, fade_out_seconds + 0.02);
+    }
+    fn reduceMotion(_: *State) bool {
+        const workspace = objc.send0(Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        return objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceMotion"));
+    }
+    fn cancelScheduledHide(self: *State) void {
+        objc.send3(void, Id, Sel, Id, objc.class("NSObject"), objc.selector("cancelPreviousPerformRequestsWithTarget:selector:object:"), self.target, objc.selector("fridayOrderOut:"), null);
+    }
+    fn animateAlpha(self: *State, alpha: CGFloat, duration: f64) void {
+        objc.send0(void, objc.class("NSAnimationContext"), objc.selector("beginGrouping"));
+        const context = objc.send0(Id, objc.class("NSAnimationContext"), objc.selector("currentContext"));
+        objc.send1(void, f64, context, objc.selector("setDuration:"), duration);
+        const animator = objc.send0(Id, self.panel, objc.selector("animator"));
+        objc.send1(void, CGFloat, animator, objc.selector("setAlphaValue:"), alpha);
+        objc.send0(void, objc.class("NSAnimationContext"), objc.selector("endGrouping"));
+    }
+    fn reveal(self: *State, was_visible: bool) void {
+        if (was_visible or self.reduceMotion()) {
+            objc.send1(void, CGFloat, self.panel, objc.selector("setAlphaValue:"), 1);
+            return;
+        }
+        self.animateAlpha(1, fade_in_seconds);
+    }
+    fn orderOutNow(self: *State) void {
+        if (self.panel == null) return;
+        objc.send1(void, Id, self.panel, objc.selector("orderOut:"), null);
+        objc.send1(void, CGFloat, self.panel, objc.selector("setAlphaValue:"), 1);
     }
     fn panelMoved(self: *State) void {
         if (self.panel == null or !objc.send0(bool, self.panel, objc.selector("isVisible"))) return;
@@ -452,14 +546,14 @@ const State = struct {
         var label_buffer: [96]u8 = undefined;
         const locked_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
         const locked_ok = std.mem.startsWith(u8, locked_label, "Locked");
-        self.updateMeter(3, 4321);
+        self.updateMeter(500, 4321);
         const meter_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
         const meter_ok = std.mem.eql(u8, meter_label, "Locked 0:04");
         self.showTranscribing();
         const transcribing_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
         const transcribing_ok = std.mem.eql(u8, transcribing_label, "Transcribing");
         const controls_correct = objc.send0(bool, self.stop_button, objc.selector("isHidden")) and !objc.send0(bool, self.cancel_button, objc.selector("isHidden")) and !objc.send0(bool, self.dismiss_button, objc.selector("isHidden"));
-        const reduced_motion_contract = self.timer == null;
+        const reduced_motion_contract = if (self.reduceMotion()) self.timer == null else self.timer != null;
 
         const reduce_transparency = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceTransparency"));
         const increase_contrast = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldIncreaseContrast"));
@@ -469,6 +563,7 @@ const State = struct {
         const appearance_contract = material == (if (reduce_transparency) material_window_background else material_hud_window) and border_width == (if (increase_contrast) @as(CGFloat, 1.5) else @as(CGFloat, 0.5));
 
         self.performAction(.dismiss);
+        self.orderOutNow();
         const after_app = objc.send0(Id, workspace, objc.selector("frontmostApplication"));
         const after = if (after_app != null) objc.send0(i32, after_app, objc.selector("processIdentifier")) else 0;
         const friday_active = objc.send0(bool, app, objc.selector("isActive"));
@@ -617,7 +712,7 @@ pub const Overlay = struct {
         } else {
             const payload = pairPayload(level, elapsed);
             defer objc.release(payload);
-            performOnMain(self.state.target, "fridayUpdateMeter:", payload);
+            performOnMainAsync(self.state.target, "fridayUpdateMeter:", payload);
         }
     }
     pub fn showTranscribing(self: *Overlay) void {
