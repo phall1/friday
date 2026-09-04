@@ -1,7 +1,7 @@
 import { Cmd, asciiBytes, utf8Bytes } from "@native-sdk/core";
 import { type TextInputEvent } from "@native-sdk/core/text";
 import { type StatusItemMenuItem, type StatusItemState, type ThemeState } from "@native-sdk/core/events";
-import { byteEquals, contains, eventMatches, findPipe, groupedDigits, hasPrefix, jsonInteger, jsonString, parseUnsigned } from "./protocol.ts";
+import { byteEquals, contains, decodeNativeMessage, decodeTranscriptReady, encodeDeliveryRequest, encodeTranscriptionRequest, eventMatches, findPipe, groupedDigits, hasPrefix, jsonInteger, jsonString, parseUnsigned } from "./protocol.ts";
 import { defaultModel, durableModel, readiness } from "./state.ts";
 import { automationScene } from "./automation.ts";
 import { updateModelState } from "./model-transitions.ts";
@@ -414,8 +414,8 @@ export function loginStatusText(model: Model): Uint8Array {
   return utf8Bytes("Checking…");
 }
 function nativeReason(bytes: Uint8Array, fallback: Uint8Array): Uint8Array {
-  const reason = jsonString(bytes, asciiBytes("\"message\":\""));
-  return reason.length > 0 ? reason : fallback;
+  const reason = decodeNativeMessage(bytes);
+  return reason !== null && reason.length > 0 ? reason : fallback;
 }
 
 export function failureModelName(model: Model): Uint8Array {
@@ -825,18 +825,20 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "begin_transcription":
       if (model.workflow.kind !== "transcribing") return model;
-      return [model, Cmd.request("friday.nemo.transcribe_capture", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+      {
+        const payload = encodeTranscriptionRequest(model.sessionId, model.generation);
+        if (payload === null) return model;
+        return [model, Cmd.request("friday.nemo.transcribe_capture", payload, { key: "audio-session", ok: "transcript_ready", err: "transcription_failed" })];
+      }
     case "transcript_ready": {
       if (model.workflow.kind !== "transcribing") return model;
-      const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
-      const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
-      if (session !== model.sessionId || generation !== model.generation) return model;
+      const transcript = decodeTranscriptReady(msg.body);
+      if (transcript === null || transcript.sessionId !== model.sessionId || transcript.generation !== model.generation) return model;
       const disposition = model.workflow.disposition;
-      if (contains(msg.body, asciiBytes("\"silence\":true"))) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: disposition === "duration_limit" ? utf8Bytes("10-minute limit reached. No speech was detected, so nothing was pasted or copied.") : utf8Bytes("No speech detected. Nothing was pasted or copied."), lastQuickReleaseAtMs: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
-      const deliverSession = Number.isFinite(session) && session > 0 && session <= 9007199254740991 ? Math.trunc(session) : 0;
-      const deliverGeneration = Number.isFinite(generation) && generation > 0 && generation <= 9007199254740991 ? Math.trunc(generation) : 0;
-      if (deliverSession === 0 || deliverGeneration === 0) return model;
-      return [{ ...model, workflow: { kind: "delivering", disposition } }, Cmd.request("friday.deliver_session", utf8Bytes(`session=${deliverSession};generation=${deliverGeneration};paste=${model.pasteAutomatically ? 1 : 0}`), { key: "delivery", ok: "delivery_finished", err: "delivery_failed" })];
+      if (transcript.silence) return [{ ...model, hasImmediateResult: true, immediateResultKind: "shown", sessionSourceToken: asciiBytes(""), immediateResultMessage: disposition === "duration_limit" ? utf8Bytes("10-minute limit reached. No speech was detected, so nothing was pasted or copied.") : utf8Bytes("No speech detected. Nothing was pasted or copied."), lastQuickReleaseAtMs: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+      const payload = encodeDeliveryRequest(transcript.sessionId, transcript.generation, model.pasteAutomatically);
+      if (payload === null) return model;
+      return [{ ...model, workflow: { kind: "delivering", disposition } }, Cmd.request("friday.deliver_session", payload, { key: "delivery", ok: "delivery_finished", err: "delivery_failed" })];
     }
     case "retry_transcription": {
       if (model.workflow.kind !== "failed" || model.workflow.stage !== "transcription" || !model.workflow.retryAudioAvailable) return model;

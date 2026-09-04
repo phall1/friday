@@ -1,11 +1,11 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
 import type { Model, Msg } from "./core.ts";
-import { contains, jsonString } from "./protocol.ts";
+import { contains, decodeNativeMessage, jsonString } from "./protocol.ts";
 import { readiness } from "./state.ts";
 
 function nativeReason(bytes: Uint8Array, fallback: Uint8Array): Uint8Array {
-  const reason = jsonString(bytes, asciiBytes("\"message\":\""));
-  return reason.length > 0 ? reason : fallback;
+  const reason = decodeNativeMessage(bytes);
+  return reason !== null && reason.length > 0 ? reason : fallback;
 }
 
 export function updateAppState(model: Model, msg: Msg): Model | null {

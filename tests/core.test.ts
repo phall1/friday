@@ -157,7 +157,7 @@ test("non-silence transcript carries exact delivery identity and paste preferenc
   };
   const result = update(model, {
     kind: "transcript_ready",
-    body: bytes('{"ok":true,"sessionId":42,"generation":77,"silence":false}'),
+    body: bytes('{"ok":true,"sessionId":42,"generation":77,"text":"hello","silence":false}'),
   });
   const delivering = modelOf(result);
   assert.equal(delivering.workflow.kind, "delivering");
@@ -169,10 +169,68 @@ test("non-silence transcript carries exact delivery identity and paste preferenc
   );
   const delivered = dispatch(delivering, {
     kind: "delivery_finished",
-    body: bytes('{"ok":true,"sessionId":42,"generation":77,"kind":"clipboard"}'),
+    body: bytes('{"ok":true,"sessionId":42,"generation":77,"kind":"clipboard","message":"Paste is disabled. The transcript was copied to the clipboard."}'),
   });
   assert.equal(delivered.workflow.kind, "ready");
   assert.equal(delivered.immediateResultKind, "clipboard");
+  assert.equal(new TextDecoder().decode(delivered.immediateResultMessage), "Paste is disabled. The transcript was copied to the clipboard.");
+});
+
+test("shown and failed delivery retain arbitrary final UTF-8 exactly", () => {
+  const base = readyModel();
+  const text = 'quoted "words" \\ path/next\nemoji 🧑🏽‍💻 and cafe\u0301';
+  const reason = 'Clipboard failed after "focus" changed.\nCopy manually.';
+  const delivering: Model = {
+    ...base,
+    workflow: { kind: "delivering", disposition: "transcribe" },
+    sessionId: 81,
+    generation: 82,
+  };
+  const shown = dispatch(delivering, {
+    kind: "delivery_finished",
+    body: bytes(JSON.stringify({ kind: "shown", ok: false, message: reason, sessionId: 81, generation: 82, text })),
+  });
+  assert.equal(shown.workflow.kind, "ready");
+  assert.equal(shown.immediateResultKind, "shown");
+  assert.equal(new TextDecoder().decode(shown.immediateResultMessage), text);
+
+  const failed = dispatch(delivering, {
+    kind: "delivery_failed",
+    error: bytes(JSON.stringify({ ok: false, sessionId: 81, generation: 82, message: reason, text })),
+  });
+  assert.equal(failed.workflow.kind, "failed");
+  assert.equal(failed.hasImmediateResult, true);
+  assert.equal(new TextDecoder().decode(failed.immediateResultMessage), text);
+  assert.equal(new TextDecoder().decode(failureDetail(failed)), reason);
+  const copied = update(failed, { kind: "copy_immediate_result" });
+  const copyCommand = commandOf(copied) as unknown as { op: string; bytes: Uint8Array };
+  assert.equal(copyCommand.op, "clip_write");
+  assert.equal(new TextDecoder().decode(copyCommand.bytes), text);
+});
+
+test("malformed transcript and delivery payloads cannot advance or expose text", () => {
+  const base = readyModel();
+  const transcribing: Model = {
+    ...base,
+    workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" },
+    sessionId: 91,
+    generation: 92,
+  };
+  const malformedTranscript = update(transcribing, {
+    kind: "transcript_ready",
+    body: bytes('{"sessionId":91,"generation":92,"silence":false,"text":"bad\\q"}'),
+  });
+  assert.deepEqual(modelOf(malformedTranscript), transcribing);
+  assert.equal(commandOf(malformedTranscript), null);
+
+  const delivering: Model = { ...transcribing, workflow: { kind: "delivering", disposition: "transcribe" } };
+  const overflowDelivery = update(delivering, {
+    kind: "delivery_finished",
+    body: bytes('{"kind":"shown","message":"bad","sessionId":9007199254740992,"generation":92,"text":"must not appear"}'),
+  });
+  assert.deepEqual(modelOf(overflowDelivery), delivering);
+  assert.equal(commandOf(overflowDelivery), null);
+  assert.equal(delivering.hasImmediateResult, false);
 });
 
 test("stale duration and interruption facts cannot mutate the current session", () => {
@@ -290,18 +348,18 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
 test("terminal dictation outcomes always dismiss the recording capsule", () => {
   const ready = readyModel();
   const delivering: Model = { ...ready, workflow: { kind: "delivering", disposition: "transcribe" }, sessionId: 9, generation: 9 };
-  const delivered = update(delivering, { kind: "delivery_finished", body: bytes('{"sessionId":9,"generation":9,"kind":"pasted"}') });
+  const delivered = update(delivering, { kind: "delivery_finished", body: bytes('{"sessionId":9,"generation":9,"kind":"pasted","message":"Pasted into the exact source app."}') });
   assert.equal(modelOf(delivered).workflow.kind, "ready");
   const command = commandOf(delivered) as unknown as { op: string; name: string };
   assert.equal(command.op, "host_bytes");
   assert.equal(command.name, "friday.overlay.hide");
 
   const transcribing: Model = { ...ready, workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" }, sessionId: 10, generation: 10 };
-  const failed = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":10,"generation":10,"message":"failed"}') });
+  const failed = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":10,"generation":10,"retryAudioAvailable":true,"message":"failed"}') });
   assert.equal(modelOf(failed).workflow.kind, "failed");
   assert.equal((commandOf(failed) as unknown as { name: string }).name, "friday.overlay.hide");
 
-  const stale = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":8,"generation":8,"message":"stale"}') });
+  const stale = update(transcribing, { kind: "transcription_failed", error: bytes('{"sessionId":8,"generation":8,"retryAudioAvailable":true,"message":"stale"}') });
   assert.deepEqual(modelOf(stale), transcribing);
   assert.equal(commandOf(stale), null);
 });
@@ -667,14 +725,14 @@ test("duration-limit disposition survives delivery until acknowledgement", () =>
   };
   model = modelOf(update(model, {
     kind: "transcript_ready",
-    body: bytes('{"ok":true,"sessionId":61,"generation":61,"silence":false}'),
+    body: bytes('{"ok":true,"sessionId":61,"generation":61,"text":"final words","silence":false}'),
   }));
   assert.equal(model.workflow.kind === "delivering" && model.workflow.disposition, "duration_limit");
   model = dispatch(model, {
     kind: "delivery_finished",
-    body: bytes('{"ok":true,"sessionId":61,"generation":61,"kind":"clipboard"}'),
+    body: bytes('{"ok":true,"sessionId":61,"generation":61,"kind":"clipboard","message":"The transcript remains on the clipboard."}'),
   });
-  assert.equal(new TextDecoder().decode(model.immediateResultMessage), "10-minute limit reached. Final text was copied to the clipboard.");
+  assert.equal(new TextDecoder().decode(model.immediateResultMessage), "10-minute limit reached. The transcript remains on the clipboard.");
   assert.equal(model.durationLimitReached, true);
   model = dispatch(model, { kind: "dismiss_result" });
   assert.equal(model.durationLimitReached, false);
