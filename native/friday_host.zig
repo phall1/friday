@@ -1,6 +1,7 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 const operations_mod = @import("host/operation_registry.zig");
+const artifacts_mod = @import("host/session_artifacts.zig");
 const audio_mod = @import("macos/audio.zig");
 const delivery_mod = @import("macos/delivery.zig");
 const input_mod = @import("macos/input.zig");
@@ -18,7 +19,6 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 const completion_capacity = operations_mod.capacity;
 const result_capacity = operations_mod.result_capacity;
 const event_channel_key: u64 = 7001;
-const source_capacity = 8;
 const sample_capacity = 64;
 const lifecycle_poll_us: c_uint = 10_000;
 const lifecycle_handoff_timeout_ms: u64 = 1_000;
@@ -32,14 +32,6 @@ const Operation = operations_mod.Operation;
 const CancellationTicket = operations_mod.Cancellation;
 const CancellationCleanup = operations_mod.Cleanup;
 
-const Transcript = struct {
-    used: bool = false,
-    session: u64 = 0,
-    generation: u64 = 0,
-    text: ?[]u8 = null,
-};
-
-const SessionGeneration = struct { used: bool = false, session: u64 = 0, generation: u64 = 0 };
 const LifecycleIdentity = struct { session: u64, generation: u64 };
 
 const Samples = struct {
@@ -71,6 +63,7 @@ pub const FridayHost = struct {
     mutex: SpinMutex = .{},
     request_mutex: SpinMutex = .{},
     operation_registry: operations_mod.Registry,
+    artifacts: artifacts_mod.Store,
 
     channels: ?native_sdk.HostChannelBinding = null,
     event_handle: ?native_sdk.ChannelHandle = null,
@@ -91,10 +84,6 @@ pub const FridayHost = struct {
     generation: u64 = 0,
     current_audio_session: u64 = 0,
     current_audio_generation: u64 = 0,
-    sources: [source_capacity]?*delivery_mod.SourceTarget = @splat(null),
-    source_count: usize = 0,
-    transcripts: [completion_capacity]Transcript = @splat(.{}),
-    audio_generations: [completion_capacity]SessionGeneration = @splat(.{}),
 
     last_inference_duration_ms: u64 = 0,
     last_audio_duration_ms: u64 = 0,
@@ -127,6 +116,7 @@ pub const FridayHost = struct {
             .recognizer = undefined,
             .models = undefined,
             .operation_registry = operations_mod.Registry.init(allocator),
+            .artifacts = artifacts_mod.Store.init(allocator),
         };
 
         if (getenv("FRIDAY_AUTOMATION_METRICS_OUTPUT")) |path| {
@@ -185,8 +175,7 @@ pub const FridayHost = struct {
         self.overlay.deinit();
         self.delivery.deinit();
 
-        for (self.sources[0..self.source_count]) |entry| if (entry) |source| self.destroySource(source);
-        for (&self.transcripts) |*entry| if (entry.text) |text| self.allocator.free(text);
+        self.artifacts.deinit();
         self.operation_registry.deinit();
         self.allocator.free(self.data_directory);
         if (self.performance_output_path) |path| self.allocator.free(path);
@@ -422,13 +411,10 @@ pub const FridayHost = struct {
     fn captureSource(self: *FridayHost, output: []u8) usize {
         var source = self.delivery.captureFrontmostSource() catch return json.writeError(output, "source_unavailable", "Friday could not capture the frontmost application.");
         self.generation += 1;
-        source.generation = self.generation;
-        const pointer = self.allocator.create(delivery_mod.SourceTarget) catch {
+        const pointer = self.artifacts.retainSource(source, self.generation) catch {
             source.deinit(self.allocator);
             return json.writeError(output, "out_of_memory", "Friday could not retain the source application.");
         };
-        pointer.* = source;
-        self.addSource(pointer);
         self.activateLifecycle(self.generation, self.generation);
         self.setPreferredSourceFrame(pointer.source_screen_frame);
         var writer = std.Io.Writer.fixed(output);
@@ -445,13 +431,10 @@ pub const FridayHost = struct {
         defer if (token) |bytes| self.allocator.free(bytes);
         var discarded_generation: u64 = 0;
         if (token != null and token.?.len > 0) {
-            if (self.findSource(token.?)) |index| {
-                discarded_generation = self.sources[index].?.generation;
-                self.removeSource(index);
-            }
+            discarded_generation = self.artifacts.discardToken(token.?) orelse 0;
         } else {
             discarded_generation = self.generation;
-            self.removeSourcesForGeneration(discarded_generation);
+            self.artifacts.discardGeneration(discarded_generation);
         }
         self.completeLifecycleGeneration(discarded_generation);
         return copyResult(output, "{\"ok\":true}");
@@ -464,10 +447,8 @@ pub const FridayHost = struct {
         defer self.allocator.free(token);
         const text = json.decodeBase64Alloc(self.allocator, payload[split + 1 ..]) catch return json.writeError(output, "invalid_delivery", "Invalid delivery request.");
         defer self.allocator.free(text);
-        const index = self.findSource(token) orelse return json.writeError(output, "source_stale", "The source token expired, was consumed, or belongs to a stale generation.");
-        const source = self.takeSource(index);
-        defer self.destroySource(source);
-        if (source.generation != self.generation) return json.writeError(output, "source_stale", "The source token expired, was consumed, or belongs to a stale generation.");
+        const source = self.artifacts.takeCurrentSource(token) orelse return json.writeError(output, "source_stale", "The source token expired, was consumed, or belongs to a stale generation.");
+        defer self.artifacts.releaseSource(source);
         const length = self.delivery.deliverText(text, source, true, self.services, output) catch json.writeError(output, "delivery_failed", "Friday could not deliver the transcript.");
         self.audio.discardRetryAudio();
         return length;
@@ -477,11 +458,11 @@ pub const FridayHost = struct {
         const session = json.unsignedField(payload, "session");
         const generation = json.unsignedField(payload, "generation");
         const paste = json.boolField(payload, "paste");
-        const transcript = self.takeTranscript(session, generation);
-        defer if (transcript) |text| self.allocator.free(text);
-        const source_index = self.findSourceGeneration(generation);
-        const source = if (source_index) |index| self.takeSource(index) else null;
-        defer if (source) |value| self.destroySource(value);
+        const artifacts = self.artifacts.takeForDelivery(session, generation);
+        const transcript = artifacts.transcript;
+        defer if (transcript) |text| self.artifacts.releaseTranscript(text);
+        const source = artifacts.source;
+        defer if (source) |value| self.artifacts.releaseSource(value);
         if (source == null or transcript == null or transcript.?.len == 0 or source.?.generation != generation) {
             self.audio.discardRetryAudio();
             self.completeLifecycle(session, generation);
@@ -528,7 +509,7 @@ pub const FridayHost = struct {
         try writer.writeAll(platform_bytes[0..platform_length]);
         try writer.writeAll(",\"permissions\":");
         try writer.writeAll(permission_bytes[0..permission_length]);
-        try writer.print(",\"hotkeyRunning\":{s},\"sourceTargetsRetained\":{d},\"audio\":", .{ if (self.input.running()) "true" else "false", self.source_count });
+        try writer.print(",\"hotkeyRunning\":{s},\"sourceTargetsRetained\":{d},\"audio\":", .{ if (self.input.running()) "true" else "false", self.artifacts.retainedSourceCount() });
         try writer.writeAll(audio_bytes[0..audio_length]);
         try writer.writeAll(",\"modelReady\":");
         try writeObjectField(&writer, model, "activeModelReady", .bool, "false");
@@ -618,7 +599,7 @@ pub const FridayHost = struct {
                 if (operation.session == 0) operation.session = operation.generation;
                 if (operation.session == 0 or operation.generation == 0) return self.finishUnavailable(operation, "capture_identity_missing", "Capture requires a nonzero session and generation.", false);
                 self.activateLifecycle(operation.session, operation.generation);
-                self.setAudioGeneration(operation.session, operation.generation);
+                self.artifacts.bindAudio(operation.session, operation.generation);
                 self.audio.startSession(operation.session, audioCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
             .audio_stop => {
@@ -774,13 +755,10 @@ pub const FridayHost = struct {
         operation.generation = self.generation;
         operation.session = operation.generation;
         var source = self.delivery.captureFrontmostSource() catch return self.finishError(operation, "source_unavailable", "Friday could not capture the source application.");
-        source.generation = operation.generation;
-        const pointer = self.allocator.create(delivery_mod.SourceTarget) catch {
+        _ = self.artifacts.retainSource(source, operation.generation) catch {
             source.deinit(self.allocator);
             return self.finishError(operation, "out_of_memory", "Friday could not retain the source application.");
         };
-        pointer.* = source;
-        self.addSource(pointer);
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
         self.recognizer.activateModel(model_path, self.assignModelEpoch(operation), fixtureCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
     }
@@ -899,12 +877,8 @@ pub const FridayHost = struct {
         if (cleanup.activation) self.recognizer.cancelActivation(ticket.model_epoch);
         if (cleanup.model) self.models.cancel(ticket.model_epoch);
         if (cleanup.session_state) {
-            self.request_mutex.lock();
-            self.removeSourcesForGeneration(ticket.generation);
-            if (self.takeTranscript(ticket.session, ticket.generation)) |transcript| self.allocator.free(transcript);
-            self.clearAudioGeneration(ticket.session);
+            self.artifacts.discardSession(ticket.session, ticket.generation);
             self.completeLifecycle(ticket.session, ticket.generation);
-            self.request_mutex.unlock();
         }
         self.operation_registry.retireCancellation(ticket, cleanup.callback_suppressed);
     }
@@ -955,16 +929,11 @@ pub const FridayHost = struct {
             self.last_hotkey_received_at_ms = system.wallMs();
             self.generation += 1;
             var source = self.delivery.captureFrontmostSource() catch return;
-            source.generation = self.generation;
             if (valueString(payload_value.object.get("token"))) |token| if (token.len == source.token.len) @memcpy(&source.token, token);
-            const pointer = self.allocator.create(delivery_mod.SourceTarget) catch {
+            const pointer = self.artifacts.retainSource(source, self.generation) catch {
                 source.deinit(self.allocator);
                 return;
             };
-            pointer.* = source;
-            self.request_mutex.lock();
-            defer self.request_mutex.unlock();
-            self.addSource(pointer);
             self.activateLifecycle(self.generation, self.generation);
             self.setPreferredSourceFrame(pointer.source_screen_frame);
             var output: [2048]u8 = undefined;
@@ -1007,7 +976,7 @@ pub const FridayHost = struct {
     fn audioEvent(context: *anyopaque, event: []const u8, payload: []const u8) bool {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         const session = json.unsignedValue(payload, "sessionId") orelse 0;
-        const generation = self.generationForSession(session);
+        const generation = self.artifacts.generationForAudio(session);
         if (session == 0 or generation == 0 or !self.lifecycleMatches(session, generation)) return false;
         if (std.mem.eql(u8, event, "audio_meter")) {
             const elapsed = json.unsignedValue(payload, "elapsedMilliseconds") orelse 0;
@@ -1034,7 +1003,7 @@ pub const FridayHost = struct {
 
     fn audioAbort(context: *anyopaque, session: u64) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        const generation = self.generationForSession(session);
+        const generation = self.artifacts.generationForAudio(session);
         if (generation != 0 and self.lifecycleMatches(session, generation)) self.requestLifecycleAbort(generation);
     }
 
@@ -1172,12 +1141,8 @@ pub const FridayHost = struct {
         // lossy event is needed to finish native cleanup.
         self.audio.cancelSession(session);
         self.recognizer.cancelGeneration(generation);
-        self.request_mutex.lock();
-        self.removeSourcesForGeneration(generation);
-        if (self.takeTranscript(session, generation)) |text| self.allocator.free(text);
-        self.clearAudioGeneration(session);
+        self.artifacts.discardSession(session, generation);
         self.audio.discardRetryAudio();
-        self.request_mutex.unlock();
         self.overlay.hide();
     }
 
@@ -1204,93 +1169,6 @@ pub const FridayHost = struct {
         if (session != 0) self.completeLifecycle(session, generation);
     }
 
-    fn addSource(self: *FridayHost, source: *delivery_mod.SourceTarget) void {
-        if (self.source_count == self.sources.len) self.removeSource(0);
-        self.sources[self.source_count] = source;
-        self.source_count += 1;
-    }
-
-    fn findSource(self: *FridayHost, token: []const u8) ?usize {
-        for (self.sources[0..self.source_count], 0..) |entry, index| if (entry) |source| if (std.mem.eql(u8, &source.token, token)) return index;
-        return null;
-    }
-
-    fn findSourceGeneration(self: *FridayHost, generation: u64) ?usize {
-        for (self.sources[0..self.source_count], 0..) |entry, index| if (entry) |source| if (source.generation == generation) return index;
-        return null;
-    }
-
-    fn takeSource(self: *FridayHost, index: usize) *delivery_mod.SourceTarget {
-        const source = self.sources[index].?;
-        var cursor = index;
-        while (cursor + 1 < self.source_count) : (cursor += 1) self.sources[cursor] = self.sources[cursor + 1];
-        self.source_count -= 1;
-        self.sources[self.source_count] = null;
-        return source;
-    }
-
-    fn removeSource(self: *FridayHost, index: usize) void {
-        self.destroySource(self.takeSource(index));
-    }
-
-    fn removeSourcesForGeneration(self: *FridayHost, generation: u64) void {
-        var index: usize = 0;
-        while (index < self.source_count) {
-            if (self.sources[index].?.generation == generation) self.removeSource(index) else index += 1;
-        }
-    }
-
-    fn destroySource(self: *FridayHost, source: *delivery_mod.SourceTarget) void {
-        source.deinit(self.allocator);
-        self.allocator.destroy(source);
-    }
-
-    fn storeTranscript(self: *FridayHost, session: u64, generation: u64, text: []const u8) void {
-        if (self.takeTranscript(session, generation)) |old| self.allocator.free(old);
-        for (&self.transcripts) |*entry| if (!entry.used) {
-            entry.* = .{ .used = true, .session = session, .generation = generation, .text = self.allocator.dupe(u8, text) catch return };
-            return;
-        };
-    }
-
-    fn takeTranscript(self: *FridayHost, session: u64, generation: u64) ?[]u8 {
-        for (&self.transcripts) |*entry| if (entry.used and entry.session == session and entry.generation == generation) {
-            const text = entry.text;
-            entry.* = .{};
-            return text;
-        };
-        return null;
-    }
-
-    fn setAudioGeneration(self: *FridayHost, session: u64, generation: u64) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearAudioGenerationLocked(session);
-        for (&self.audio_generations) |*entry| if (!entry.used) {
-            entry.* = .{ .used = true, .session = session, .generation = generation };
-            return;
-        };
-    }
-
-    fn clearAudioGeneration(self: *FridayHost, session: u64) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearAudioGenerationLocked(session);
-    }
-
-    fn clearAudioGenerationLocked(self: *FridayHost, session: u64) void {
-        for (&self.audio_generations) |*entry| {
-            if (entry.used and entry.session == session) entry.* = .{};
-        }
-    }
-
-    fn generationForSession(self: *FridayHost, session: u64) u64 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (self.audio_generations) |entry| if (entry.used and entry.session == session) return entry.generation;
-        return 0;
-    }
-
     fn updateTranscriptionState(self: *FridayHost, operation: *Operation, ok: bool, bytes: []const u8) void {
         self.last_inference_duration_ms = json.unsignedValue(bytes, "latencyMs") orelse 0;
         self.last_resident_bytes = json.unsignedValue(bytes, "residentBytes") orelse self.last_resident_bytes;
@@ -1309,11 +1187,8 @@ pub const FridayHost = struct {
             const silence = json.boolValue(bytes, "silence") orelse false;
             const text = json.stringAlloc(self.allocator, bytes, "text") catch null;
             defer if (text) |value| self.allocator.free(value);
-            if (!silence and text != null and text.?.len > 0) {
-                self.request_mutex.lock();
-                self.storeTranscript(operation.session, operation.generation, text.?);
-                self.request_mutex.unlock();
-            }
+            if (!silence and text != null and text.?.len > 0)
+                _ = self.artifacts.storeFinal(operation.session, operation.generation, text.?);
             self.audio.discardRetryAudio();
         }
     }
@@ -1399,7 +1274,7 @@ pub const FridayHost = struct {
         const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         self.updateTranscriptionState(operation, ok, bytes);
-        self.clearAudioGeneration(operation.session);
+        self.artifacts.clearAudio(operation.session);
         self.finishOperation(operation, ok, bytes);
     }
 
@@ -1410,7 +1285,7 @@ pub const FridayHost = struct {
         if (operation.stage == .stopping) {
             if (!ok) return self.finishOperation(operation, false, bytes);
             _ = self.models.activeModelPath() orelse {
-                self.clearAudioGeneration(operation.session);
+                self.artifacts.clearAudio(operation.session);
                 var output: [4096]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&output);
                 writer.print("{{\"ok\":false,\"generation\":{d},\"sessionId\":{d},\"code\":\"model_unavailable\",\"capture\":{s},\"retryAudioAvailable\":true}}", .{ operation.generation, operation.session, bytes }) catch return;
@@ -1436,7 +1311,7 @@ pub const FridayHost = struct {
         var output: [result_capacity]u8 = undefined;
         const capture = operation.saved orelse "{}";
         const length = json.mergeNamed(&output, bytes, "capture", capture) catch return self.finishError(operation, "serialization_failed", "The transcription result could not be serialized.");
-        self.clearAudioGeneration(operation.session);
+        self.artifacts.clearAudio(operation.session);
         self.finishOperation(operation, ok, output[0..length]);
     }
 
@@ -1469,7 +1344,7 @@ pub const FridayHost = struct {
         const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (!ok) {
-            self.removeSourcesForGeneration(operation.generation);
+            self.artifacts.discardGeneration(operation.generation);
             return self.finishOperation(operation, false, bytes);
         }
         if (operation.stage == .activating) {
@@ -1481,10 +1356,10 @@ pub const FridayHost = struct {
         const text = json.stringAlloc(self.allocator, bytes, "text") catch null;
         defer if (text) |value| self.allocator.free(value);
         if (silence or text == null or text.?.len == 0) {
-            self.removeSourcesForGeneration(operation.generation);
+            self.artifacts.discardGeneration(operation.generation);
             return self.finishOperation(operation, false, bytes);
         }
-        self.storeTranscript(operation.session, operation.generation, text.?);
+        _ = self.artifacts.storeFinal(operation.session, operation.generation, text.?);
         var payload: [160]u8 = undefined;
         const request_bytes = std.fmt.bufPrint(&payload, "session={d};generation={d};paste=0", .{ operation.session, operation.generation }) catch return self.finishError(operation, "delivery_failed", "The fixture could not be delivered.");
         var output: [result_capacity]u8 = undefined;
