@@ -11,7 +11,7 @@
     "capabilities": ["native_module", "native_views", "gpu_surfaces", "menus", "shortcuts", "tray", "filesystem", "network", "clipboard", "open_url", "reveal_path", "persist"],
     "dock_visible": false,
     "persist": {
-        "version": 12,
+        "version": 13,
         "debounce_ms": 250,
         "restore": {
             "ok": "restored",
