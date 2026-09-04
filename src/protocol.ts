@@ -1,5 +1,5 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
-import type { Model, ModelRow } from "./core.ts";
+import type { Model, ModelRow } from "./domain.ts";
 
 const MAX_SAFE_INTEGER = 9007199254740991;
 export const MAX_MODEL_ROWS = 128;

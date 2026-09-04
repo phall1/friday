@@ -1,5 +1,5 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
-import type { DictationWorkflow, Model } from "./core.ts";
+import type { DictationWorkflow, Model } from "./domain.ts";
 
 export function defaultModel(): Model {
   return {

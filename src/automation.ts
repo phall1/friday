@@ -1,5 +1,5 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
-import type { Model, ModelDownloadState } from "./core.ts";
+import type { Model, ModelDownloadState } from "./domain.ts";
 import { contains } from "./protocol.ts";
 
 export function automationScene(model: Model, value: Uint8Array): Model {

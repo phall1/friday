@@ -1,5 +1,5 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
-import type { Model, Msg } from "./core.ts";
+import type { Model, Msg } from "./domain.ts";
 import { contains, decodeNativeMessage, jsonString } from "./protocol.ts";
 import { readiness } from "./state.ts";
 

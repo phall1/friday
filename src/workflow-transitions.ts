@@ -1,5 +1,5 @@
 import { asciiBytes, utf8Bytes } from "@native-sdk/core";
-import type { DeliveryKind, Model, Msg } from "./core.ts";
+import type { DeliveryKind, Model, Msg } from "./domain.ts";
 import { concatBytes, decodeDeliveryFailure, decodeDeliveryResult, decodeTranscriptionFailure, jsonInteger } from "./protocol.ts";
 
 export function updateWorkflowState(model: Model, msg: Msg): Model | null {
