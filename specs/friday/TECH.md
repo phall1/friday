@@ -10,6 +10,28 @@ Use one architecture:
 
 The TypeScript core owns product state and sequencing. `FridayHost` owns global input, permission usability, source-app identity, microphone capture, model storage/activation, NeMo lifetime, and final delivery. Audio and native handles never enter TypeScript `Model`.
 
+### Friday v2 implementation decision
+
+Preserve the existing architecture and deepen its native speech boundary rather than adding a sidecar, daemon, cloud service, or assistant protocol:
+
+```text
+accepted hotkey-down
+  → provisional CoreAudio capture + authoritative 16 kHz retry file
+  → bounded worker-side ASR fan-out when the active model is runtime-proven streaming
+  → ephemeral generation-scoped partial revisions for capsule feedback
+  → stop watermark + stream finalization, or one whole-file local fallback
+  → one authoritative final transcript
+  → exact-source insertion or truthful clipboard/shown outcome
+```
+
+The rollout is gated, not assumed. Parakeet TDT v3 remains the default final-only model while Friday builds an exact-path quality corpus and benchmarks genuine streaming candidates. A streaming candidate ships opt-in before any default change. Friday loads one recognizer, never a draft/final model pair, and retains the complete retry file as the source of truth. No NeMo call, allocation, lock, file I/O, Objective-C call, or partial-text processing runs on the realtime audio callback.
+
+Capture correctness and lifecycle hardening precede model work: accepted key-down starts the same capture that a completed hold uses; a quick release discards it. Before each session, native capture revalidates the current input device and format generation. Active route loss, sleep, callback liveness failure, channel failure, and conversion failure stop and clean the generation independently of TypeScript delivery.
+
+Native asynchronous work uses stable request tickets with explicit retirement ownership. Cancellation and completion are locked state-machine transitions; an operation slot cannot be reused until both paths release it. Cancellation dispatches only to the operation's tagged payload, so canceling shortcut/model/audio/delivery work cannot poison unrelated recognizer generations or repository epochs. Model downloads and activations use repository-owned monotonic epochs rather than recyclable framework request slots. Source, transcript, generation, and audio-session mappings have one synchronization owner.
+
+All TypeScript/native wire payloads are decoded by message-specific validated codecs. Transcript-bearing responses support JSON escapes and arbitrary valid UTF-8 without substring parsing or truncation. Persistence is a positive allowlist constructed from safe defaults; adding a model field requires an explicit durable/non-durable classification.
+
 Official assumptions:
 
 - [Native SDK TypeScript core/effects](https://native-sdk.dev/docs/typescript): `Model`/`Msg`/pure `update`, `Cmd` effects, status items, windows, and bounded microphone capture.
@@ -17,7 +39,7 @@ Official assumptions:
 - [Native SDK macOS support](https://native-sdk.dev/docs/platform-support), [overlay windows](https://native-sdk.dev/docs/windows#overlay-windows), [packaging](https://native-sdk.dev/docs/packaging), [ejection](https://native-sdk.dev/docs/cli), and [testing](https://native-sdk.dev/docs/testing).
 - [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp), [ASR C ABI](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/sdk.md), [build guide](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/build.md), and [model guide](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/cli.md). The C API uses opaque handles and accepts mono Float32 at 8–96 kHz.
 - [NeMo checkpoints](https://docs.nvidia.com/nemo/speech/nightly/asr/asr_checkpoints.html) and [Parakeet v3 model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) currently disagree on language scope. Pin an immutable artifact/revision/SHA and display capabilities from its manifest.
-- [Vercel design guidance](https://vercel.com/design.md) supplies the hierarchy, monochrome, evidence, surface, and motion discipline. Friday combines that judgment with the public [phall.io](https://phall.io) instrument language and [no-phux mark](https://github.com/no-phux/phux/blob/main/docs/assets/no-phux-mark.svg): near-black fields, thin rules, terse operational metadata, and lime reserved for a live signal.
+- [Vercel design guidance](https://vercel.com/design.md) supplies the hierarchy, monochrome, evidence, surface, and motion discipline. Friday combines that judgment with the public [phall.io](https://phall.io) instrument language and [no-phux mark](https://github.com/no-phux/phux/blob/main/docs/assets/no-phux-mark.svg): near-black fields, thin rules, terse operational metadata, and system red reserved for live recording.
 
 ### Measured implementation pins (2026-09-01)
 
@@ -123,6 +145,11 @@ interface TranscriptResult {
   readonly inferenceStartedAtMs: number; readonly transcriptReadyAtMs: number;
   readonly retryAudioAvailable: boolean;
 }
+interface PartialTranscriptEvent {
+  readonly sessionId: number; readonly generation: number;
+  readonly revision: number;
+  readonly stablePrefix: Uint8Array; readonly mutableTail: Uint8Array;
+}
 type DeliveryKind = "pasted" | "clipboard" | "shown";
 interface DeliverResult {
   readonly sessionId: number; readonly kind: DeliveryKind;
@@ -133,6 +160,7 @@ type HostEvent =
   | { readonly kind: "hotkey_up"; readonly atMs: number }
   | { readonly kind: "escape"; readonly atMs: number }
   | { readonly kind: "meter"; readonly sessionId: number; readonly rms: number; readonly peak: number; readonly capturedFrames: number }
+  | { readonly kind: "partial_transcript"; readonly value: PartialTranscriptEvent }
   | { readonly kind: "permissions"; readonly microphone: boolean; readonly accessibility: boolean; readonly inputMonitoring: boolean }
   | { readonly kind: "audio_interrupted"; readonly sessionId: number; readonly reason: Uint8Array }
   | { readonly kind: "model_progress"; readonly operationId: number; readonly state: ModelOperationState; readonly downloadedBytes: number; readonly totalBytes: number }
@@ -165,15 +193,19 @@ No separate `isRecording`/`isTranscribing` fields.
 
 Implementation note: the Native SDK `0.10.1` shallow union projection requires heap-backed `Uint8Array` values outside union-arm payloads. `sessionSourceToken`, `workflowMessage`, and the immediate delivery result bytes are therefore top-level model slots, while `DictationWorkflow` remains the sole legal workflow/state discriminator and carries only scalar state-specific data.
 
-Rules: readiness requires platform, usable mic/input monitoring, confirmed hotkey, and active model. A second start preserves the current recording; a start during transcription cancels/invalidates it and starts fresh. Every native fact has `sessionId`; stale facts are ignored. Short modifier-only holds below `max(minimumHoldMs, 300)` discard. Double-tap locks only on unambiguous intent. Warn at 9:45; finish at exactly 10:00. Only current nonempty final text enters delivery. Delivery truthfully returns pasted/clipboard/shown. Failed transcription retains retry audio only until Retry, dismiss, new session, or exit.
+Rules: full readiness requires platform, usable mic/input monitoring, confirmed hotkey, and active model; acknowledged limited mode is explicitly manual-only. A second start preserves the current recording; a start during transcription cancels/invalidates it and starts fresh. Every native fact has `sessionId` and generation; stale facts are ignored. An accepted key-down starts provisional capture immediately. Short modifier-only holds below `max(minimumHoldMs, 300)` stop and discard that capture; crossing the threshold never restarts it. Double-tap locks only on unambiguous intent. Warn at 9:45; finish at exactly 10:00. Only current nonempty final text enters delivery. Delivery truthfully returns pasted/clipboard/shown and preserves its native fallback reason. Failed transcription retains retry audio only until Retry, dismiss, new session, or exit.
 
 ## Event and audio flow
 
-`global hotkey → host event with source token → pure transition → hostStart → 16 kHz capture → release/locked stop → hostStop/drain → committed visible transcribing → NeMo recognize_f32 → final text → hostDeliver exact source → pasted/clipboard/shown → ready`.
+Final-only model: `global hotkey → host event with source token → provisional hostStart → 16 kHz capture → hold commit or quick-release discard → release/locked stop → hostStop/drain → committed visible transcribing → NeMo recognize_f32 → final text → hostDeliver exact source → terminal pasted/clipboard/shown capsule → ready`.
 
-Canonical audio: 16,000 Hz, mono, normalized Float32 `[-1,1]`, ordered frames, final-only, maximum 600 seconds. Hardware input is converted off the realtime callback. A bounded single-producer queue feeds conversion/temp storage; known dropped frames fail the session rather than silently transcribe corruption. No warm/pre-roll mic in v1.
+Streaming model: the conversion/storage worker copies canonical frames into fixed 160 ms ASR slots on a bounded SPSC queue. One NeMo worker owns recognizer and stream handles, pushes ordered chunks, drains results, computes stable-prefix/mutable-tail revisions, and waits for the stop frame watermark before finalization. Queue overflow, stream rejection, or decode failure marks streaming degraded and performs one whole-file local recognition from the complete retry file. Interim text enters only ephemeral core/capsule state; it never enters persistence, diagnostics, clipboard, accessibility announcements, or delivery.
 
-Converted audio uses a session Float32 temp file; ten minutes is ~38.4 MB. Core receives meter summaries at ≤15 Hz, never PCM. Delete audio on cancel/discard/silence/success/fallback/dismiss/stale; retain only failed-session audio needed for explicit Retry; sweep stale files at launch.
+Canonical audio: 16,000 Hz, mono, normalized Float32 `[-1,1]`, ordered frames, maximum 600 seconds. Hardware input is converted off the realtime callback from its observed device format with maximum slice sizing, deterministic downmix, maximum-quality sample-rate conversion, per-session reset, end-of-stream flush, and exact frame accounting. A bounded single-producer queue feeds conversion/temp storage; known dropped capture frames fail the session rather than silently transcribe corruption. A separate bounded queue may feed streaming ASR; its overflow triggers whole-file fallback rather than corrupting capture. There is no warm or pre-keydown microphone.
+
+The capture owner tracks default-device identity, liveness, sample-rate/stream-configuration changes, and last callback time. Idle changes force rebuild before the next start. Active changes, sleep, or callback stalls interrupt the current generation and clean it. Core channel closure/rejection and failed terminal event posts also fail closed. Meter summaries accumulate all frames in each reporting window instead of sampling an arbitrary popped chunk.
+
+Converted audio uses a session Float32 temp file; ten minutes is ~38.4 MB. Core receives meter summaries at ≤15 Hz and partial text at a bounded revision rate, never PCM. Delete audio on quick-tap/cancel/discard/silence/success/fallback/dismiss/stale; retain only failed-session audio needed for explicit Retry; sweep stale files at launch. Zero/sub-minimum captures are no speech. Windowed speech detection is calibrated against quiet and sparse speech, impulses, keyboard/fan noise, and long recordings; it does not rely on one whole-file RMS/peak pair.
 
 ## Models
 
@@ -182,33 +214,39 @@ Application Support/Friday/Models/<id>/<revision>/{manifest.json,model.gguf,comp
 Application Support/Friday/ModelDownloads/<operation-id>/{download.partial,resume.json}
 ```
 
-Manifest fields: schema/version, numeric key, ID/display name, source kind, immutable HF repository/revision, engine, family, format=`gguf`, artifact/companions, SHA-256, expected/installed bytes, languages, license/attribution, managed flag, compatibility, and verification. Resolved download candidates persist `engine=unverified`, `family=unverified`, and `compatibility=unverified_candidate`. Published models persist `engine=nemo_speech_cpp`, `compatibility=compatible`, and verification=`exact_integrity_and_runtime_probe`; verified local/default manifests may identify `parakeet_tdt`, while Hugging Face candidates use `runtime_verified_asr` because untrusted labels and a structural GGUF header do not prove family.
+Manifest fields: schema/version, numeric key, ID/display name, source kind, immutable HF repository/revision, engine, family, recognition mode (`offline` or `streaming`), head (`tdt`, `rnnt`, `ctc`, or `runtime_verified`), streaming profile, format=`gguf`, artifact/companions, SHA-256, expected/installed bytes, languages, license/attribution, managed flag, compatibility, quality qualification, and verification. Resolved download candidates persist `engine=unverified`, `family=unverified`, and `compatibility=unverified_candidate`. Published models persist `engine=nemo_speech_cpp`, `compatibility=compatible`, and exact runtime-probe results; verified local/default manifests may identify a trusted family, while arbitrary Hugging Face candidates remain runtime-verified because untrusted labels and a structural GGUF header do not prove capabilities. Streaming selection requires actual stream create/push/finish/next/close verification, not recognizer create/destroy alone.
 
 Default manifest pins revision, size, SHA, license, and attribution. Downloads stage outside ready models, support cancel, verify size/hash/companions, fsync, run a background recognizer create/destroy probe, then atomically rename. Failed/canceled downloads are never selectable or invisibly retried. Active model cannot switch during a session. Cleanup only deletes Friday-managed roots.
 
-Compatible local models are readable GGUF bundles whose trusted sidecars identify a supported Parakeet TDT architecture, include all companions, and pass the runtime probe. HF identifiers do not resolve “compatible models”; they resolve only immutable unverified download candidates with bounded public metadata. Exact downloaded bytes must pass SHA/size, bounded GGUF inspection, and the real NeMo final-ASR runtime probe before atomic publication or selection. Reject `.nemo`, PyTorch, Core ML, ONNX, arbitrary/malformed GGUF, runtime-rejected candidates, and in-app conversion. Removing a user local model removes only Friday's reference.
+Compatible local models are readable GGUF bundles whose trusted sidecars identify a supported NeMo ASR architecture and complete companion set, and which pass the runtime probes for every claimed mode. HF identifiers do not resolve “compatible models”; they resolve only immutable unverified download candidates with bounded public metadata. Exact downloaded bytes must pass SHA/size, bounded GGUF inspection, and the real NeMo final-ASR runtime probe before atomic publication or selection; streaming claims additionally require the stream lifecycle probe. Reject `.nemo`, PyTorch, Core ML, ONNX, arbitrary/malformed GGUF, runtime-rejected candidates, and in-app conversion. Removing a user local model removes only Friday's reference.
 
 ## Delivery and UI
 
-Capture exact source at hotkey down. Delivery: validate current/nonempty/source; focus exact source and try AX insertion; otherwise snapshot rich pasteboard, write/commit text, focus exact source, synthesize Command-V; restore old clipboard only after supported success. On failure leave/copy text to clipboard; if that fails show immediate result with Copy. Never guess another app.
+Capture process identity at the input event and reconcile it with the AX-focused application in the same main-run-loop turn. Delivery is an asynchronous generation-scoped state machine rather than a synchronous host call that pumps the run loop under a request mutex. Revalidate current generation before activation, after activation, immediately before AX mutation or CGEvent-down, and before completion/restoration.
+
+Every insertion path requires the captured process launch identity, window, and editable element. Direct AX insertion and synthetic paste both compare a bounded before-state and selected range with the observed mutation; unconstrained substring presence is never success evidence. A missing, changed, destroyed, unresponsive, or unverifiable target falls back to clipboard. Secure/password fields are detected by role/subrole and never receive automatic insertion.
+
+Clipboard handling takes one bounded snapshot with explicit completeness, item/flavor/byte limits and one change count. Construct and verify replacement items before clearing; check every write; restore only after confirmed insertion and only if no user or clipboard-manager change won the race. Pending restoration participates in cancellation and termination. On unsupported snapshot or restoration failure, keep the authoritative final text available and return a truthful reason. If clipboard fallback itself fails, show the immediate result with Copy. Never guess another app, another window, or another field.
 
 UI direction:
 
 - Menu bar derives ready/recording/transcribing/error/not-ready plus Start/Stop/Cancel, Open Friday, Models, Access, Launch at Login, and Quit.
-- Overlay is a 264 × 52 pt voice capsule on the source display: truthful meter + elapsed time; lock with Stop/Cancel; held Cancel/release cue; transcribing pulse + Cancel; no partial text; movable/dismissible; reduced-motion form.
+- Overlay is a 232 × 36 pt voice capsule on the source display: truthful meter + elapsed time; system-red live state; lock with Stop/Cancel; held Cancel/release cue; final-only transcribing wave or streaming stable-prefix/mutable-tail preview; terminal outcome; movable/dismissible; reduced-motion form. Terminal states never show transcript text and announce semantic transitions once without live timer/meter chatter.
 - Onboarding: platform → three permissions → hotkey → default model → ready/explicit limited mode.
 - Settings: privacy, permissions, shortcut/practice, model/storage, system mic level, delivery/overlay, login, diagnostics.
 - Models: active/available/source/license/size, a known Parakeet CTC repository shortcut, Add Local/HF, Retry/Cancel/Remove, and total managed usage.
 
-Use the Native SDK Geist pack, 8/12/16 spacing, pure white/black canvas, graphite rules, lime only for live speech state, amber errors, and state/audio-driven motion. No dashboards, decorative cards, gradients, glass, AI sparkles, or transcript feed.
+Use the Native SDK Geist pack, 8/12/16 spacing, pure white/black canvas, graphite rules, system red only for live recording, amber errors, and state/audio-driven motion. No dashboards, decorative cards, gradients, glass, AI sparkles, or transcript feed.
 
 ## Packaging, privacy, performance
 
-Target arm64/aarch64 macOS only, macOS 14+. The app’s launch probe rejects Intel and Rosetta translation. Pin Native SDK/NeMo; `native eject`; link only the aarch64 NeMo Metal libraries. Preserve RPATH/runtime under `Contents/Frameworks`, include licenses, assert every Mach-O contains arm64 and no x86_64 slice, sign nested libraries then app/arm64 DMG, hardened runtime, notarized DMG. Do not disable library validation. Direct-distribution v1 does not depend on App Sandbox; use minimum TCC descriptions/entitlements and revisit sandbox only after signed hotkey/paste proof. Default model downloads during onboarding.
+Target arm64/aarch64 macOS only, macOS 14+. The app’s launch probe rejects Intel and Rosetta translation. Pin Native SDK/NeMo; `native eject`; link only the aarch64 NeMo Metal libraries. Preserve RPATH/runtime under `Contents/Frameworks`, include licenses, assert every Mach-O contains arm64 and no x86_64 slice, sign nested libraries then app/arm64 DMG, hardened runtime, notarized DMG. Do not disable library validation. Direct distribution does not depend on App Sandbox; use minimum TCC descriptions/entitlements. Untrusted third-party GGUF parsing requires either production allowlisting or a separately approved least-privilege containment design. Default model downloads during onboarding.
 
 No remote telemetry. Logs contain session ID, stage, safe code, pinned model revision, timings, and drop counts; never transcript, PCM, clipboard, raw local paths, document titles, or field contents. Diagnostics export safe versions/permissions/manifest/integrity/disk/timings/errors. Audio/transcript inclusion requires explicit opt-in.
 
-Budgets to validate, not observed claims: hotkey→first sample p95 ≤75 ms; zero clipped-leading fixture; stop→drain p95 ≤100 ms; warm 5-second stop→text p95 ≤1,000 ms on baseline M1; text→delivery p95 ≤75 ms; no ordinary dropped frames or >16 ms UI stalls. Probe every stage and measure cold/warm, 0.5/2/5/15-second and 10-minute recordings, route/sleep changes, default/local model, RSS, and energy.
+Budgets to validate, not observed claims: shipped hold hotkey→first retained sample p95 ≤75 ms; zero clipped-leading or trailing fixture failures; stop→drain p95 ≤100 ms; warm 5-second stop→text p95 ≤1,000 ms on baseline M1; text→delivery p95 ≤75 ms; no ordinary dropped frames or >16 ms UI stalls. For streaming candidates: first stable partial p95 ≤500 ms after speech onset, p99 chunk work below the 160 ms cadence, backlog high-water ≤1 second, 5-second stop→final p95 ≤350 ms, 15–600-second stop→final p95 ≤500 ms, steady peak RSS ≤1.25 GB, and ≤32 MB growth across 100 start/cancel/final cycles. Probe every stage and measure cold/warm, 0.5/2/5/15-second and 10-minute recordings, route/sleep changes, default/local model, RSS, GPU, battery/energy, partial revision churn, and cancellation quiescence.
+
+Quality gates use a hash-pinned, locally provisioned corpus through Friday's exact conversion/runtime path. Report normalized/raw WER, punctuation/capitalization, leading-word retention, silence hallucination/false rejection, entity/vocabulary recall, per-language/accent/noise slices, and long-form drift. A replacement default must improve aggregate WER by at least 5% relative with paired confidence excluding zero, or deliver an explicitly chosen capability win, while no priority slice regresses by more than 5% relative or 0.5 absolute WER and punctuation/capitalization do not regress. Private fixtures, reference transcripts, partials, and paths never enter diagnostics or release artifacts.
 
 ## Validation mapped to PRODUCT
 
@@ -216,9 +254,9 @@ Budgets to validate, not observed claims: hotkey→first sample p95 ≤75 ms; ze
 - **13–25:** onboarding, separate permissions, limited mode, live recheck, readiness.
 - **26–54, 147–149, 156:** model progress/cancel/retry/offline/integrity/compatibility/switch/remove/disk/privacy and the known Parakeet repository shortcut.
 - **55–68, 150–152:** true global hotkey, conflicts, hold/lock/ambiguity, ordinary typing rejection, mic gate; port Hex table cases.
-- **69–82:** nonactivating accessible overlay, controls, elapsed, no partial, transcribing Cancel.
+- **69–82, 162–165:** nonactivating accessible overlay, controls, elapsed, capability-gated streaming partials, final-only delivery, transcribing Cancel, and terminal outcomes.
 - **83–110:** cancel/stale, delivery fallback, silence, short/long, 10-minute limit, route/model/inference failure/retry.
-- **111–146, 153–155:** diagnostics/menu/settings/login/accessibility/persistence/revocation, visual-state discipline, and v1 non-goals/recovery.
+- **111–146, 153–155, 167–170:** diagnostics/menu/settings/login/accessibility/persistence/revocation, visual-state discipline, product non-goals/recovery, exact destination, secure-field, and transactional clipboard behavior.
 
 Use pure core/effect assertions; hermetic model HTTP/cache and GGUF fixtures; signed TCC/global-input/paste tests; CoreAudio interruption/cancel/quit tests; Native headless UI/automation/accessibility screenshots; packaged `.app` scenarios in TextEdit, Terminal, and browser fields.
 

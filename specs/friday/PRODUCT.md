@@ -2,20 +2,23 @@
 
 ## Summary
 
-Friday is a macOS-only Apple Silicon menu-bar dictation app for fast local speech-to-text into the app the user was already using. It is inspired by Hex but is a clean-slate product: v1 records from the microphone, transcribes locally with a compatible final-only ASR model by default, and pastes or copies the final transcript without cloud ASR.
+Friday is a macOS-only Apple Silicon menu-bar dictation instrument for fast, private speech-to-text in the app the user was already using. It captures the complete utterance from deliberate hotkey-down, transcribes with one local ASR model, gives immediate and truthful feedback, and pastes or copies only authoritative final text. Friday is the speech-input layer; it does not interpret commands, conduct conversations, or route work to an agent runtime.
 
 ## Goals / Non-goals
 
 - Goal: provide reliable global press-and-hold dictation into the source app with a compact nonactivating overlay.
 - Goal: keep the default model local, downloadable, cancellable, retryable, integrity-checked, and manageable on disk.
 - Goal: make permission, model, recording, transcription, paste, and fallback states explicit and recoverable.
-- Non-goal: cloud ASR is not part of v1.
-- Non-goal: live partial transcripts are not part of v1 because the default Parakeet TDT v3 experience is final-only.
-- Non-goal: transcript history is not part of v1.
-- Non-goal: text transforms, rewriting, summaries, templates, or commands are not part of v1.
-- Non-goal: media pause, system mute, meeting-app mute, or audio ducking is not part of v1.
-- Non-goal: iOS, iPadOS, Windows, Linux, web, or Intel Mac support is not part of v1.
-- Non-goal: multiple simultaneous recordings are not part of v1.
+- Goal: capture speech from hotkey-down without clipping the leading phoneme while silently discarding accidental short taps.
+- Goal: decode incrementally when and only when the selected local model genuinely supports streaming, with a stable-prefix/mutable-tail preview and final-only insertion.
+- Goal: qualify model and recognition behavior with reproducible quality, latency, memory, energy, privacy, and long-session evidence.
+- Non-goal: cloud ASR is not part of Friday.
+- Non-goal: partial text is never pasted, copied, persisted, added to diagnostics, or presented as final.
+- Non-goal: transcript history is not part of Friday.
+- Non-goal: text transforms, rewriting, summaries, templates, commands, conversations, tool routing, or OpenCode configuration are not part of Friday.
+- Non-goal: media pause, system mute, meeting-app mute, or audio ducking is not part of Friday.
+- Non-goal: iOS, iPadOS, Windows, Linux, web, or Intel Mac support is not part of the current product.
+- Non-goal: multiple simultaneous recordings are not part of Friday.
 
 ## Figma
 
@@ -35,7 +38,7 @@ Figma: none provided
 
 6. Friday can complete dictation while the settings window is closed.
 
-7. Friday never sends microphone audio, transcripts, model files, or model identifiers to a cloud ASR service in v1.
+7. Friday never sends microphone audio, transcripts, model files, or model identifiers to a cloud ASR service.
 
 8. Friday may contact the network only for user-visible model discovery or model download actions.
 
@@ -73,7 +76,7 @@ Figma: none provided
 
 25. Onboarding includes default model setup before Friday reports itself ready for dictation.
 
-26. The default model for v1 is Parakeet TDT v3.
+26. Parakeet TDT v3 remains the default until a candidate defeats it on Friday's exact capture/runtime path and satisfies quality, latency, memory, energy, privacy, and distribution-license gates.
 
 27. If the default Parakeet TDT v3 model is not already available locally, Friday offers to download it during onboarding.
 
@@ -103,7 +106,7 @@ Figma: none provided
 
 40. Friday does not present arbitrary local files or arbitrary Hugging Face repositories as compatible ASR models.
 
-41. A model is selectable only when Friday can identify it as compatible with Friday’s v1 local ASR requirements.
+41. A model is selectable only when Friday can identify it as loadable by Friday's local ASR runtime; streaming, language, punctuation, vocabulary, and quality capabilities are separate evidence and are never inferred from loadability.
 
 42. If a local or Hugging Face model is incompatible, Friday states that the model is incompatible and does not make it active.
 
@@ -143,11 +146,11 @@ Figma: none provided
 
 58b. After setup, clicking Friday's menu-bar item opens its menu without opening the main window; the menu provides an explicit Open Friday action.
 
-58c. The recording capsule dismisses automatically after every terminal success or failure, animates continuous speech energy without stepped jitter, and honors Reduce Motion when appearing or disappearing.
+58c. The recording capsule replaces active-session content with a concise terminal outcome before dismissing: pasted for 600–800 ms, copied for 2.5–3 seconds, no speech for 1.5–2 seconds, and failure for 3–4 seconds or until its required recovery action is visible elsewhere. It never displays transcript text.
 
 59. Friday supports press-and-hold recording for the configured hotkey.
 
-60. In press-and-hold mode, recording starts when the user presses and holds the configured hotkey.
+60. In press-and-hold mode, provisional recording starts on accepted hotkey-down. Crossing the configured hold threshold commits that same uninterrupted capture; release below the threshold stops and deletes it without transcription.
 
 61. In press-and-hold mode, recording stops when the user releases the configured hotkey.
 
@@ -183,13 +186,13 @@ Figma: none provided
 
 77. Friday respects reduced-motion settings by avoiding nonessential animation in the overlay and status transitions.
 
-78. Friday does not show live partial transcript text in v1.
+78. Friday shows live partial transcript text only when the active model and runtime have passed a genuine streaming capability probe. Friday never simulates streaming by repeatedly decoding growing prefixes with a final-only model.
 
-79. Friday indicates that transcription will produce final text after recording stops.
+79. Streaming preview uses a stable committed prefix and a visually distinct mutable tail. Revisions are scoped to session and generation; stale, canceled, or out-of-order revisions are ignored.
 
 80. When recording stops normally, Friday transitions from recording to transcribing.
 
-81. During transcription, Friday shows that transcription is in progress and prevents edits to the active recording session.
+81. During recording or finalization, Friday may show streaming preview in the capsule, but only the authoritative final result may enter delivery. Final-only models show recording/transcribing state without partial text.
 
 82. During transcription, Friday provides a Cancel action.
 
@@ -229,11 +232,11 @@ Figma: none provided
 
 100. For a silence-only recording, Friday shows a concise no-speech-detected message and returns to ready state.
 
-101. Friday handles very short accidental recordings by producing no paste unless a final nonempty transcript exists.
+101. Friday handles very short accidental recordings by stopping capture, deleting its audio, and producing no transcription, copy, paste, or error unless an explicit locked/manual session was started.
 
 102. Friday handles long recordings by showing continued recording/transcribing state and a Cancel action.
 
-103. Friday’s v1 maximum recording duration is exactly 10 minutes.
+103. Friday’s maximum recording duration is exactly 10 minutes.
 
 104. At 9:45 of an active recording, Friday warns the user that recording will stop automatically at 10:00; at 10:00, Friday stops recording, transcribes the captured audio, and explains that the 10-minute limit was reached.
 
@@ -301,27 +304,27 @@ Figma: none provided
 
 136. If a permission is revoked during an active session, Friday stops or degrades only the behavior that depends on that permission and explains what happened.
 
-137. Friday does not store transcript history in v1.
+137. Friday does not store transcript history.
 
 138. After paste or clipboard fallback completes, Friday returns to ready state and does not retain a browsable list of previous transcripts.
 
 139. Friday may show the most recent transcript only as the immediate result of the current session or until it is dismissed/replaced.
 
-140. Friday does not record system audio in v1.
+140. Friday does not record system audio.
 
-141. Friday does not record from multiple microphones at once in v1.
+141. Friday does not record from multiple microphones at once.
 
 142. Friday does not allow multiple simultaneous active models for a single recording.
 
-143. Friday does not transform, summarize, spell-correct beyond the selected model’s output, translate, or format transcripts with user prompts in v1.
+143. Friday does not transform, summarize, rewrite, translate, or format transcripts with user prompts. Any future deterministic inverse text normalization requires an explicit per-language product contract and user control.
 
-144. Friday does not pause media, mute other apps, or change system audio state in v1.
+144. Friday does not pause media, mute other apps, or change system audio state.
 
-145. Friday does not expose cloud model sign-in, cloud API keys, or cloud fallback in v1.
+145. Friday does not expose cloud model sign-in, cloud API keys, or cloud fallback.
 
-146. Friday does not imply that final-only Parakeet TDT v3 can produce live partial text.
+146. Friday does not imply that final-only Parakeet TDT v3 can produce live partial text and never labels a model streaming-capable until an installed-artifact runtime probe succeeds.
 
-147. Friday’s privacy copy states that dictation is local for v1 and that model downloads require network access.
+147. Friday’s privacy copy states that dictation is always local and that model downloads require network access.
 
 148. Friday’s privacy copy states whether model identifiers or download requests may be visible to model hosting providers when the user downloads a Hugging Face model.
 
@@ -340,3 +343,31 @@ Figma: none provided
 155. Friday presents one calm, native voice-instrument surface whose hierarchy remains clear in light, dark, high-contrast, and reduced-motion environments; color communicates live or exceptional state rather than decoration.
 
 156. Friday offers Parakeet CTC 1.1B as a known repository shortcut without weakening the consent, immutable-metadata, integrity, or local runtime-verification requirements for non-default Hugging Face models.
+
+157. Friday begins accepted hotkey capture within the existing 75 ms p95 budget and retains speech that begins immediately after hotkey-down; it does not use an always-on or pre-keydown microphone buffer.
+
+158. Friday treats an idle input-device change or wake as requiring capture-device revalidation before the next session. An active route loss, device removal, sleep, callback stall, or conversion failure stops capture, removes partial audio, and reports a generation-scoped recoverable interruption.
+
+159. Friday treats zero-length and sub-minimum captures as no speech. Speech detection is qualified against quiet speech, sparse speech, impulses, fan/keyboard noise, and long recordings rather than a single whole-file energy threshold.
+
+160. If the core/native event channel closes, rejects lifecycle traffic, or cannot deliver a terminal control event, Friday fails closed: the microphone stops, source capability and audio are discarded, and no transcript is delivered.
+
+161. Friday distinguishes **Ready — global shortcut active** from **Ready — manual recording only**. A recording begun while Friday itself is frontmost is explicitly clipboard-only and never guesses the previously focused app.
+
+162. The capsule announces recording, locked recording, transcribing, terminal copy/paste, and failures once through accessibility APIs without announcing timer or meter updates. Stop, Hide, and Cancel remain nonactivating and expose keyboard and VoiceOver actions.
+
+163. A streaming model is opt-in until a hash-pinned exact-path corpus shows that its final quality is no worse than the current default beyond declared thresholds and its first-partial latency, revision stability, tail latency, memory, energy, privacy, and long-session behavior pass release gates.
+
+164. Streaming ASR failure, unsupported capability, or bounded-queue saturation falls back to one local whole-file recognition of the authoritative retry audio. Friday never delivers an interim hypothesis as fallback final text.
+
+165. Partial transcript events have the neutral contract `partial(sessionId, generation, revision, stablePrefix, mutableTail)`, `final(sessionId, generation, text)`, and `cancelled(sessionId, generation)`. They are local, ephemeral, generation-safe, and contain no Jarvis/OpenCode semantics.
+
+166. Model quality claims are corpus-backed and capability-specific. Friday reports results by language/accent/noise slice and does not equate artifact size, repository labels, supported-language count, or successful runtime loading with transcription quality.
+
+167. Delivery is generation-scoped and cancellable through every irreversible boundary. Starting or canceling a newer session prevents an older session from mutating another app, even if the old core result would later be ignored.
+
+168. Every automatic insertion path verifies the captured process, launch identity, window, and editable element. If the original element cannot be restored and mutation cannot be proven against its before-state, Friday leaves final text on the clipboard instead of pasting into another field, tab, pane, or document in the same app.
+
+169. Friday never automatically inserts into a secure text or password field. It uses a clearly identified manual clipboard fallback without first attempting a blind synthetic paste.
+
+170. Clipboard preservation is transactional and bounded. Friday restores a complete supported snapshot only after confirmed insertion, never overwrites a newer user clipboard change, and reports restoration failure rather than claiming an unqualified paste success.
