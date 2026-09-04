@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/phall1/friday/blob/main/docs/arm64-release-evidence.schema.json",
+  "title": "Friday arm64 release GUI evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "recordedAt", "promotionReady", "candidate", "host", "checks", "externalBlockers"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 2 },
+    "kind": { "const": "FridayArm64ReleaseEvidence" },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "promotionReady": { "type": "boolean" },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestSha256", "source", "binarySha256", "dmgSha256"],
+      "properties": {
+        "manifestSha256": { "$ref": "#/$defs/nullableSha256" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["commit", "tag", "version"],
+          "properties": {
+            "commit": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "type": "null" }] },
+            "tag": { "type": ["string", "null"] },
+            "version": { "type": ["string", "null"] }
+          }
+        },
+        "binarySha256": { "$ref": "#/$defs/nullableSha256" },
+        "dmgSha256": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "processTranslated", "hardware", "os"],
+      "properties": {
+        "architecture": { "const": "arm64" },
+        "processTranslated": { "const": false },
+        "hardware": { "type": "string", "minLength": 1 },
+        "os": { "type": "string", "minLength": 1 }
+      }
+    },
+    "architectureEvidence": { "type": "object" },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quarantineLaunch", "externalHotkey", "overlayExternalPointer", "automaticInsertion", "permissionsRecovery", "unsupportedPlatforms", "accessibilityAppearance", "energy"],
+      "properties": {
+        "quarantineLaunch": { "$ref": "#/$defs/passCheck" },
+        "externalHotkey": { "$ref": "#/$defs/passCheck" },
+        "overlayExternalPointer": { "$ref": "#/$defs/passCheck" },
+        "permissionsRecovery": { "$ref": "#/$defs/passCheck" },
+        "accessibilityAppearance": { "$ref": "#/$defs/passCheck" },
+        "automaticInsertion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["textEdit", "terminal", "browser", "wrongAppFocusRefused", "clipboardFallbackTruthful", "evidence"],
+          "properties": {
+            "textEdit": { "type": "boolean" },
+            "terminal": { "type": "boolean" },
+            "browser": { "type": "boolean" },
+            "wrongAppFocusRefused": { "type": "boolean" },
+            "clipboardFallbackTruthful": { "type": "boolean" },
+            "evidence": { "type": ["string", "null"] }
+          }
+        },
+        "unsupportedPlatforms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["intel", "macos13", "evidence"],
+          "properties": {
+            "intel": { "type": "boolean" },
+            "macos13": { "type": "boolean" },
+            "evidence": { "type": ["string", "null"] }
+          }
+        },
+        "energy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["passed", "instrumentsTraceSha256", "evidence"],
+          "properties": {
+            "passed": { "type": "boolean" },
+            "instrumentsTraceSha256": { "$ref": "#/$defs/nullableSha256" },
+            "evidence": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "developmentObservations": { "type": "object" },
+    "externalBlockers": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "promotionReady": { "const": true } },
+        "required": ["promotionReady"]
+      },
+      "then": {
+        "properties": {
+          "candidate": {
+            "properties": {
+              "manifestSha256": { "$ref": "#/$defs/sha256" },
+              "source": {
+                "properties": {
+                  "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                  "tag": { "type": "string", "minLength": 1 },
+                  "version": { "type": "string", "minLength": 1 }
+                }
+              },
+              "binarySha256": { "$ref": "#/$defs/sha256" },
+              "dmgSha256": { "$ref": "#/$defs/sha256" }
+            }
+          },
+          "checks": {
+            "properties": {
+              "quarantineLaunch": { "$ref": "#/$defs/completedPassCheck" },
+              "externalHotkey": { "$ref": "#/$defs/completedPassCheck" },
+              "overlayExternalPointer": { "$ref": "#/$defs/completedPassCheck" },
+              "permissionsRecovery": { "$ref": "#/$defs/completedPassCheck" },
+              "accessibilityAppearance": { "$ref": "#/$defs/completedPassCheck" },
+              "automaticInsertion": {
+                "properties": {
+                  "textEdit": { "const": true },
+                  "terminal": { "const": true },
+                  "browser": { "const": true },
+                  "wrongAppFocusRefused": { "const": true },
+                  "clipboardFallbackTruthful": { "const": true },
+                  "evidence": { "type": "string", "minLength": 1 }
+                }
+              },
+              "unsupportedPlatforms": {
+                "properties": {
+                  "intel": { "const": true },
+                  "macos13": { "const": true },
+                  "evidence": { "type": "string", "minLength": 1 }
+                }
+              },
+              "energy": {
+                "properties": {
+                  "passed": { "const": true },
+                  "instrumentsTraceSha256": { "$ref": "#/$defs/sha256" },
+                  "evidence": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          "externalBlockers": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "passCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "evidence"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "evidence": { "type": ["string", "null"] }
+      }
+    },
+    "completedPassCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "evidence"],
+      "properties": {
+        "passed": { "const": true },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

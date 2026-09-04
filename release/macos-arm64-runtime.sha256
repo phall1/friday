@@ -1,0 +1,7 @@
+daf79cec8af12abf94d207236d9fb1558947396568d9be2691419cc04ef9d0bf  third_party/nemo-speech/lib/libnemo_speech_asr_c.1.dylib
+3a6b68f2f4cb9620e9131aff2a4570e283100cf48b22825323798b31feefb79f  third_party/nemo-speech/lib/libnemo_speech_asr.dylib
+e0566fb0b7bc5a4bc76ee7ee7217ce5622c4e21f4c89d52b082735ca785e7e14  third_party/nemo-speech/lib/libggml.0.dylib
+2cff3ca311fb7f4dbc86ab385ee0030ee38ae5e0aebb4445784f50114b224a3c  third_party/nemo-speech/lib/libggml-base.0.dylib
+89278408b33a60ca0ef46d4dc6b506ffa4ea45f618097ec194db22a3ae03a35f  third_party/nemo-speech/lib/libggml-blas.0.dylib
+f60a8569814f9fcdda5fb56aac1302840894c50ae0c3ab619505ddd6f71f67b8  third_party/nemo-speech/lib/libggml-cpu.0.dylib
+26bbb62453b8705d3344b50b029f012169e6925030093fc7d24f23f0823d2c25  third_party/nemo-speech/lib/libggml-metal.0.dylib

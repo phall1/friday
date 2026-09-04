@@ -17,7 +17,7 @@ A checked box means the exact artifact under release was observed. Do not infer 
 - [ ] **External blocker:** successful AX insertion into TextEdit, Terminal, and a browser field is not observed in a normal GUI session; truthful clipboard fallback is observed.
 - [ ] **External blocker:** Instruments Energy Log is not yet recorded for the release candidate.
 
-The strict release script must fail rather than produce a “release” when either credential is absent.
+The strict candidate builder must fail rather than produce a candidate when either credential is absent. A notarized candidate is still **not promotion-ready** until normal-GUI evidence matches its manifest, binary, and DMG hashes.
 
 ## One-time Apple credential setup
 
@@ -53,23 +53,27 @@ Never commit certificate exports, private keys, Apple IDs, app-specific password
 
 ## Source and dependency gate
 
-- [ ] Clean worktree at the intended conventional release commit.
+- [ ] Clean worktree at the intended conventional release commit; untracked files also fail the gate.
+- [ ] The expected `v<app-version>` tag exists and resolves to that exact full commit.
 - [ ] Version/changelog/specs/user guide describe the shipped behavior.
 - [ ] Node.js 24, Zig 0.16.0, Xcode/Command Line Tools, Native SDK 0.10.1 patch, NeMo 0.1.0, and default-model manifest pins match `specs/friday/TECH.md`.
 - [ ] Exact dependency install and patch verification pass:
 
 ```sh
-npm ci --ignore-scripts
-npx patch-package --error-on-fail
+EXPECTED_COMMIT="$(git rev-parse HEAD)"
+EXPECTED_TAG="v$(node -p "require('./app.json').version")"
+scripts/release-preflight.sh repository "$EXPECTED_COMMIT" "$EXPECTED_TAG"
 ```
+
+This fast repository check fails on a dirty/stale commit or tag, wrong Node/Zig/architecture, lock drift, model-pin drift, icon drift, or any mismatch against `release/macos-arm64-runtime.sha256`. The full candidate flow additionally runs `npm ci --ignore-scripts` and `npx patch-package --error-on-fail` before checks.
 
 - [ ] Core/markup/manifest check, build, and all tests pass:
 
 ```sh
-npm run check
-npm run build
-npm test
+scripts/release-preflight.sh source "$EXPECTED_COMMIT" "$EXPECTED_TAG"
 ```
+
+The source preflight runs `npm run check`, `npm run build`, `npm test`, the icon check, an automation build, and all twelve UI/accessibility/keyboard goldens. It writes an ignored, commit/tag-bound gate report only after every command passes and the worktree remains clean.
 
 - [ ] Canonical icon SVG and 1024×1024 PNG pass their pinned integrity check:
 
@@ -154,8 +158,14 @@ If a deterministic budget fails, optimize the implementation and rerun. Do not c
 Run only with the credentials above:
 
 ```sh
-scripts/release-macos.sh
+EXPECTED_COMMIT="$(git rev-parse HEAD)"
+EXPECTED_TAG="v$(node -p "require('./app.json').version")"
+scripts/release-macos.sh candidate \
+  --expected-commit "$EXPECTED_COMMIT" \
+  --expected-tag "$EXPECTED_TAG"
 ```
+
+`candidate` is the only credentialed phase. It runs the source gates, builds a team-signed automation sibling for packaged E2E, then replaces it with a production build before Developer ID signing and notarization. It writes `zig-out/package/Friday-<version>-arm64.release-manifest.json` and explicitly stops at `awaiting-gui-evidence`; it never publishes or claims promotion readiness.
 
 The script must perform and pass all of the following:
 
@@ -172,6 +182,7 @@ The script must perform and pass all of the following:
 - [ ] `file`, `lipo -archs`, and `otool -hv` report arm64 for the main Mach-O and every bundled dylib; no artifact contains an `x86_64` slice.
 - [ ] Submit the DMG with `notarytool --wait`, staple/validate it, and pass `spctl --assess --type open`.
 - [ ] Verify the bundle resources do not contain `signing=none` or “unsigned local package”.
+- [ ] Candidate manifest binds the exact source commit/tag/version, Node/Zig/Xcode toolchain, package lock, Native SDK patch, default-model revision/hash/size, NeMo archive and per-library hashes, automation validation binary, production binary, DMG, Developer ID authority/Team ID, timestamps, notarization, stapling, Gatekeeper, and every automated gate.
 
 Independent inspection commands:
 
@@ -190,6 +201,7 @@ spctl --assess --type open --verbose=4 zig-out/package/Friday-0.1.0-arm64.dmg
 Use the exact notarized candidate in a normal logged-in GUI session:
 
 - [ ] Launch from Applications after downloading the stapled DMG through a quarantine-applying path.
+- [ ] External CGEvent hold, release, and double-tap lock work in the normal logged-in GUI session.
 - [ ] External pointer clicks overlay Stop and Cancel while Friday remains inactive and the source app retains focus.
 - [ ] Automatic AX delivery succeeds into TextEdit, Terminal, and a browser text field; wrong-app focus is refused; clipboard fallback still reports truthfully.
 - [ ] Revoke/regrant Microphone, Input Monitoring, and Accessibility and observe live recovery without deleting grants afterward.
@@ -197,4 +209,32 @@ Use the exact notarized candidate in a normal logged-in GUI session:
 - [ ] Inspect settings/overlay in increased contrast and reduced transparency.
 - [ ] Capture Instruments Energy Log for idle menu-bar, recording, and warm five-second transcription.
 
-Record dates, OS/hardware, artifact SHA-256, pass/fail, and screenshots/logs where useful. These items remain blockers until observed; contract probes are not substitutes.
+Record dates, OS/hardware, artifact SHA-256, pass/fail, and screenshot/log/trace paths. These items remain blockers until observed; contract probes are not substitutes.
+
+## GUI evidence and promotion
+
+Use `docs/arm64-release-evidence.schema.json` for the normal-GUI record. `docs/arm64-release-evidence.json` is the prior development observation and intentionally has `promotionReady: false`; do not turn its unchecked fields into passes. Create a new evidence file for the notarized candidate and copy all bindings from the generated manifest:
+
+- SHA-256 of the candidate manifest file itself.
+- Source commit, tag, and version.
+- Production executable and DMG SHA-256.
+- Native arm64 host/OS and evidence references for every required interactive check.
+- SHA-256 of the Instruments trace.
+
+Every check must be observed against that exact candidate and set to `true`, `externalBlockers` must be empty, and only then may the record set `promotionReady: true`. Validate linkage without credentials:
+
+```sh
+MANIFEST="zig-out/package/Friday-0.1.0-arm64.release-manifest.json"
+EVIDENCE="/path/to/Friday-0.1.0-arm64.gui-evidence.json"
+scripts/release-preflight.sh verify-evidence "$MANIFEST" "$EVIDENCE"
+```
+
+Only the separate, read-only promotion check may print `PROMOTION READY`. It recomputes artifact/runtime hashes, rechecks the clean expected commit/tag, Developer ID signatures, notarization tickets, stapling, and Gatekeeper, then requires matching complete GUI evidence:
+
+```sh
+scripts/release-macos.sh promote \
+  --manifest "$MANIFEST" \
+  --gui-evidence "$EVIDENCE"
+```
+
+This command does not upload, notarize, tag, publish, or modify artifacts. Actual distribution remains a separate authorized action.

@@ -1,26 +1,38 @@
 {
-  "schemaVersion": 1,
+  "$schema": "./arm64-release-evidence.schema.json",
+  "schemaVersion": 2,
+  "kind": "FridayArm64ReleaseEvidence",
   "recordedAt": "2026-09-02T04:14:25Z",
+  "promotionReady": false,
+  "candidate": {
+    "manifestSha256": null,
+    "source": {
+      "commit": null,
+      "tag": null,
+      "version": "0.1.0"
+    },
+    "binarySha256": "e1fb5c63e11723fe73faf6e056d6e8fed29088b020914d8720de94c3578d14a9",
+    "dmgSha256": "fdb7dbb85160e3edf8f2c397ae48a35bdf6c97ebfcd39238c74d9dd1ee81bcc3"
+  },
   "host": {
     "architecture": "arm64",
     "processTranslated": false,
     "hardware": "Apple M1 Max",
     "os": "macOS 26.5"
   },
-  "target": "aarch64-macos",
-  "deploymentMinimum": "macOS 13.0 (unsupported-message launch only)",
-  "productMinimum": "macOS 14.0",
-  "mainExecutable": {
-    "path": "zig-out/package/Friday.app/Contents/MacOS/friday",
-    "file": "Mach-O 64-bit executable arm64",
-    "lipoArchitectures": ["arm64"],
-    "otoolCpuType": "ARM64",
-    "containsX86_64": false,
-    "sha256": "e1fb5c63e11723fe73faf6e056d6e8fed29088b020914d8720de94c3578d14a9"
-  },
-  "embeddedRuntime": {
-    "selection": "nemo-speech-0.1.0-macos-aarch64-metal",
-    "libraries": [
+  "architectureEvidence": {
+    "target": "aarch64-macos",
+    "deploymentMinimum": "macOS 13.0 (unsupported-message launch only)",
+    "productMinimum": "macOS 14.0",
+    "mainExecutable": {
+      "path": "zig-out/package/Friday.app/Contents/MacOS/friday",
+      "file": "Mach-O 64-bit executable arm64",
+      "lipoArchitectures": ["arm64"],
+      "otoolCpuType": "ARM64",
+      "containsX86_64": false
+    },
+    "runtimeSelection": "nemo-speech-0.1.0-macos-aarch64-metal",
+    "runtimeLibraries": [
       "libggml-base.0.dylib",
       "libggml-blas.0.dylib",
       "libggml-cpu.0.dylib",
@@ -28,19 +40,53 @@
       "libggml.0.dylib",
       "libnemo_speech_asr.dylib",
       "libnemo_speech_asr_c.1.dylib"
-    ],
-    "lipoArchitectures": ["arm64"],
-    "containsX86_64": false
+    ]
   },
-  "diskImage": {
-    "path": "zig-out/package/Friday-0.1.0-arm64.dmg",
-    "sha256": "fdb7dbb85160e3edf8f2c397ae48a35bdf6c97ebfcd39238c74d9dd1ee81bcc3",
-    "teamSignedDevelopmentArtifact": true,
-    "notarized": false
+  "checks": {
+    "quarantineLaunch": {
+      "passed": false,
+      "evidence": null
+    },
+    "externalHotkey": {
+      "passed": false,
+      "evidence": null
+    },
+    "overlayExternalPointer": {
+      "passed": false,
+      "evidence": null
+    },
+    "automaticInsertion": {
+      "textEdit": false,
+      "terminal": false,
+      "browser": false,
+      "wrongAppFocusRefused": false,
+      "clipboardFallbackTruthful": false,
+      "evidence": null
+    },
+    "permissionsRecovery": {
+      "passed": false,
+      "evidence": null
+    },
+    "unsupportedPlatforms": {
+      "intel": false,
+      "macos13": false,
+      "evidence": null
+    },
+    "accessibilityAppearance": {
+      "passed": false,
+      "evidence": null
+    },
+    "energy": {
+      "passed": false,
+      "instrumentsTraceSha256": null,
+      "evidence": null
+    }
   },
-  "installedDevelopmentVerification": {
-    "path": "/Applications/Friday.app",
-    "binarySha256MatchesCandidate": true,
+  "developmentObservations": {
+    "artifactKind": "team-signed development artifact",
+    "notarized": false,
+    "installedPath": "/Applications/Friday.app",
+    "binarySha256MatchedCandidate": true,
     "launchServicesRegistered": true,
     "controlCenterStatusItemCreated": true,
     "accessibilityStatusTitle": "F",
@@ -48,19 +94,9 @@
     "settingsReopenedFromStatusMenu": true,
     "quitCrashReportCreated": false
   },
-  "assertions": [
-    "file reports arm64 for the main executable and all seven embedded dylibs",
-    "lipo -archs reports exactly arm64 for the main executable and all seven embedded dylibs",
-    "otool -hv reports ARM64 for the main executable",
-    "sysctl.proc_translated is 0",
-    "codesign --verify --deep --strict passes for the app",
-    "codesign --verify --strict passes for the arm64 DMG",
-    "package resources contain no signing=none or unsigned-local-package claim",
-    "packaged executable contains only @executable_path/../Frameworks and no development-tree rpath",
-    "installed team-signed candidate exposes a visible F status item and reopens Settings after close",
-    "Friday-owned host, scripts, and tests contain no tracked .swift, .m, or .mm implementation"
-  ],
   "externalBlockers": [
-    "Developer ID Application and notary credentials are unavailable, so notarization is not claimed"
+    "This record predates provenance manifests and is not bound to a source commit or tag.",
+    "Developer ID Application and notary credentials were unavailable, so notarization is not claimed.",
+    "The exact notarized candidate still needs every normal-GUI check in this document."
   ]
 }
