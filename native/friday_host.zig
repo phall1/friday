@@ -1,5 +1,6 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
+const diagnostics_mod = @import("host/diagnostics.zig");
 const operations_mod = @import("host/operation_registry.zig");
 const artifacts_mod = @import("host/session_artifacts.zig");
 const audio_mod = @import("macos/audio.zig");
@@ -16,10 +17,8 @@ extern "c" var NSApplicationWillTerminateNotification: objc.Id;
 extern "c" var NSWindowDidChangeOcclusionStateNotification: objc.Id;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
-const completion_capacity = operations_mod.capacity;
 const result_capacity = operations_mod.result_capacity;
 const event_channel_key: u64 = 7001;
-const sample_capacity = 64;
 const lifecycle_poll_us: c_uint = 10_000;
 const lifecycle_handoff_timeout_ms: u64 = 1_000;
 
@@ -30,23 +29,8 @@ const AsyncKind = operations_mod.Kind;
 const AsyncStage = operations_mod.Stage;
 const Operation = operations_mod.Operation;
 const CancellationTicket = operations_mod.Cancellation;
-const CancellationCleanup = operations_mod.Cleanup;
 
 const LifecycleIdentity = struct { session: u64, generation: u64 };
-
-const Samples = struct {
-    values: [sample_capacity]u64 = @splat(0),
-    count: usize = 0,
-
-    fn append(self: *Samples, value: u64) void {
-        if (self.count == self.values.len) {
-            std.mem.copyForwards(u64, self.values[0 .. self.values.len - 1], self.values[1..]);
-            self.count -= 1;
-        }
-        self.values[self.count] = value;
-        self.count += 1;
-    }
-};
 
 pub const FridayHost = struct {
     allocator: std.mem.Allocator,
@@ -64,14 +48,12 @@ pub const FridayHost = struct {
     request_mutex: SpinMutex = .{},
     operation_registry: operations_mod.Registry,
     artifacts: artifacts_mod.Store,
+    diagnostics: diagnostics_mod.Recorder,
 
     channels: ?native_sdk.HostChannelBinding = null,
     event_handle: ?native_sdk.ChannelHandle = null,
     services: ?native_sdk.platform.PlatformServices = null,
     termination_observer: objc.Id = null,
-    metrics_mutex: SpinMutex = .{},
-    performance_output_path: ?[]u8 = null,
-    event_post_failures: u64 = 0,
     microphone_permission_probe_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     microphone_permission_probe_finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     lifecycle_thread: ?std.Thread = null,
@@ -85,19 +67,6 @@ pub const FridayHost = struct {
     current_audio_session: u64 = 0,
     current_audio_generation: u64 = 0,
 
-    last_inference_duration_ms: u64 = 0,
-    last_audio_duration_ms: u64 = 0,
-    last_error_code: [64]u8 = @splat(0),
-    last_error_code_len: usize = 0,
-    last_hotkey_received_at_ms: u64 = 0,
-    last_stop_requested_at_ms: u64 = 0,
-    last_resident_bytes: u64 = 0,
-    hotkey_to_first_sample_ms: Samples = .{},
-    stop_to_drain_ms: Samples = .{},
-    stop_to_text_ms: Samples = .{},
-    text_to_delivery_ms: Samples = .{},
-    dropped_frames: Samples = .{},
-
     scratch: [result_capacity]u8 = undefined,
 
     pub fn create(allocator: std.mem.Allocator, io: std.Io, app_data_dir: []const u8) !*FridayHost {
@@ -105,6 +74,12 @@ pub const FridayHost = struct {
         errdefer allocator.destroy(self);
         const directory = try allocator.dupe(u8, app_data_dir);
         errdefer allocator.free(directory);
+        const performance_output_path: ?[]const u8 = if (getenv("FRIDAY_AUTOMATION_METRICS_OUTPUT")) |path| blk: {
+            const value = std.mem.span(path);
+            break :blk if (value.len > 0) value else null;
+        } else null;
+        var diagnostics = try diagnostics_mod.Recorder.init(allocator, io, performance_output_path);
+        errdefer diagnostics.deinit();
         self.* = .{
             .allocator = allocator,
             .io = io,
@@ -117,13 +92,8 @@ pub const FridayHost = struct {
             .models = undefined,
             .operation_registry = operations_mod.Registry.init(allocator),
             .artifacts = artifacts_mod.Store.init(allocator),
+            .diagnostics = diagnostics,
         };
-
-        if (getenv("FRIDAY_AUTOMATION_METRICS_OUTPUT")) |path| {
-            const value = std.mem.span(path);
-            if (value.len > 0) self.performance_output_path = try allocator.dupe(u8, value);
-        }
-        errdefer if (self.performance_output_path) |path| allocator.free(path);
         self.delivery = try delivery_mod.TextDelivery.init(allocator);
         errdefer self.delivery.deinit();
         self.recognizer = try nemo_mod.NemoRecognizer.init(allocator);
@@ -177,8 +147,8 @@ pub const FridayHost = struct {
 
         self.artifacts.deinit();
         self.operation_registry.deinit();
+        self.diagnostics.deinit();
         self.allocator.free(self.data_directory);
-        if (self.performance_output_path) |path| self.allocator.free(path);
         self.allocator.destroy(self);
     }
 
@@ -309,7 +279,7 @@ pub const FridayHost = struct {
         if (std.mem.eql(u8, name, "friday.hotkey.configure")) return self.configureHotkey(payload, output);
         if (std.mem.eql(u8, name, "friday.hotkey.probe")) return self.input.writeSyntheticProbe(output) catch json.writeError(output, "hotkey_probe_failed", "The global shortcut probe failed.");
         if (std.mem.eql(u8, name, "friday.performance.mark_hotkey")) {
-            self.last_hotkey_received_at_ms = system.wallMs();
+            self.diagnostics.hotkeyReceived(system.wallMs());
             return copyResult(output, "{\"ok\":true,\"marked\":true}");
         }
         if (std.mem.eql(u8, name, "friday.source.capture")) return self.captureSource(output);
@@ -473,7 +443,7 @@ pub const FridayHost = struct {
         var delivery_bytes: [result_capacity]u8 = undefined;
         const started = system.wallMs();
         const delivery_length = self.delivery.deliverText(transcript.?, source.?, paste, self.services, &delivery_bytes) catch json.writeError(&delivery_bytes, "delivery_failed", "Friday could not deliver the transcript.");
-        self.appendPerformanceSample(&self.text_to_delivery_ms, system.wallMs() -| started);
+        self.diagnostics.deliveryCompleted(system.wallMs() -| started);
         const delivery_result = delivery_bytes[0..delivery_length];
         var writer = std.Io.Writer.fixed(output);
         writer.writeAll(delivery_result[0 .. delivery_result.len - 1]) catch return 0;
@@ -499,63 +469,15 @@ pub const FridayHost = struct {
         const permission_length = self.writePermissions(&permission_bytes);
         var version_buffer: [128]u8 = undefined;
         const app_version = system.copyAppVersion(&version_buffer);
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, model_bytes[0..model_length], .{}) catch null;
-        defer if (parsed) |*value| value.deinit();
-        const model = if (parsed) |*value| value.value.object else null;
-        var writer = std.Io.Writer.fixed(output);
-        try writer.writeAll("{\"ok\":true,\"appVersion\":");
-        try json.writeString(&writer, app_version);
-        try writer.writeAll(",\"nativeSdkVersion\":\"0.10.1\",\"nemoVersion\":\"0.1.0\",\"platform\":");
-        try writer.writeAll(platform_bytes[0..platform_length]);
-        try writer.writeAll(",\"permissions\":");
-        try writer.writeAll(permission_bytes[0..permission_length]);
-        try writer.print(",\"hotkeyRunning\":{s},\"sourceTargetsRetained\":{d},\"audio\":", .{ if (self.input.running()) "true" else "false", self.artifacts.retainedSourceCount() });
-        try writer.writeAll(audio_bytes[0..audio_length]);
-        try writer.writeAll(",\"modelReady\":");
-        try writeObjectField(&writer, model, "activeModelReady", .bool, "false");
-        try writer.writeAll(",\"activeModelName\":");
-        try writeObjectField(&writer, model, "activeModelName", .string, "\"\"");
-        try writer.writeAll(",\"activeModelLicense\":");
-        try writeObjectField(&writer, model, "activeModelLicense", .string, "\"\"");
-        try writer.writeAll(",\"activeModelBytes\":");
-        try writeObjectField(&writer, model, "activeModelBytes", .integer, "0");
-        try writer.writeAll(",\"managedModelBytes\":");
-        try writeObjectField(&writer, model, "managedBytes", .integer, "0");
-        try writer.print(",\"lastAudioDurationMs\":{d},\"lastInferenceDurationMs\":{d},\"performance\":", .{ self.last_audio_duration_ms, self.last_inference_duration_ms });
-        try self.writePerformanceObject(&writer);
-        try writer.writeAll(",\"lastErrorCode\":");
-        try json.writeString(&writer, self.last_error_code[0..self.last_error_code_len]);
-        try writer.writeAll(",\"transcriptIncluded\":false,\"audioIncluded\":false,\"rawPathsIncluded\":false}");
-        return writer.buffered().len;
-    }
-
-    fn writePerformanceObject(self: *FridayHost, writer: *std.Io.Writer) !void {
-        try writer.writeAll("{\"hotkeyToFirstSampleMs\":");
-        try writeSamples(writer, self.hotkey_to_first_sample_ms);
-        try writer.writeAll(",\"stopToDrainMs\":");
-        try writeSamples(writer, self.stop_to_drain_ms);
-        try writer.writeAll(",\"stopToTextMs\":");
-        try writeSamples(writer, self.stop_to_text_ms);
-        try writer.writeAll(",\"textToDeliveryMs\":");
-        try writeSamples(writer, self.text_to_delivery_ms);
-        try writer.writeAll(",\"droppedFrames\":");
-        try writeSamples(writer, self.dropped_frames);
-        try writer.print(",\"residentBytes\":{d},\"transcriptIncluded\":false,\"audioIncluded\":false,\"rawPathsIncluded\":false}}", .{self.last_resident_bytes});
-    }
-
-    fn appendPerformanceSample(self: *FridayHost, samples: *Samples, value: u64) void {
-        self.metrics_mutex.lock();
-        defer self.metrics_mutex.unlock();
-        samples.append(value);
-        self.writePerformanceSnapshotLocked();
-    }
-
-    fn writePerformanceSnapshotLocked(self: *FridayHost) void {
-        const path = self.performance_output_path orelse return;
-        var bytes: [16 * 1024]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&bytes);
-        self.writePerformanceObject(&writer) catch return;
-        std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = writer.buffered() }) catch {};
+        return self.diagnostics.write(.{
+            .app_version = app_version,
+            .platform = platform_bytes[0..platform_length],
+            .permissions = permission_bytes[0..permission_length],
+            .model = model_bytes[0..model_length],
+            .audio = audio_bytes[0..audio_length],
+            .hotkey_running = self.input.running(),
+            .source_targets_retained = self.artifacts.retainedSourceCount(),
+        }, output);
     }
 
     fn exportDiagnostics(self: *FridayHost, output: []u8) usize {
@@ -606,7 +528,7 @@ pub const FridayHost = struct {
                 const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
                 operation.session = identity.session;
                 operation.generation = identity.generation;
-                self.last_stop_requested_at_ms = system.wallMs();
+                self.diagnostics.stopRequested(system.wallMs());
                 self.audio.stopSession(operation.session, audioCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
             .transcribe_capture => {
@@ -926,7 +848,7 @@ pub const FridayHost = struct {
         const event = event_value.string;
         const at_ms = valueUnsigned(payload_value.object.get("atMs")) orelse 0;
         if (std.mem.eql(u8, event, "hotkey_down")) {
-            self.last_hotkey_received_at_ms = system.wallMs();
+            self.diagnostics.hotkeyReceived(system.wallMs());
             self.generation += 1;
             var source = self.delivery.captureFrontmostSource() catch return;
             if (valueString(payload_value.object.get("token"))) |token| if (token.len == source.token.len) @memcpy(&source.token, token);
@@ -1051,7 +973,7 @@ pub const FridayHost = struct {
             .accepted => true,
             .dropped_full, .dropped_oversized, .closed => {
                 self.mutex.lock();
-                self.event_post_failures += 1;
+                self.diagnostics.eventPostFailed();
                 self.event_handle = null;
                 self.mutex.unlock();
                 return false;
@@ -1170,19 +1092,7 @@ pub const FridayHost = struct {
     }
 
     fn updateTranscriptionState(self: *FridayHost, operation: *Operation, ok: bool, bytes: []const u8) void {
-        self.last_inference_duration_ms = json.unsignedValue(bytes, "latencyMs") orelse 0;
-        self.last_resident_bytes = json.unsignedValue(bytes, "residentBytes") orelse self.last_resident_bytes;
-        if (self.last_stop_requested_at_ms > 0) {
-            self.appendPerformanceSample(&self.stop_to_text_ms, system.wallMs() -| self.last_stop_requested_at_ms);
-            self.last_stop_requested_at_ms = 0;
-        }
-        const code = if (ok) "" else (json.stringAlloc(self.allocator, bytes, "code") catch null) orelse null;
-        defer if (code) |value| self.allocator.free(value);
-        self.last_error_code_len = 0;
-        if (code) |value| {
-            self.last_error_code_len = @min(value.len, self.last_error_code.len);
-            @memcpy(self.last_error_code[0..self.last_error_code_len], value[0..self.last_error_code_len]);
-        }
+        self.diagnostics.transcriptionCompleted(ok, bytes, system.wallMs());
         if (ok) {
             const silence = json.boolValue(bytes, "silence") orelse false;
             const text = json.stringAlloc(self.allocator, bytes, "text") catch null;
@@ -1255,14 +1165,7 @@ pub const FridayHost = struct {
         if (operation.kind == .audio_stop) {
             var output: [result_capacity]u8 = undefined;
             const length = json.addGeneration(&output, bytes, operation.generation) catch return self.finishError(operation, "serialization_failed", "The capture result could not be serialized.");
-            if (ok) {
-                self.last_audio_duration_ms = json.unsignedValue(bytes, "audioDurationMs") orelse 0;
-                const first = json.unsignedValue(bytes, "firstAudioAtMs") orelse 0;
-                if (self.last_hotkey_received_at_ms > 0 and first >= self.last_hotkey_received_at_ms and first - self.last_hotkey_received_at_ms < 10_000) self.appendPerformanceSample(&self.hotkey_to_first_sample_ms, first - self.last_hotkey_received_at_ms);
-                self.last_hotkey_received_at_ms = 0;
-                self.appendPerformanceSample(&self.stop_to_drain_ms, system.wallMs() -| self.last_stop_requested_at_ms);
-                self.appendPerformanceSample(&self.dropped_frames, json.unsignedValue(bytes, "droppedFrames") orelse 0);
-            }
+            if (ok) self.diagnostics.audioStopped(bytes, system.wallMs());
             self.finishOperation(operation, ok, output[0..length]);
             return;
         }
@@ -1443,6 +1346,26 @@ fn lifecycleMain(self: *FridayHost) void {
 /// App-extension lifecycle consumed by the stock Native SDK TypeScript runner.
 pub const Host = FridayHost;
 
+pub fn testExtension() !void {
+    try operations_mod.testContracts();
+    try artifacts_mod.testContracts();
+    try diagnostics_mod.testContracts();
+    const live = LifecycleSnapshot{ .active = true, .session = 31, .generation = 32, .deadline_ms = 0, .channel_live = true };
+    try std.testing.expect(!lifecycleMustAbort(live, 0, 100));
+    try std.testing.expect(!lifecycleMustAbort(live, 31, 100));
+    try std.testing.expect(lifecycleMustAbort(live, 32, 100));
+    var closed = live;
+    closed.channel_live = false;
+    try std.testing.expect(lifecycleMustAbort(closed, 0, 100));
+    var deadline = live;
+    deadline.deadline_ms = 500;
+    try std.testing.expect(!lifecycleMustAbort(deadline, 0, 499));
+    try std.testing.expect(lifecycleMustAbort(deadline, 0, 500));
+    var generation_zero = live;
+    generation_zero.generation = 0;
+    try std.testing.expect(!lifecycleMustAbort(generation_zero, 0, 1_000));
+}
+
 fn terminationObserverCallback(receiver: objc.Id, _: objc.Sel, _: objc.Id) callconv(.c) void {
     const host = objc.getPointerIvar(FridayHost, receiver, "fridayContext") orelse return;
     host.input.stop();
@@ -1491,69 +1414,10 @@ fn asyncKind(name: []const u8) ?AsyncKind {
     return null;
 }
 
-fn isLifecycleOperation(kind: AsyncKind) bool {
-    return switch (kind) {
-        .audio_start, .audio_stop, .audio_finish, .audio_retry, .transcribe_capture, .debug_fixture_delivery => true,
-        else => false,
-    };
-}
-
-fn cancellationCleanup(kind: AsyncKind, stage: AsyncStage, callback_retired: bool) CancellationCleanup {
-    if (callback_retired) return switch (kind) {
-        // A successful start owns a live capture after its request callback.
-        // Cancelling its queued completion must still turn the microphone off.
-        .audio_start => .{ .audio = true, .session_state = true },
-        else => .{},
-    };
-    return switch (kind) {
-        .hotkey_capture => .{ .input = true, .callback_suppressed = true },
-        .audio_start, .audio_stop => .{ .audio = true, .session_state = true },
-        .audio_finish => if (stage == .transcribing)
-            .{ .recognizer = true, .session_state = true }
-        else
-            .{ .audio = true, .session_state = true },
-        .audio_retry, .transcribe_capture => .{ .recognizer = true, .session_state = true },
-        .transcribe_path => .{ .recognizer = true },
-        .model_download, .model_resume, .model_resolve_hf, .model_download_hf, .model_add_hf => if (stage == .activating)
-            .{ .activation = true }
-        else
-            .{ .model = true },
-        .model_add_local, .model_select, .model_pick_local => if (stage == .activating)
-            .{ .activation = true }
-        else
-            .{ .model = true },
-        .debug_fixture_delivery => if (stage == .activating)
-            .{ .activation = true, .session_state = true }
-        else
-            .{ .recognizer = true, .session_state = true },
-        .debug_performance => if (stage == .activating) .{ .activation = true } else .{ .recognizer = true },
-        .nemo_unload, .debug_contracts => .{},
-    };
-}
-
 fn copyResult(output: []u8, bytes: []const u8) usize {
     if (bytes.len > output.len) return 0;
     @memcpy(output[0..bytes.len], bytes);
     return bytes.len;
-}
-
-fn writeSamples(writer: *std.Io.Writer, samples: Samples) !void {
-    try writer.writeByte('[');
-    for (samples.values[0..samples.count], 0..) |value, index| {
-        if (index > 0) try writer.writeByte(',');
-        try writer.print("{d}", .{value});
-    }
-    try writer.writeByte(']');
-}
-
-const ExpectedJsonKind = enum { bool, string, integer };
-fn writeObjectField(writer: *std.Io.Writer, object: ?std.json.ObjectMap, name: []const u8, expected: ExpectedJsonKind, fallback: []const u8) !void {
-    if (object) |map| if (map.get(name)) |value| switch (expected) {
-        .bool => if (value == .bool) return writer.writeAll(if (value.bool) "true" else "false"),
-        .string => if (value == .string) return json.writeString(writer, value.string),
-        .integer => if (value == .integer) return writer.print("{d}", .{value.integer}),
-    };
-    try writer.writeAll(fallback);
 }
 
 fn valueString(value: ?std.json.Value) ?[]const u8 {
@@ -1568,95 +1432,4 @@ fn valueUnsigned(value: ?std.json.Value) ?u64 {
         .float => |number| if (number >= 0) @intFromFloat(number) else null,
         else => null,
     };
-}
-
-fn operationTestHost() FridayHost {
-    var host: FridayHost = undefined;
-    host.allocator = std.testing.allocator;
-    host.mutex = .{};
-    host.operation_registry = operations_mod.Registry.init(std.testing.allocator);
-    host.services = null;
-    host.channels = null;
-    host.event_handle = null;
-    host.audio_generations = @splat(.{});
-    host.current_audio_session = 0;
-    host.current_audio_generation = 0;
-    host.lifecycle_thread = null;
-    host.lifecycle_stop = std.atomic.Value(bool).init(false);
-    host.lifecycle_abort_generation = std.atomic.Value(u64).init(0);
-    host.lifecycle_active = false;
-    host.lifecycle_deadline_ms = 0;
-    host.retired_lifecycle_generation = 0;
-    host.event_post_failures = 0;
-    host.microphone_permission_probe_active = std.atomic.Value(bool).init(false);
-    host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
-    return host;
-}
-
-test "lifecycle lease fails closed on channel loss explicit abort and expired handoff" {
-    const live = LifecycleSnapshot{ .active = true, .session = 31, .generation = 32, .deadline_ms = 0, .channel_live = true };
-    try std.testing.expect(!lifecycleMustAbort(live, 0, 100));
-    try std.testing.expect(!lifecycleMustAbort(live, 31, 100));
-    try std.testing.expect(lifecycleMustAbort(live, 32, 100));
-
-    var closed = live;
-    closed.channel_live = false;
-    try std.testing.expect(lifecycleMustAbort(closed, 0, 100));
-
-    var deadline = live;
-    deadline.deadline_ms = 500;
-    try std.testing.expect(!lifecycleMustAbort(deadline, 0, 499));
-    try std.testing.expect(lifecycleMustAbort(deadline, 0, 500));
-
-    var generation_zero = live;
-    generation_zero.generation = 0;
-    try std.testing.expect(!lifecycleMustAbort(generation_zero, 0, 1_000));
-}
-
-test "lifecycle completion queue rejection requests generation cleanup" {
-    var host = operationTestHost();
-    host.lifecycle_active = true;
-    host.current_audio_session = 44;
-    host.current_audio_generation = 45;
-    host.operation_registry.completion_count = operations_mod.capacity;
-    const operation = host.beginOperation(90, .audio_start).?;
-    operation.session = 44;
-    operation.generation = 45;
-
-    host.finishOperation(operation, true, "started");
-
-    try std.testing.expectEqual(@as(u64, 45), host.lifecycle_abort_generation.load(.acquire));
-    host.requestLifecycleAbort(44);
-    try std.testing.expectEqual(@as(u64, 45), host.lifecycle_abort_generation.load(.acquire));
-    try std.testing.expect(!operation.used);
-    try std.testing.expectEqual(@as(usize, 0), host.operation_registry.pending_count);
-}
-
-test "audio terminal events reject generation zero and stale identities" {
-    var host = operationTestHost();
-    try std.testing.expect(!FridayHost.audioEvent(&host, "audio_interrupted", "{\"sessionId\":0}"));
-
-    host.audio_generations[0] = .{ .used = true, .session = 70, .generation = 71 };
-    host.lifecycle_active = true;
-    host.current_audio_session = 80;
-    host.current_audio_generation = 81;
-    try std.testing.expect(!FridayHost.audioEvent(&host, "duration_limit", "{\"sessionId\":70}"));
-    try std.testing.expectEqual(@as(u64, 0), host.lifecycle_abort_generation.load(.acquire));
-    try std.testing.expectEqual(@as(u64, 0), host.lifecycle_deadline_ms);
-}
-
-test "microphone permission probe closes capture and schedules a refresh" {
-    var host: FridayHost = undefined;
-    host.mutex = .{};
-    host.services = null;
-    host.microphone_permission_probe_active = std.atomic.Value(bool).init(true);
-    host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
-
-    const result = FridayHost.microphonePermissionProbe(&host, 0, .{
-        .kind = .started,
-        .source = .microphone,
-        .format = .{ .sample_rate = 16_000, .channels = 1 },
-    });
-    try std.testing.expectEqual(native_sdk.AudioCapturePushResult.closed, result);
-    try std.testing.expect(host.microphone_permission_probe_finished.load(.acquire));
 }

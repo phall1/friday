@@ -117,16 +117,18 @@ index 0ec7a26..64390f6 100644
 
 diff --git a/node_modules/@native-sdk/cli/src/app_runner/no_extension.zig b/node_modules/@native-sdk/cli/src/app_runner/no_extension.zig
 new file mode 100644
-index 0000000..f0eb59e
+index 0000000..a0cab94
 --- /dev/null
 +++ b/node_modules/@native-sdk/cli/src/app_runner/no_extension.zig
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,19 @@
 +const std = @import("std");
 +const native_sdk = @import("native_sdk");
 +
 +/// The stock runner always owns one extension lifecycle. Apps without an
 +/// extension receive this no-op implementation, keeping optionality in the
 +/// build graph rather than in the runner's resource ordering.
++pub fn testExtension() !void {}
++
 +pub const Host = struct {
 +    pub fn create(_: std.mem.Allocator, _: std.Io, _: []const u8) !Host {
 +        return .{};
@@ -139,7 +141,7 @@ index 0000000..f0eb59e
 +    }
 +};
 diff --git a/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig b/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
-index cd98674..a2a3bb6 100644
+index cd98674..97f84b4 100644
 --- a/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
 +++ b/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
 @@ -67,6 +67,7 @@ const services = @import("services.zig");
@@ -150,7 +152,18 @@ index cd98674..a2a3bb6 100644
 
  pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
-@@ -149,6 +150,8 @@ pub fn main(init: std.process.Init) !void {
+@@ -89,6 +90,10 @@ pub fn appMarkup() []const u8 {
+     return @as([*]const u8, @ptrCast(&native_sdk_app_markup))[0..native_sdk_app_markup_len];
+ }
+
++test "app extension contracts" {
++    try app_extension.testExtension();
++}
++
+ const app_permissions = manifestStringList(manifest, "permissions");
+ const allowed_origins = manifestAllowedOrigins();
+ const app_data_dir_env = "NATIVE_SDK_APP_DATA_DIR";
+@@ -149,6 +154,8 @@ pub fn main(init: std.process.Init) !void {
          &data_dir_buffer,
      ) catch "";
      if (app_data_dir.len > 0) std.Io.Dir.cwd().createDirPath(init.io, app_data_dir) catch {};
@@ -159,7 +172,7 @@ index cd98674..a2a3bb6 100644
 
      // TypeScript services, on the build-selected carrier (service_carrier.zig).
      // In-process (explicit opt-in): the service archive is linked into this
-@@ -300,7 +303,7 @@ pub fn main(init: std.process.Init) !void {
+@@ -300,7 +307,7 @@ pub fn main(init: std.process.Init) !void {
          else if (comptime use_child)
              child_transport.binding()
          else

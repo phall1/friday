@@ -349,9 +349,12 @@ pub fn isLifecycleOperation(kind: Kind) bool {
     };
 }
 
-test "registry keeps cancellation completion and slot reuse exact" {
-    var registry = Registry.init(std.testing.allocator);
-    defer registry.deinit();
+fn contractRetirement() !void {
+    const registry = try testRegistry();
+    defer {
+        registry.deinit();
+        std.testing.allocator.destroy(registry);
+    }
     var context: u8 = 0;
     const operation = registry.begin(&context, 41, .audio_start).?;
     operation.session = 9;
@@ -367,13 +370,25 @@ test "registry keeps cancellation completion and slot reuse exact" {
     try std.testing.expect(registry.begin(&context, 41, .model_download) != null);
 }
 
-test "registry rejects oversized results rather than truncating JSON" {
-    var registry = Registry.init(std.testing.allocator);
-    defer registry.deinit();
+fn contractOversized() !void {
+    const registry = try testRegistry();
+    defer {
+        registry.deinit();
+        std.testing.allocator.destroy(registry);
+    }
     const oversized = try std.testing.allocator.alloc(u8, result_capacity + 1);
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'x');
     try std.testing.expect(!registry.enqueue(1, true, oversized));
+
+    registry.completion_count = capacity;
+    var context: u8 = 0;
+    const operation = registry.begin(&context, 2, .audio_start).?;
+    operation.session = 3;
+    operation.generation = 4;
+    const rejected = registry.finish(operation, true, "started");
+    try std.testing.expect(rejected.delivery_failed);
+    try std.testing.expect(!operation.used);
 }
 
 const CancellationStress = struct {
@@ -399,11 +414,14 @@ const CancellationStress = struct {
     }
 };
 
-test "concurrent cancellation completion and reallocation keep one owner" {
-    var registry = Registry.init(std.testing.allocator);
-    defer registry.deinit();
+fn contractConcurrentRetirement() !void {
+    const registry = try testRegistry();
+    defer {
+        registry.deinit();
+        std.testing.allocator.destroy(registry);
+    }
     var context: u8 = 0;
-    var stress = CancellationStress{ .registry = &registry };
+    var stress = CancellationStress{ .registry = registry };
     const worker = try std.Thread.spawn(.{}, CancellationStress.run, .{&stress});
     defer {
         stress.stop.store(true, .release);
@@ -430,4 +448,20 @@ test "concurrent cancellation completion and reallocation keep one owner" {
         try std.testing.expectEqual(@as(usize, 0), registry.pending_count);
         try std.testing.expectEqual(@as(usize, 0), registry.completion_count);
     }
+}
+
+fn testRegistry() !*Registry {
+    const registry = try std.testing.allocator.create(Registry);
+    registry.* = .{ .allocator = std.testing.allocator };
+    return registry;
+}
+
+pub fn testContracts() !void {
+    try contractRetirement();
+    try contractOversized();
+    try contractConcurrentRetirement();
+}
+
+test "operation registry contracts" {
+    try testContracts();
 }

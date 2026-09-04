@@ -247,7 +247,7 @@ pub const Store = struct {
     }
 };
 
-test "final delivery consumes exact generation once" {
+fn contractExactDelivery() !void {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
     var source = std.mem.zeroes(delivery.SourceTarget);
@@ -267,7 +267,7 @@ test "final delivery consumes exact generation once" {
     try std.testing.expect(stale.transcript == null);
 }
 
-test "new source makes an older token stale" {
+fn contractStaleSource() !void {
     var store = Store.init(std.testing.allocator);
     defer store.deinit();
     var first = std.mem.zeroes(delivery.SourceTarget);
@@ -278,4 +278,20 @@ test "new source makes an older token stale" {
     @memset(&second.token, 2);
     _ = try store.retainSource(second, 2);
     try std.testing.expect(store.takeCurrentSource(&old_token) == null);
+
+    store.bindAudio(70, 71);
+    try std.testing.expectEqual(@as(u64, 71), store.generationForAudio(70));
+    store.bindAudio(70, 81);
+    try std.testing.expectEqual(@as(u64, 81), store.generationForAudio(70));
+    store.discardSession(70, 81);
+    try std.testing.expectEqual(@as(u64, 0), store.generationForAudio(70));
+}
+
+pub fn testContracts() !void {
+    try contractExactDelivery();
+    try contractStaleSource();
+}
+
+test "session artifact contracts" {
+    try testContracts();
 }
