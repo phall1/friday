@@ -1,6 +1,10 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
+const objc = @import("objc.zig");
 const Spsc = @import("ring.zig").Spsc;
+
+extern "c" var NSWorkspaceDidWakeNotification: objc.Id;
+extern "c" var NSWorkspaceWillSleepNotification: objc.Id;
 
 const posix = @cImport({
     @cInclude("dirent.h");
@@ -274,6 +278,29 @@ const State = enum(u8) { idle, recording, limit_reached, failed };
 const Backend = enum(u8) { none, platform, core_audio };
 const Failure = enum(u8) { none, conversion, overflow, route, interruption, storage };
 
+const RouteSnapshot = struct {
+    device: c.AudioDeviceID,
+    sample_rate_bits: u64,
+    stream_hash: u64,
+    channels: u32,
+
+    fn eql(a: RouteSnapshot, b: RouteSnapshot) bool {
+        return a.device == b.device and
+            a.sample_rate_bits == b.sample_rate_bits and
+            a.stream_hash == b.stream_hash and
+            a.channels == b.channels;
+    }
+};
+
+const CoreAudioOps = struct {
+    query_route: *const fn (*AudioSession) anyerror!RouteSnapshot = queryCoreAudioRoute,
+    ready: *const fn (*AudioSession) bool = productionCoreAudioReady,
+    build: *const fn (*AudioSession, RouteSnapshot) anyerror!void = buildCoreAudio,
+    start: *const fn (*AudioSession) anyerror!void = startCoreAudioUnit,
+    stop: *const fn (*AudioSession) void = stopCoreAudioUnit,
+    dispose: *const fn (*AudioSession) void = disposeCoreAudioResources,
+};
+
 const SpinMutex = struct {
     inner: std.atomic.Mutex = .unlocked,
 
@@ -307,7 +334,6 @@ pub const AudioSession = struct {
     accepting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backend_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    route_changed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     failure: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(Failure.none)),
     conversion_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     frames: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -333,8 +359,19 @@ pub const AudioSession = struct {
     capture_buffer: []f32 = &.{},
     unit_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     device_id: c.AudioDeviceID = c.kAudioObjectUnknown,
+    route_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
+    active_route_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    forced_route_failure: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    prepared_route_generation: u64 = 0,
+    prepared_route: RouteSnapshot = .{ .device = c.kAudioObjectUnknown, .sample_rate_bits = 0, .stream_hash = 0, .channels = 0 },
+    last_core_audio_status: std.atomic.Value(i32) = std.atomic.Value(i32).init(c.noErr),
+    core_audio_ops: CoreAudioOps = .{},
+    core_audio_test_context: ?*anyopaque = null,
     system_listener: bool = false,
     device_listener: bool = false,
+    rate_listener: bool = false,
+    stream_listener: bool = false,
+    power_observer: objc.Id = null,
 
     pub fn init(allocator: std.mem.Allocator, data_dir: []const u8, sink: EventSink) !AudioSession {
         const joined = try std.fs.path.join(allocator, &.{ data_dir, "Audio" });
@@ -360,7 +397,19 @@ pub const AudioSession = struct {
         defer self.mutex.unlock();
         if (self.currentState() != .idle) return;
         self.direct_core_audio = true;
-        self.prepareCoreAudio() catch {};
+        self.installPowerObserver() catch {};
+        self.prepareCoreAudio() catch self.disposeCoreAudio();
+    }
+
+    /// Route notifications and wake require validation. Sleep additionally
+    /// forces the active generation to fail even if the route looks unchanged.
+    fn invalidateCoreAudioRoute(self: *AudioSession, force_failure: bool) void {
+        const state = self.currentState();
+        if (self.active_route_generation.load(.acquire) != 0 and (state == .recording or state == .limit_reached)) {
+            if (force_failure) self.forced_route_failure.store(true, .release);
+            self.accepting.store(false, .release);
+        }
+        _ = self.route_generation.fetchAdd(1, .acq_rel);
     }
 
     pub fn deinit(self: *AudioSession) void {
@@ -370,6 +419,7 @@ pub const AudioSession = struct {
         self.mutex.lock();
         self.joinWorker();
         self.disposeBackend();
+        self.removePowerObserver();
         self.closeFile();
         self.removeCurrent();
         self.discardRetryLocked();
@@ -441,28 +491,21 @@ pub const AudioSession = struct {
     }
 
     pub fn inputStatus(self: *AudioSession, output: []u8) !usize {
-        _ = self;
-        var device: c.AudioDeviceID = c.kAudioObjectUnknown;
-        var size: u32 = @sizeOf(c.AudioDeviceID);
-        var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
-        const status = c.AudioObjectGetPropertyData(c.kAudioObjectSystemObject, &address, 0, null, &size, &device);
         var rate: f64 = 0;
         var channels: u32 = 0;
         var device_name: [256]u8 = @splat(0);
         var name: []const u8 = "System default microphone";
-        if (status == c.noErr and device != c.kAudioObjectUnknown) {
-            address = .{ .mSelector = c.kAudioDevicePropertyNominalSampleRate, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
-            size = @sizeOf(f64);
-            _ = c.AudioObjectGetPropertyData(device, &address, 0, null, &size, &rate);
-            channels = inputChannels(device);
-            address = .{ .mSelector = c.kAudioObjectPropertyName, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+        if (self.core_audio_ops.query_route(self)) |route| {
+            rate = @bitCast(route.sample_rate_bits);
+            channels = route.channels;
+            var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioObjectPropertyName, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
             var cf_name: c.CFStringRef = null;
-            size = @sizeOf(c.CFStringRef);
-            if (c.AudioObjectGetPropertyData(device, &address, 0, null, &size, @ptrCast(&cf_name)) == c.noErr and cf_name != null) {
+            var size: u32 = @sizeOf(c.CFStringRef);
+            if (self.coreAudioStatusOk(c.AudioObjectGetPropertyData(route.device, &address, 0, null, &size, @ptrCast(&cf_name))) and size == @sizeOf(c.CFStringRef) and cf_name != null) {
                 if (c.CFStringGetCString(cf_name, &device_name, device_name.len, c.kCFStringEncodingUTF8) != 0) name = std.mem.sliceTo(device_name[0..], 0);
                 c.CFRelease(cf_name);
             }
-        }
+        } else |_| {}
         const available = channels > 0 and rate >= 8000 and rate <= 96_000;
         var detail_buffer: [160]u8 = undefined;
         const detail = if (available)
@@ -480,7 +523,10 @@ pub const AudioSession = struct {
         const expected: c.off_t = @intCast(maximum_storage_bytes);
         const storage_ok = fd >= 0 and c.ftruncate(fd, expected) == 0;
         var stat = std.mem.zeroes(c.struct_stat);
-        if (fd >= 0) { _ = c.fstat(fd, &stat); _ = c.close(fd); }
+        if (fd >= 0) {
+            _ = c.fstat(fd, &stat);
+            _ = c.close(fd);
+        }
         _ = c.unlink(@ptrCast(&path));
         var probe_ring = try Spsc.init(self.allocator, 4);
         defer probe_ring.deinit();
@@ -527,9 +573,15 @@ pub const AudioSession = struct {
         self.current_path[path.len] = 0;
         self.fd = c.open(@ptrCast(&self.current_path), c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
         if (self.fd < 0) return error.TemporaryStorageUnavailable;
-        errdefer { self.closeFile(); self.removeCurrent(); }
+        errdefer {
+            self.closeFile();
+            self.removeCurrent();
+        }
         self.ring = try Spsc.init(self.allocator, ring_capacity);
-        errdefer { if (self.ring) |*ring| ring.deinit(); self.ring = null; }
+        errdefer {
+            if (self.ring) |*ring| ring.deinit();
+            self.ring = null;
+        }
 
         self.session_id = session_id;
         self.started_at_ms = nowMs();
@@ -543,7 +595,8 @@ pub const AudioSession = struct {
         self.failure.store(@intFromEnum(Failure.none), .release);
         self.conversion_failed.store(false, .release);
         self.backend_failed.store(false, .release);
-        self.route_changed.store(false, .release);
+        self.active_route_generation.store(0, .release);
+        self.forced_route_failure.store(false, .release);
         self.stop_requested.store(false, .release);
         self.accepting.store(true, .release);
         self.state.store(@intFromEnum(State.recording), .release);
@@ -591,7 +644,12 @@ pub const AudioSession = struct {
         self.closeFile();
         if (!failed) {
             self.retry_path = self.allocator.dupeZ(u8, self.currentPath()) catch null;
-            if (self.retry_path == null) { self.removeCurrent(); self.resetBackendForNextSession(); self.state.store(@intFromEnum(State.idle), .release); return .{ .ok = false, .message = "Friday could not retain temporary audio for Retry." }; }
+            if (self.retry_path == null) {
+                self.removeCurrent();
+                self.resetBackendForNextSession();
+                self.state.store(@intFromEnum(State.idle), .release);
+                return .{ .ok = false, .message = "Friday could not retain temporary audio for Retry." };
+            }
         } else self.removeCurrent();
         const result = StopResult{
             .ok = !failed,
@@ -627,9 +685,12 @@ pub const AudioSession = struct {
         var converted: [callback_frames]f32 = undefined;
         while (true) {
             const ring = &(self.ring orelse return);
-            if (self.route_changed.load(.acquire)) return self.failWorker(.route);
+            if (self.coreAudioRouteIsStale()) return self.failWorker(.route);
             if (self.backend_failed.load(.acquire)) return self.failWorker(.interruption);
-            if (ring.dropped() != 0) { self.last_dropped.store(ring.dropped(), .release); return self.failWorker(.overflow); }
+            if (ring.dropped() != 0) {
+                self.last_dropped.store(ring.dropped(), .release);
+                return self.failWorker(.overflow);
+            }
             const count = ring.pop(&samples);
             if (count != 0) {
                 _ = self.first_audio_at_ms.cmpxchgStrong(0, nowMs(), .acq_rel, .acquire);
@@ -649,7 +710,7 @@ pub const AudioSession = struct {
         const converter = self.converter orelse return error.ConverterUnavailable;
         var input_list = monoList(@constCast(input.ptr), input.len);
         var output_list = monoList(output.ptr, output.len);
-        if (c.AudioConverterConvertComplexBuffer(converter, @intCast(input.len), &input_list, &output_list) != c.noErr)
+        if (!self.coreAudioStatusOk(c.AudioConverterConvertComplexBuffer(converter, @intCast(input.len), &input_list, &output_list)))
             return error.ConversionFailed;
         const output_frames = output_list.mBuffers[0].mDataByteSize / @sizeOf(f32);
         if (output_frames > output.len) return error.ConversionFailed;
@@ -665,7 +726,10 @@ pub const AudioSession = struct {
         self.frames.store(total, .release);
         var energy: f64 = 0;
         var peak: f32 = 0;
-        for (samples[0..count]) |value| { energy += @as(f64, value) * value; peak = @max(peak, @abs(value)); }
+        for (samples[0..count]) |value| {
+            energy += @as(f64, value) * value;
+            peak = @max(peak, @abs(value));
+        }
         const rms: f32 = @floatCast(@sqrt(energy / @as(f64, @floatFromInt(count))));
         const now = nowMs();
         if (now -| self.last_meter_at_ms >= meter_period_ms) {
@@ -673,7 +737,10 @@ pub const AudioSession = struct {
             const level: u8 = if (rms >= 0.08 or peak >= 0.35) 3 else if (rms >= 0.03 or peak >= 0.16) 2 else if (rms >= 0.008 or peak >= 0.05) 1 else 0;
             self.emit("audio_meter", .{ .sessionId = self.session_id, .capturedFrames = total, .elapsedMilliseconds = now -| self.started_at_ms, .level = level, .rmsMilli = @as(u32, @intFromFloat(@round(rms * 1000))), .peakMilli = @as(u32, @intFromFloat(@round(peak * 1000))) });
         }
-        if (!self.warned and total >= warning_frames) { self.warned = true; self.emit("duration_warning", .{ .sessionId = self.session_id, .capturedFrames = total }); }
+        if (!self.warned and total >= warning_frames) {
+            self.warned = true;
+            self.emit("duration_warning", .{ .sessionId = self.session_id, .capturedFrames = total });
+        }
         if (!self.limited and total >= maximum_frames) {
             self.limited = true;
             self.accepting.store(false, .release);
@@ -694,6 +761,19 @@ pub const AudioSession = struct {
         self.emit("audio_interrupted", .{ .sessionId = self.session_id, .reason = failureMessage(failure) });
     }
 
+    fn coreAudioRouteIsStale(self: *AudioSession) bool {
+        const active_route = self.active_route_generation.load(.acquire);
+        const current_route = self.route_generation.load(.acquire);
+        if (active_route == 0 or active_route == current_route) return false;
+        if (self.forced_route_failure.swap(false, .acq_rel)) return true;
+        const route = self.core_audio_ops.query_route(self) catch return true;
+        if (!self.prepared_route.eql(route)) return true;
+        if (current_route != self.route_generation.load(.acquire)) return false;
+        self.active_route_generation.store(current_route, .release);
+        self.accepting.store(true, .release);
+        return false;
+    }
+
     fn emit(self: *AudioSession, event: []const u8, payload: anytype) void {
         const json = std.json.Stringify.valueAlloc(self.allocator, payload, .{}) catch return;
         defer self.allocator.free(json);
@@ -701,41 +781,77 @@ pub const AudioSession = struct {
     }
 
     fn prepareCoreAudio(self: *AudioSession) !void {
-        if (self.unit != null and self.converter != null and self.capture_buffer.len != 0) return;
+        for (0..4) |_| {
+            const generation = self.route_generation.load(.acquire);
+            const route = try self.core_audio_ops.query_route(self);
+            if (self.core_audio_ops.ready(self) and
+                self.prepared_route_generation == generation and
+                self.prepared_route.eql(route)) return;
+
+            self.disposeCoreAudio();
+            self.core_audio_ops.build(self, route) catch |err| {
+                self.disposeCoreAudio();
+                return err;
+            };
+            if (generation != self.route_generation.load(.acquire)) {
+                self.disposeCoreAudio();
+                continue;
+            }
+            self.device_id = route.device;
+            self.prepared_route = route;
+            self.prepared_route_generation = generation;
+            return;
+        }
+        return error.AudioRouteUnstable;
+    }
+
+    fn buildCoreAudio(self: *AudioSession, route: RouteSnapshot) !void {
         var description = c.AudioComponentDescription{ .componentType = c.kAudioUnitType_Output, .componentSubType = c.kAudioUnitSubType_HALOutput, .componentManufacturer = c.kAudioUnitManufacturer_Apple, .componentFlags = 0, .componentFlagsMask = 0 };
         const component = c.AudioComponentFindNext(null, &description) orelse return error.AudioInputUnavailable;
-        if (c.AudioComponentInstanceNew(component, &self.unit) != c.noErr or self.unit == null) return error.AudioInputUnavailable;
-        errdefer self.disposeCoreAudio();
+        const instance_status = c.AudioComponentInstanceNew(component, &self.unit);
+        if (!self.coreAudioStatusOk(instance_status) or self.unit == null) return error.AudioInputUnavailable;
         var one: u32 = 1;
         var zero: u32 = 0;
-        if (c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_EnableIO, c.kAudioUnitScope_Input, 1, &one, @sizeOf(u32)) != c.noErr or c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_EnableIO, c.kAudioUnitScope_Output, 0, &zero, @sizeOf(u32)) != c.noErr) return error.AudioInputUnavailable;
-        var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
-        var size: u32 = @sizeOf(c.AudioDeviceID);
-        if (c.AudioObjectGetPropertyData(c.kAudioObjectSystemObject, &address, 0, null, &size, &self.device_id) != c.noErr) return error.AudioInputUnavailable;
-        _ = c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_CurrentDevice, c.kAudioUnitScope_Global, 0, &self.device_id, @sizeOf(c.AudioDeviceID));
+        if (!self.coreAudioStatusOk(c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_EnableIO, c.kAudioUnitScope_Input, 1, &one, @sizeOf(u32)))) return error.AudioInputUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_EnableIO, c.kAudioUnitScope_Output, 0, &zero, @sizeOf(u32)))) return error.AudioInputUnavailable;
+        self.device_id = route.device;
+        if (!self.coreAudioStatusOk(c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_CurrentDevice, c.kAudioUnitScope_Global, 0, &self.device_id, @sizeOf(c.AudioDeviceID)))) return error.AudioInputUnavailable;
         var format = floatFormat();
-        if (c.AudioUnitSetProperty(self.unit, c.kAudioUnitProperty_StreamFormat, c.kAudioUnitScope_Output, 1, &format, @sizeOf(c.AudioStreamBasicDescription)) != c.noErr) return error.UnconvertibleInputFormat;
+        if (!self.coreAudioStatusOk(c.AudioUnitSetProperty(self.unit, c.kAudioUnitProperty_StreamFormat, c.kAudioUnitScope_Output, 1, &format, @sizeOf(c.AudioStreamBasicDescription)))) return error.UnconvertibleInputFormat;
         self.capture_buffer = try self.allocator.alloc(f32, callback_frames);
         var callback = c.AURenderCallbackStruct{ .inputProc = coreAudioCallback, .inputProcRefCon = self };
-        if (c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_SetInputCallback, c.kAudioUnitScope_Global, 0, &callback, @sizeOf(c.AURenderCallbackStruct)) != c.noErr or c.AudioUnitInitialize(self.unit) != c.noErr) return error.AudioInputUnavailable;
-        if (c.AudioConverterNew(&format, &format, &self.converter) != c.noErr) return error.ConverterUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioUnitSetProperty(self.unit, c.kAudioOutputUnitProperty_SetInputCallback, c.kAudioUnitScope_Global, 0, &callback, @sizeOf(c.AURenderCallbackStruct)))) return error.AudioInputUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioUnitInitialize(self.unit))) return error.AudioInputUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioConverterNew(&format, &format, &self.converter))) return error.ConverterUnavailable;
         try self.addRouteListeners();
     }
 
     fn startCoreAudio(self: *AudioSession) !void {
+        if (self.direct_core_audio and self.power_observer == null) try self.installPowerObserver();
         try self.prepareCoreAudio();
-        const unit = self.unit orelse return error.AudioInputUnavailable;
-        if (c.AudioOutputUnitStart(unit) != c.noErr) return error.AudioInputUnavailable;
-        self.unit_running.store(true, .release);
+        const generation = self.prepared_route_generation;
+        self.active_route_generation.store(generation, .release);
+        if (generation != self.route_generation.load(.acquire)) {
+            self.active_route_generation.store(0, .release);
+            return error.AudioRouteUnstable;
+        }
+        self.core_audio_ops.start(self) catch |err| {
+            self.active_route_generation.store(0, .release);
+            return err;
+        };
+        if (generation != self.route_generation.load(.acquire)) {
+            self.core_audio_ops.stop(self);
+            self.active_route_generation.store(0, .release);
+            return error.AudioRouteUnstable;
+        }
     }
 
     fn stopBackend(self: *AudioSession) void {
         switch (self.backend) {
             .platform => if (self.services) |services| services.audioCaptureStop(.microphone) catch {},
             .core_audio => {
-                if (self.unit_running.swap(false, .acq_rel)) {
-                    if (self.unit) |unit| _ = c.AudioOutputUnitStop(unit);
-                }
+                self.core_audio_ops.stop(self);
+                self.active_route_generation.store(0, .release);
             },
             .none => {},
         }
@@ -755,37 +871,138 @@ pub const AudioSession = struct {
     fn disposeBackend(self: *AudioSession) void {
         self.stopBackend();
         self.disposeCoreAudio();
-        if (self.ring) |*ring| { self.last_dropped.store(ring.dropped(), .release); ring.deinit(); self.ring = null; }
+        if (self.ring) |*ring| {
+            self.last_dropped.store(ring.dropped(), .release);
+            ring.deinit();
+            self.ring = null;
+        }
         self.backend = .none;
     }
 
     fn disposeCoreAudio(self: *AudioSession) void {
-        self.removeRouteListeners();
-        if (self.unit) |unit| { _ = c.AudioUnitUninitialize(unit); _ = c.AudioComponentInstanceDispose(unit); self.unit = null; }
-        if (self.converter) |converter| { _ = c.AudioConverterDispose(converter); self.converter = null; }
-        if (self.capture_buffer.len != 0) { self.allocator.free(self.capture_buffer); self.capture_buffer = &.{}; }
+        self.active_route_generation.store(0, .release);
+        self.core_audio_ops.dispose(self);
+        self.prepared_route_generation = 0;
+        self.prepared_route = .{ .device = c.kAudioObjectUnknown, .sample_rate_bits = 0, .stream_hash = 0, .channels = 0 };
         self.device_id = c.kAudioObjectUnknown;
+    }
+
+    fn disposeCoreAudioResources(self: *AudioSession) void {
+        self.removeRouteListeners();
+        if (self.unit) |unit| {
+            _ = self.coreAudioStatusOk(c.AudioUnitUninitialize(unit));
+            _ = self.coreAudioStatusOk(c.AudioComponentInstanceDispose(unit));
+            self.unit = null;
+        }
+        if (self.converter) |converter| {
+            _ = self.coreAudioStatusOk(c.AudioConverterDispose(converter));
+            self.converter = null;
+        }
+        if (self.capture_buffer.len != 0) {
+            self.allocator.free(self.capture_buffer);
+            self.capture_buffer = &.{};
+        }
+        self.unit_running.store(false, .release);
     }
 
     fn addRouteListeners(self: *AudioSession) !void {
         var system = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
-        if (c.AudioObjectAddPropertyListener(c.kAudioObjectSystemObject, &system, routeListener, self) != c.noErr) return error.RouteMonitoringUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioObjectAddPropertyListener(c.kAudioObjectSystemObject, &system, routeListener, self))) return error.RouteMonitoringUnavailable;
         self.system_listener = true;
         var alive = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyDeviceIsAlive, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
-        if (c.AudioObjectAddPropertyListener(self.device_id, &alive, routeListener, self) != c.noErr) return error.RouteMonitoringUnavailable;
+        if (!self.coreAudioStatusOk(c.AudioObjectAddPropertyListener(self.device_id, &alive, routeListener, self))) return error.RouteMonitoringUnavailable;
         self.device_listener = true;
+        var rate = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyNominalSampleRate, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+        if (!self.coreAudioStatusOk(c.AudioObjectAddPropertyListener(self.device_id, &rate, routeListener, self))) return error.RouteMonitoringUnavailable;
+        self.rate_listener = true;
+        var stream = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyStreamConfiguration, .mScope = c.kAudioObjectPropertyScopeInput, .mElement = c.kAudioObjectPropertyElementMain };
+        if (!self.coreAudioStatusOk(c.AudioObjectAddPropertyListener(self.device_id, &stream, routeListener, self))) return error.RouteMonitoringUnavailable;
+        self.stream_listener = true;
     }
 
     fn removeRouteListeners(self: *AudioSession) void {
-        if (self.system_listener) { var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain }; _ = c.AudioObjectRemovePropertyListener(c.kAudioObjectSystemObject, &address, routeListener, self); self.system_listener = false; }
-        if (self.device_listener and self.device_id != c.kAudioObjectUnknown) { var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyDeviceIsAlive, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain }; _ = c.AudioObjectRemovePropertyListener(self.device_id, &address, routeListener, self); self.device_listener = false; }
+        if (self.system_listener) {
+            var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+            _ = self.coreAudioStatusOk(c.AudioObjectRemovePropertyListener(c.kAudioObjectSystemObject, &address, routeListener, self));
+            self.system_listener = false;
+        }
+        if (self.device_listener and self.device_id != c.kAudioObjectUnknown) {
+            var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyDeviceIsAlive, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+            _ = self.coreAudioStatusOk(c.AudioObjectRemovePropertyListener(self.device_id, &address, routeListener, self));
+            self.device_listener = false;
+        }
+        if (self.rate_listener and self.device_id != c.kAudioObjectUnknown) {
+            var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyNominalSampleRate, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+            _ = self.coreAudioStatusOk(c.AudioObjectRemovePropertyListener(self.device_id, &address, routeListener, self));
+            self.rate_listener = false;
+        }
+        if (self.stream_listener and self.device_id != c.kAudioObjectUnknown) {
+            var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyStreamConfiguration, .mScope = c.kAudioObjectPropertyScopeInput, .mElement = c.kAudioObjectPropertyElementMain };
+            _ = self.coreAudioStatusOk(c.AudioObjectRemovePropertyListener(self.device_id, &address, routeListener, self));
+            self.stream_listener = false;
+        }
     }
 
-    fn joinWorker(self: *AudioSession) void { if (self.worker) |thread| { thread.join(); self.worker = null; } }
-    fn closeFile(self: *AudioSession) void { if (self.fd >= 0) { _ = c.close(self.fd); self.fd = -1; } }
-    fn removeCurrent(self: *AudioSession) void { if (self.current_path_len != 0) { _ = c.unlink(@ptrCast(&self.current_path)); self.current_path_len = 0; self.current_path[0] = 0; } }
-    fn currentPath(self: *const AudioSession) []const u8 { return self.current_path[0..self.current_path_len]; }
-    fn discardRetryLocked(self: *AudioSession) void { if (self.retry_path) |path| { _ = c.unlink(path.ptr); self.allocator.free(path); self.retry_path = null; } }
+    fn coreAudioStatusOk(self: *AudioSession, status: c.OSStatus) bool {
+        if (status == c.noErr) return true;
+        self.last_core_audio_status.store(status, .release);
+        return false;
+    }
+
+    fn installPowerObserver(self: *AudioSession) !void {
+        if (self.power_observer != null) return;
+        const observer_class = ensureAudioPowerObserverClass() orelse return error.RouteMonitoringUnavailable;
+        const observer = objc.send0(objc.Id, observer_class, objc.selector("new"));
+        if (observer == null) return error.RouteMonitoringUnavailable;
+        errdefer objc.release(observer);
+        objc.setPointerIvar(observer, "fridayContext", self);
+        const workspace = objc.send0(objc.Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        const center = objc.send0(objc.Id, workspace, objc.selector("notificationCenter"));
+        if (center == null) return error.RouteMonitoringUnavailable;
+        objc.send4(void, objc.Id, objc.Sel, objc.Id, objc.Id, center, objc.selector("addObserver:selector:name:object:"), observer, objc.selector("fridayAudioWake:"), NSWorkspaceDidWakeNotification, null);
+        objc.send4(void, objc.Id, objc.Sel, objc.Id, objc.Id, center, objc.selector("addObserver:selector:name:object:"), observer, objc.selector("fridayAudioSleep:"), NSWorkspaceWillSleepNotification, null);
+        self.power_observer = observer;
+    }
+
+    fn removePowerObserver(self: *AudioSession) void {
+        const observer = self.power_observer orelse return;
+        const workspace = objc.send0(objc.Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
+        const center = objc.send0(objc.Id, workspace, objc.selector("notificationCenter"));
+        if (center != null) objc.send1(void, objc.Id, center, objc.selector("removeObserver:"), observer);
+        objc.setPointerIvar(observer, "fridayContext", null);
+        objc.release(observer);
+        self.power_observer = null;
+    }
+
+    fn joinWorker(self: *AudioSession) void {
+        if (self.worker) |thread| {
+            thread.join();
+            self.worker = null;
+        }
+    }
+    fn closeFile(self: *AudioSession) void {
+        if (self.fd >= 0) {
+            _ = c.close(self.fd);
+            self.fd = -1;
+        }
+    }
+    fn removeCurrent(self: *AudioSession) void {
+        if (self.current_path_len != 0) {
+            _ = c.unlink(@ptrCast(&self.current_path));
+            self.current_path_len = 0;
+            self.current_path[0] = 0;
+        }
+    }
+    fn currentPath(self: *const AudioSession) []const u8 {
+        return self.current_path[0..self.current_path_len];
+    }
+    fn discardRetryLocked(self: *AudioSession) void {
+        if (self.retry_path) |path| {
+            _ = c.unlink(path.ptr);
+            self.allocator.free(path);
+            self.retry_path = null;
+        }
+    }
 
     fn cleanupProbe(self: *AudioSession, name: []const u8) !bool {
         var path: [path_capacity]u8 = @splat(0);
@@ -799,6 +1016,73 @@ pub const AudioSession = struct {
     }
 };
 
+fn queryCoreAudioRoute(self: *AudioSession) !RouteSnapshot {
+    var device = c.kAudioObjectUnknown;
+    var size: u32 = @sizeOf(c.AudioDeviceID);
+    var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioHardwarePropertyDefaultInputDevice, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+    if (!self.coreAudioStatusOk(c.AudioObjectGetPropertyData(c.kAudioObjectSystemObject, &address, 0, null, &size, &device)) or size != @sizeOf(c.AudioDeviceID) or device == c.kAudioObjectUnknown)
+        return error.AudioInputUnavailable;
+
+    var alive: u32 = 0;
+    size = @sizeOf(u32);
+    address = .{ .mSelector = c.kAudioDevicePropertyDeviceIsAlive, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+    if (!self.coreAudioStatusOk(c.AudioObjectGetPropertyData(device, &address, 0, null, &size, &alive)) or size != @sizeOf(u32) or alive == 0)
+        return error.AudioInputUnavailable;
+
+    var rate: f64 = 0;
+    size = @sizeOf(f64);
+    address = .{ .mSelector = c.kAudioDevicePropertyNominalSampleRate, .mScope = c.kAudioObjectPropertyScopeGlobal, .mElement = c.kAudioObjectPropertyElementMain };
+    if (!self.coreAudioStatusOk(c.AudioObjectGetPropertyData(device, &address, 0, null, &size, &rate)) or size != @sizeOf(f64) or !std.math.isFinite(rate) or rate < 8000 or rate > 384_000)
+        return error.UnconvertibleInputFormat;
+
+    address = .{ .mSelector = c.kAudioDevicePropertyStreamConfiguration, .mScope = c.kAudioObjectPropertyScopeInput, .mElement = c.kAudioObjectPropertyElementMain };
+    size = 0;
+    if (!self.coreAudioStatusOk(c.AudioObjectGetPropertyDataSize(device, &address, 0, null, &size)) or size == 0 or size > 4096)
+        return error.UnconvertibleInputFormat;
+    var bytes: [4096]u8 align(@alignOf(c.AudioBufferList)) = @splat(0);
+    if (!self.coreAudioStatusOk(c.AudioObjectGetPropertyData(device, &address, 0, null, &size, &bytes)) or size == 0 or size > bytes.len)
+        return error.UnconvertibleInputFormat;
+    const stream = streamConfiguration(bytes[0..size]) orelse return error.UnconvertibleInputFormat;
+    if (stream.channels == 0) return error.UnconvertibleInputFormat;
+    return .{
+        .device = device,
+        .sample_rate_bits = @bitCast(rate),
+        .stream_hash = stream.hash,
+        .channels = stream.channels,
+    };
+}
+
+fn productionCoreAudioReady(self: *AudioSession) bool {
+    return self.unit != null and self.converter != null and self.capture_buffer.len != 0;
+}
+
+fn buildCoreAudio(self: *AudioSession, route: RouteSnapshot) !void {
+    return self.buildCoreAudio(route);
+}
+
+fn startCoreAudioUnit(self: *AudioSession) !void {
+    const unit = self.unit orelse return error.AudioInputUnavailable;
+    if (!self.coreAudioStatusOk(c.AudioOutputUnitStart(unit))) return error.AudioInputUnavailable;
+    self.unit_running.store(true, .release);
+}
+
+fn stopCoreAudioUnit(self: *AudioSession) void {
+    if (!self.unit_running.load(.acquire)) return;
+    const unit = self.unit orelse {
+        self.unit_running.store(false, .release);
+        return;
+    };
+    if (self.coreAudioStatusOk(c.AudioOutputUnitStop(unit))) {
+        self.unit_running.store(false, .release);
+    } else {
+        self.backend_failed.store(true, .release);
+    }
+}
+
+fn disposeCoreAudioResources(self: *AudioSession) void {
+    self.disposeCoreAudioResources();
+}
+
 const StartTask = struct { self: *AudioSession, session_id: u64, completion: AsyncCompletion };
 const StopTask = struct { self: *AudioSession, session_id: u64, completion: AsyncCompletion };
 const StartResult = struct { session_id: u64, started_at_ms: u64 };
@@ -806,7 +1090,10 @@ const StopResult = struct { ok: bool, audio_path: []const u8 = "", frames: u64 =
 
 fn startTask(task: *StartTask) void {
     const self = task.self;
-    defer { _ = self.async_count.fetchSub(1, .acq_rel); self.allocator.destroy(task); }
+    defer {
+        _ = self.async_count.fetchSub(1, .acq_rel);
+        self.allocator.destroy(task);
+    }
     self.mutex.lock();
     const result = self.startLocked(task.session_id);
     self.mutex.unlock();
@@ -815,7 +1102,10 @@ fn startTask(task: *StartTask) void {
 
 fn stopTask(task: *StopTask) void {
     const self = task.self;
-    defer { _ = self.async_count.fetchSub(1, .acq_rel); self.allocator.destroy(task); }
+    defer {
+        _ = self.async_count.fetchSub(1, .acq_rel);
+        self.allocator.destroy(task);
+    }
     self.mutex.lock();
     const result = self.stopLocked(task.session_id);
     self.mutex.unlock();
@@ -828,10 +1118,18 @@ fn platformCapturePush(context: ?*anyopaque, generation: u64, event: native_sdk.
     if (generation != self.session_id or !self.accepting.load(.acquire)) return .closed;
     switch (event.kind) {
         .started => return .accepted,
-        .failed => { self.backend_failed.store(true, .release); self.accepting.store(false, .release); return .accepted; },
+        .failed => {
+            self.backend_failed.store(true, .release);
+            self.accepting.store(false, .release);
+            return .accepted;
+        },
         .data => {},
     }
-    if (event.format.sample_rate != 16_000 or event.format.channels != 1 or event.pcm_s16le.len != @as(usize, event.frames) * 2) { self.backend_failed.store(true, .release); self.accepting.store(false, .release); return .dropped_oversized; }
+    if (event.format.sample_rate != 16_000 or event.format.channels != 1 or event.pcm_s16le.len != @as(usize, event.frames) * 2) {
+        self.backend_failed.store(true, .release);
+        self.accepting.store(false, .release);
+        return .dropped_oversized;
+    }
     var converted: [320]f32 = undefined;
     var offset: usize = 0;
     var accepted = true;
@@ -849,23 +1147,56 @@ fn platformCapturePush(context: ?*anyopaque, generation: u64, event: native_sdk.
 }
 
 fn coreAudioCallback(context: ?*anyopaque, flags: [*c]c.AudioUnitRenderActionFlags, timestamp: ?*const c.AudioTimeStamp, bus: u32, frames: u32, ignored: [*c]c.AudioBufferList) callconv(.c) c.OSStatus {
-    _ = bus; _ = ignored;
+    _ = bus;
+    _ = ignored;
     const self: *AudioSession = @ptrCast(@alignCast(context orelse return c.noErr));
     if (!self.accepting.load(.acquire)) return c.noErr;
-    if (frames > self.capture_buffer.len) { if (self.ring) |*ring| _ = ring.dropped_frames.fetchAdd(frames, .monotonic); return c.noErr; }
+    if (frames > self.capture_buffer.len) {
+        if (self.ring) |*ring| _ = ring.dropped_frames.fetchAdd(frames, .monotonic);
+        return c.noErr;
+    }
     var list = monoList(self.capture_buffer.ptr, frames);
     const status = c.AudioUnitRender(self.unit, flags, timestamp, 1, frames, &list);
-    if (status != c.noErr) { self.backend_failed.store(true, .release); self.accepting.store(false, .release); return status; }
+    if (status != c.noErr) {
+        self.last_core_audio_status.store(status, .release);
+        self.backend_failed.store(true, .release);
+        self.accepting.store(false, .release);
+        return status;
+    }
     if (self.ring) |*ring| _ = ring.push(self.capture_buffer[0..frames]);
     return c.noErr;
 }
 
 fn routeListener(object: c.AudioObjectID, count: u32, addresses: [*c]const c.AudioObjectPropertyAddress, context: ?*anyopaque) callconv(.c) c.OSStatus {
-    _ = object; _ = count; _ = addresses;
     const self: *AudioSession = @ptrCast(@alignCast(context orelse return c.noErr));
-    self.route_changed.store(true, .release);
-    self.accepting.store(false, .release);
+    _ = object;
+    var relevant = false;
+    for (addresses[0..count]) |address| {
+        relevant = relevant or address.mSelector == c.kAudioHardwarePropertyDefaultInputDevice or
+            address.mSelector == c.kAudioDevicePropertyDeviceIsAlive or
+            address.mSelector == c.kAudioDevicePropertyNominalSampleRate or
+            address.mSelector == c.kAudioDevicePropertyStreamConfiguration;
+    }
+    if (relevant) self.invalidateCoreAudioRoute(false);
     return c.noErr;
+}
+
+fn audioObserverWake(receiver: objc.Id, _: objc.Sel, _: objc.Id) callconv(.c) void {
+    if (objc.getPointerIvar(AudioSession, receiver, "fridayContext")) |self| self.invalidateCoreAudioRoute(false);
+}
+
+fn audioObserverSleep(receiver: objc.Id, _: objc.Sel, _: objc.Id) callconv(.c) void {
+    if (objc.getPointerIvar(AudioSession, receiver, "fridayContext")) |self| self.invalidateCoreAudioRoute(true);
+}
+
+fn ensureAudioPowerObserverClass() objc.Class {
+    if (objc.lookupClass("FridayZigAudioPowerObserver")) |existing| return existing;
+    const cls = objc.allocateClassPair(objc.class("NSObject"), "FridayZigAudioPowerObserver") orelse return null;
+    if (!objc.addPointerIvar(cls, "fridayContext")) return null;
+    _ = objc.addMethod(cls, objc.selector("fridayAudioWake:"), &audioObserverWake, "v@:@");
+    _ = objc.addMethod(cls, objc.selector("fridayAudioSleep:"), &audioObserverSleep, "v@:@");
+    objc.registerClassPair(cls);
+    return cls;
 }
 
 fn monoList(samples: [*]f32, frames: usize) c.AudioBufferList {
@@ -879,17 +1210,25 @@ fn floatFormat() c.AudioStreamBasicDescription {
     return .{ .mSampleRate = 16_000, .mFormatID = c.kAudioFormatLinearPCM, .mFormatFlags = c.kAudioFormatFlagIsFloat | c.kAudioFormatFlagIsPacked | c.kAudioFormatFlagsNativeEndian, .mBytesPerPacket = 4, .mFramesPerPacket = 1, .mBytesPerFrame = 4, .mChannelsPerFrame = 1, .mBitsPerChannel = 32, .mReserved = 0 };
 }
 
-fn inputChannels(device: c.AudioDeviceID) u32 {
-    var address = c.AudioObjectPropertyAddress{ .mSelector = c.kAudioDevicePropertyStreamConfiguration, .mScope = c.kAudioObjectPropertyScopeInput, .mElement = c.kAudioObjectPropertyElementMain };
-    var size: u32 = 0;
-    if (c.AudioObjectGetPropertyDataSize(device, &address, 0, null, &size) != c.noErr or size == 0 or size > 4096) return 0;
-    var bytes: [4096]u8 align(@alignOf(c.AudioBufferList)) = @splat(0);
-    if (c.AudioObjectGetPropertyData(device, &address, 0, null, &size, &bytes) != c.noErr) return 0;
-    const list: *const c.AudioBufferList = @ptrCast(&bytes);
+const StreamConfiguration = struct { channels: u32, hash: u64 };
+
+fn streamConfiguration(bytes: []align(@alignOf(c.AudioBufferList)) const u8) ?StreamConfiguration {
+    if (bytes.len < @offsetOf(c.AudioBufferList, "mBuffers")) return null;
+    const list: *const c.AudioBufferList = @ptrCast(bytes.ptr);
+    const buffer_offset = @offsetOf(c.AudioBufferList, "mBuffers");
+    const available_buffers = (bytes.len - buffer_offset) / @sizeOf(c.AudioBuffer);
+    if (list.mNumberBuffers > available_buffers) return null;
     const buffers: [*]const c.AudioBuffer = @ptrCast(&list.mBuffers);
-    var result: u32 = 0;
-    for (buffers[0..list.mNumberBuffers]) |buffer| result += buffer.mNumberChannels;
-    return result;
+    var channels: u32 = 0;
+    var hasher = std.hash.Wyhash.init(0);
+    const buffer_count = list.mNumberBuffers;
+    hasher.update(std.mem.asBytes(&buffer_count));
+    for (buffers[0..buffer_count]) |buffer| {
+        channels += buffer.mNumberChannels;
+        const buffer_shape = [2]u32{ buffer.mNumberChannels, buffer.mDataByteSize };
+        hasher.update(std.mem.sliceAsBytes(&buffer_shape));
+    }
+    return .{ .channels = channels, .hash = hasher.final() };
 }
 
 fn writeAll(fd: c_int, bytes: []const u8) !void {
@@ -940,9 +1279,225 @@ fn sweep(directory: [:0]const u8) void {
     }
 }
 
-fn noFollow() c_int { return if (@hasDecl(c, "O_NOFOLLOW")) c.O_NOFOLLOW else 0; }
-fn startError(err: anyerror) []const u8 { return switch (err) { error.AlreadyRecording => "A recording is already active.", error.TemporaryStorageUnavailable, error.NameTooLong => "Friday could not create temporary audio storage.", error.UnconvertibleInputFormat => "The microphone format cannot be converted safely.", error.ConverterUnavailable => "Friday could not create the audio converter.", error.RouteMonitoringUnavailable => "Friday could not monitor microphone route changes.", error.SessionClosing => "The audio session is closing.", else => "Friday could not start microphone capture." }; }
-fn failureMessage(failure: Failure) []const u8 { return switch (failure) { .conversion => "Audio conversion failed.", .overflow => "Audio input overflowed; recording was stopped.", .route => "The microphone route changed during recording.", .interruption => "Microphone capture was interrupted.", .storage => "Temporary audio storage failed.", .none => "Audio capture failed." }; }
+fn noFollow() c_int {
+    return if (@hasDecl(c, "O_NOFOLLOW")) c.O_NOFOLLOW else 0;
+}
+fn startError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AlreadyRecording => "A recording is already active.",
+        error.TemporaryStorageUnavailable, error.NameTooLong => "Friday could not create temporary audio storage.",
+        error.UnconvertibleInputFormat => "The microphone format cannot be converted safely.",
+        error.ConverterUnavailable => "Friday could not create the audio converter.",
+        error.RouteMonitoringUnavailable => "Friday could not monitor microphone route changes.",
+        error.SessionClosing => "The audio session is closing.",
+        else => "Friday could not start microphone capture.",
+    };
+}
+fn failureMessage(failure: Failure) []const u8 {
+    return switch (failure) {
+        .conversion => "Audio conversion failed.",
+        .overflow => "Audio input overflowed; recording was stopped.",
+        .route => "The microphone route changed during recording.",
+        .interruption => "Microphone capture was interrupted.",
+        .storage => "Temporary audio storage failed.",
+        .none => "Audio capture failed.",
+    };
+}
+
+const TestCoreAudio = struct {
+    route: RouteSnapshot = testRoute(10, 48_000, 1),
+    built: bool = false,
+    running: bool = false,
+    bind_failure: bool = false,
+    bound_device: c.AudioDeviceID = c.kAudioObjectUnknown,
+    builds: usize = 0,
+    disposals: usize = 0,
+    starts: usize = 0,
+    stops: usize = 0,
+
+    fn from(session: *AudioSession) *TestCoreAudio {
+        return @ptrCast(@alignCast(session.core_audio_test_context.?));
+    }
+
+    fn query(session: *AudioSession) anyerror!RouteSnapshot {
+        return from(session).route;
+    }
+
+    fn ready(session: *AudioSession) bool {
+        return from(session).built;
+    }
+
+    fn build(session: *AudioSession, route: RouteSnapshot) anyerror!void {
+        const self = from(session);
+        self.builds += 1;
+        if (self.bind_failure) return error.AudioInputUnavailable;
+        self.bound_device = route.device;
+        self.built = true;
+    }
+
+    fn start(session: *AudioSession) anyerror!void {
+        const self = from(session);
+        if (!self.built) return error.AudioInputUnavailable;
+        self.starts += 1;
+        self.running = true;
+    }
+
+    fn stop(session: *AudioSession) void {
+        const self = from(session);
+        if (!self.running) return;
+        self.stops += 1;
+        self.running = false;
+    }
+
+    fn dispose(session: *AudioSession) void {
+        const self = from(session);
+        if (!self.built and !self.running) return;
+        self.disposals += 1;
+        self.built = false;
+        self.running = false;
+        self.bound_device = c.kAudioObjectUnknown;
+    }
+
+    fn ops() CoreAudioOps {
+        return .{ .query_route = query, .ready = ready, .build = build, .start = start, .stop = stop, .dispose = dispose };
+    }
+};
+
+const TestEventLog = struct {
+    count: usize = 0,
+    event_len: usize = 0,
+    payload_len: usize = 0,
+    event: [64]u8 = undefined,
+    payload: [512]u8 = undefined,
+
+    fn emit(context: *anyopaque, event: []const u8, payload: []const u8) void {
+        const self: *TestEventLog = @ptrCast(@alignCast(context));
+        self.count += 1;
+        self.event_len = @min(event.len, self.event.len);
+        self.payload_len = @min(payload.len, self.payload.len);
+        @memcpy(self.event[0..self.event_len], event[0..self.event_len]);
+        @memcpy(self.payload[0..self.payload_len], payload[0..self.payload_len]);
+    }
+};
+
+fn testRoute(device: c.AudioDeviceID, rate: f64, stream_hash: u64) RouteSnapshot {
+    return .{ .device = device, .sample_rate_bits = @bitCast(rate), .stream_hash = stream_hash, .channels = 1 };
+}
+
+fn initTestCoreAudioSession(fake: *TestCoreAudio, log: *TestEventLog) !AudioSession {
+    return .{
+        .allocator = std.testing.allocator,
+        .sink = .{ .context = log, .emit = TestEventLog.emit },
+        .audio_dir = try std.testing.allocator.dupeZ(u8, "/tmp"),
+        .core_audio_ops = TestCoreAudio.ops(),
+        .core_audio_test_context = fake,
+    };
+}
+
+fn deinitTestCoreAudioSession(session: *AudioSession) void {
+    session.disposeBackend();
+    std.testing.allocator.free(session.audio_dir);
+}
+
+test "idle default input A to B rebuilds and starts only B" {
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.prepareCoreAudio();
+    try std.testing.expectEqual(@as(c.AudioDeviceID, 10), fake.bound_device);
+    fake.route = testRoute(20, 44_100, 2);
+    session.invalidateCoreAudioRoute(false);
+    try session.startCoreAudio();
+
+    try std.testing.expectEqual(@as(usize, 2), fake.builds);
+    try std.testing.expectEqual(@as(usize, 1), fake.disposals);
+    try std.testing.expectEqual(@as(usize, 1), fake.starts);
+    try std.testing.expectEqual(@as(c.AudioDeviceID, 20), fake.bound_device);
+    try std.testing.expectEqual(session.route_generation.load(.acquire), session.active_route_generation.load(.acquire));
+}
+
+test "active route loss fails the generation and removes partial audio" {
+    const path: [:0]const u8 = "/tmp/friday-coreaudio-route-loss-test.f32";
+    _ = c.unlink(path.ptr);
+    defer _ = c.unlink(path.ptr);
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.startCoreAudio();
+    session.backend = .core_audio;
+    session.ring = try Spsc.init(std.testing.allocator, 16);
+    session.state.store(@intFromEnum(State.recording), .release);
+    session.accepting.store(true, .release);
+    session.session_id = 91;
+    session.fd = c.open(path.ptr, c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
+    try std.testing.expect(session.fd >= 0);
+    @memcpy(session.current_path[0..path.len], path[0..path.len]);
+    session.current_path[path.len] = 0;
+    session.current_path_len = path.len;
+    session.worker = try std.Thread.spawn(.{}, AudioSession.workerMain, .{&session});
+
+    fake.route = testRoute(20, 48_000, 2);
+    session.invalidateCoreAudioRoute(false);
+    try std.testing.expect(!session.accepting.load(.acquire));
+    try std.testing.expect(session.coreAudioRouteIsStale());
+    var attempts: usize = 0;
+    while (session.currentState() != .failed and attempts < 250) : (attempts += 1) _ = c.usleep(1000);
+    session.joinWorker();
+
+    try std.testing.expectEqual(State.failed, session.currentState());
+    try std.testing.expect(attempts < 250);
+    try std.testing.expectEqual(@as(c_int, -1), session.fd);
+    try std.testing.expectEqual(@as(c_int, -1), c.access(path.ptr, c.F_OK));
+    try std.testing.expect(session.retry_path == null);
+    try std.testing.expectEqual(@as(usize, 1), fake.stops);
+    try std.testing.expectEqual(@as(usize, 1), log.count);
+    try std.testing.expectEqualStrings("audio_interrupted", log.event[0..log.event_len]);
+    try std.testing.expect(std.mem.indexOf(u8, log.payload[0..log.payload_len], "\"sessionId\":91") != null);
+}
+
+test "device bind failure disposes the stale unit and fails closed" {
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.prepareCoreAudio();
+    fake.route = testRoute(20, 48_000, 2);
+    fake.bind_failure = true;
+    session.invalidateCoreAudioRoute(false);
+    try std.testing.expectError(error.AudioInputUnavailable, session.startCoreAudio());
+
+    try std.testing.expectEqual(@as(usize, 2), fake.builds);
+    try std.testing.expectEqual(@as(usize, 1), fake.disposals);
+    try std.testing.expect(!fake.built);
+    try std.testing.expectEqual(@as(c.AudioDeviceID, c.kAudioObjectUnknown), session.device_id);
+    try std.testing.expectEqual(@as(u64, 0), session.prepared_route_generation);
+    try std.testing.expectEqual(@as(u64, 0), session.active_route_generation.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), fake.starts);
+}
+
+test "repeated wake invalidation rebuilds without retaining stale units" {
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer std.testing.allocator.free(session.audio_dir);
+
+    try session.prepareCoreAudio();
+    for (0..5) |_| {
+        session.invalidateCoreAudioRoute(false);
+        try session.prepareCoreAudio();
+    }
+    try std.testing.expectEqual(@as(usize, 6), fake.builds);
+    try std.testing.expectEqual(@as(usize, 5), fake.disposals);
+    try std.testing.expect(fake.built);
+    session.disposeCoreAudio();
+    try std.testing.expectEqual(fake.builds, fake.disposals);
+    try std.testing.expect(!fake.built);
+}
 
 const TestCapture = struct {
     sink: native_sdk.AudioCaptureSink = .{},
