@@ -1,0 +1,1 @@
+Leading words stay visible, even in noise!

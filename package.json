@@ -6,6 +6,8 @@
     "postinstall": "patch-package",
     "check": "native check",
     "test": "tsx --test tests/*.test.ts && zig build test -Dtarget=aarch64-macos",
+    "quality": "tsx tests/asr-quality.ts",
+    "quality:fixture": "tsx tests/asr-quality.ts score --corpus tests/fixtures/asr-quality/corpus.json --results tests/fixtures/asr-quality/baseline.results.json --results tests/fixtures/asr-quality/candidate.results.json --baseline baseline",
     "build": "zig build -Dtarget=aarch64-macos",
     "package": "bash scripts/package-macos.sh",
     "clean:local": "bash scripts/clean-local-artifacts.sh"

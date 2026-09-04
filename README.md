@@ -2,7 +2,7 @@
 
 Friday is an Apple Silicon menu-bar dictation app for macOS 14 and later. It records the microphone, transcribes locally with a compatible Parakeet GGUF model, and returns only the final text to the app where dictation began. It has no cloud-ASR path and stores no transcript history.
 
-See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday-release-checklist.md), [PRODUCT coverage matrix](docs/friday-behavior-coverage.md), and [technical specification](specs/friday/TECH.md).
+See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday-release-checklist.md), [PRODUCT coverage matrix](docs/friday-behavior-coverage.md), [privacy-safe ASR quality benchmark](docs/asr-quality-benchmark.md), and [technical specification](specs/friday/TECH.md).
 
 ## Install and run
 

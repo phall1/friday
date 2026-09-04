@@ -1,0 +1,71 @@
+{
+  "schema": "friday.asr-results/v1",
+  "corpusManifestSha256": "403d8c8942fc6f71a0278162e9fc915f2600a811430357dbc165d221ef72ff08",
+  "candidate": {
+    "id": "baseline",
+    "modelSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "recognitionPath": "friday-exact-runtime",
+    "mode": "offline"
+  },
+  "repetitions": [
+    {
+      "id": "run-1",
+      "samples": [
+        {
+          "sampleId": "synthetic-short",
+          "hypothesis": {
+            "path": "results/baseline/run-1/short.txt",
+            "sha256": "feee5b363cdbe0eafa3c9de2d7a9dd969aa1a0e87214fb64ca07e487ad365466",
+            "bytes": 31
+          }
+        },
+        {
+          "sampleId": "synthetic-noise",
+          "hypothesis": {
+            "path": "results/baseline/run-1/noise.txt",
+            "sha256": "a9ee8b029a4d4ecf51e7ea5fd5ca8f4fa5d256d714b0002617dc747b2c271b70",
+            "bytes": 34
+          }
+        },
+        {
+          "sampleId": "synthetic-silence",
+          "hypothesis": {
+            "path": "results/baseline/run-1/silence.txt",
+            "sha256": "e84dd29315cc8be0fece5102da6b5d1f87145be474caa94644d017f45e9da67c",
+            "bytes": 11
+          }
+        }
+      ]
+    },
+    {
+      "id": "run-2",
+      "samples": [
+        {
+          "sampleId": "synthetic-short",
+          "hypothesis": {
+            "path": "results/baseline/run-2/short.txt",
+            "sha256": "feee5b363cdbe0eafa3c9de2d7a9dd969aa1a0e87214fb64ca07e487ad365466",
+            "bytes": 31
+          }
+        },
+        {
+          "sampleId": "synthetic-noise",
+          "hypothesis": {
+            "path": "results/baseline/run-2/noise.txt",
+            "sha256": "a9ee8b029a4d4ecf51e7ea5fd5ca8f4fa5d256d714b0002617dc747b2c271b70",
+            "bytes": 34
+          }
+        },
+        {
+          "sampleId": "synthetic-silence",
+          "hypothesis": {
+            "path": "results/baseline/run-2/silence.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        }
+      ]
+    }
+  ]
+}

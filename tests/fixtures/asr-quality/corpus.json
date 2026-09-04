@@ -1,0 +1,93 @@
+{
+  "schema": "friday.asr-corpus/v1",
+  "normalization": "friday-asr-v1",
+  "corpus": {
+    "id": "friday-synthetic-ci",
+    "version": "1",
+    "provenance": "Generated tones and authored synthetic text; no human speech or private data.",
+    "license": {
+      "spdx": "CC0-1.0",
+      "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "redistribution": "allowed"
+    }
+  },
+  "samples": [
+    {
+      "id": "synthetic-short",
+      "audio": {
+        "path": "audio/tone.wav",
+        "sha256": "872fc6359643a24881273f2864f21041ccc823eb86ae1c6a20574b4d796ca3e7",
+        "bytes": 1644
+      },
+      "reference": {
+        "path": "references/short.txt",
+        "sha256": "feee5b363cdbe0eafa3c9de2d7a9dd969aa1a0e87214fb64ca07e487ad365466",
+        "bytes": 31
+      },
+      "speech": true,
+      "slices": {
+        "language": "en",
+        "accent": "synthetic",
+        "noise": "clean",
+        "duration": "short"
+      },
+      "terms": [
+        {
+          "text": "Alice's",
+          "category": "entity"
+        },
+        {
+          "text": "42",
+          "category": "number"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-noise",
+      "audio": {
+        "path": "audio/tone.wav",
+        "sha256": "872fc6359643a24881273f2864f21041ccc823eb86ae1c6a20574b4d796ca3e7",
+        "bytes": 1644
+      },
+      "reference": {
+        "path": "references/noise.txt",
+        "sha256": "08cab82aab7f041b96a9963ff80e35022988f3a326db93e7ff0ba4adfdeb76a2",
+        "bytes": 43
+      },
+      "speech": true,
+      "slices": {
+        "language": "en",
+        "accent": "synthetic",
+        "noise": "simulated",
+        "duration": "short"
+      },
+      "terms": [
+        {
+          "text": "leading words",
+          "category": "vocabulary"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-silence",
+      "audio": {
+        "path": "audio/silence.wav",
+        "sha256": "9a2bb97bf4897b1e5b2594a43f579bad4f084e6a7654dba1517a2ed330cf9e7d",
+        "bytes": 1644
+      },
+      "reference": {
+        "path": "references/silence.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "speech": false,
+      "slices": {
+        "language": "none",
+        "accent": "none",
+        "noise": "clean",
+        "duration": "short"
+      },
+      "terms": []
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+Words stay visible even in noise.

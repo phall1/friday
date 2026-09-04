@@ -1,0 +1,71 @@
+{
+  "schema": "friday.asr-results/v1",
+  "corpusManifestSha256": "403d8c8942fc6f71a0278162e9fc915f2600a811430357dbc165d221ef72ff08",
+  "candidate": {
+    "id": "candidate",
+    "modelSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runtimeSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "recognitionPath": "friday-exact-runtime",
+    "mode": "offline"
+  },
+  "repetitions": [
+    {
+      "id": "run-1",
+      "samples": [
+        {
+          "sampleId": "synthetic-short",
+          "hypothesis": {
+            "path": "results/candidate/run-1/short.txt",
+            "sha256": "f15a584982b0cd09466d13eaf6d6c409633c1a23ae0eee43bef07b9cf9ae867b",
+            "bytes": 38
+          }
+        },
+        {
+          "sampleId": "synthetic-noise",
+          "hypothesis": {
+            "path": "results/candidate/run-1/noise.txt",
+            "sha256": "08cab82aab7f041b96a9963ff80e35022988f3a326db93e7ff0ba4adfdeb76a2",
+            "bytes": 43
+          }
+        },
+        {
+          "sampleId": "synthetic-silence",
+          "hypothesis": {
+            "path": "results/candidate/run-1/silence.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "run-2",
+      "samples": [
+        {
+          "sampleId": "synthetic-short",
+          "hypothesis": {
+            "path": "results/candidate/run-2/short.txt",
+            "sha256": "f15a584982b0cd09466d13eaf6d6c409633c1a23ae0eee43bef07b9cf9ae867b",
+            "bytes": 38
+          }
+        },
+        {
+          "sampleId": "synthetic-noise",
+          "hypothesis": {
+            "path": "results/candidate/run-2/noise.txt",
+            "sha256": "1ae57aa38b14798bd8ed55bd89876156c08dc4348622654c66a1ff2e430cec0c",
+            "bytes": 42
+          }
+        },
+        {
+          "sampleId": "synthetic-silence",
+          "hypothesis": {
+            "path": "results/candidate/run-2/silence.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        }
+      ]
+    }
+  ]
+}
