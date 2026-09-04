@@ -1538,6 +1538,9 @@ pub const FridayHost = struct {
     }
 };
 
+/// App-extension lifecycle consumed by the stock Native SDK TypeScript runner.
+pub const Host = FridayHost;
+
 fn terminationObserverCallback(receiver: objc.Id, _: objc.Sel, _: objc.Id) callconv(.c) void {
     const host = objc.getPointerIvar(FridayHost, receiver, "fridayContext") orelse return;
     host.input.stop();

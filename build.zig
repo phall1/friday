@@ -7,7 +7,6 @@ pub fn build(b: *std.Build) void {
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{
         .name = "friday",
         .manifest = "app.json",
-        .ts_runner = "native/friday_main.zig",
         .ts_extension = "native/friday_host.zig",
         .ts_extension_include_paths = &.{"third_party/nemo-speech/include"},
         .macos_minimum_version = .{ .major = 13, .minor = 0, .patch = 0 },
