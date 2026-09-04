@@ -1242,8 +1242,12 @@ pub const FridayHost = struct {
     }
 
     fn probeRecognizer(_: *anyopaque, path: []const u8, _: u64) models_mod.ProbeResult {
-        const ok = nemo_mod.NemoRecognizer.probeModel(path) catch false;
-        return if (ok) .{ .ok = true } else .{ .ok = false, .code = "model_probe_failed", .message = "The model failed its NeMo runtime probe." };
+        const capabilities = nemo_mod.NemoRecognizer.probeModel(path) catch
+            return .{ .ok = false, .code = "model_probe_failed", .message = "The model failed its NeMo runtime probe." };
+        return if (capabilities.offline)
+            .{ .ok = true, .streaming = capabilities.streaming }
+        else
+            .{ .ok = false, .code = "model_probe_failed", .message = "The model failed its NeMo runtime probe." };
     }
 
     fn startupActivation(context: *anyopaque, ok: bool, _: []const u8) void {

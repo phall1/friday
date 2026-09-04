@@ -16,6 +16,7 @@ pub const AsyncCompletion = struct {
 
 pub const ProbeResult = struct {
     ok: bool,
+    streaming: bool = false,
     code: []const u8 = "",
     message: []const u8 = "",
 };
@@ -61,6 +62,9 @@ const ModelSpec = struct {
     download_url: []const u8,
     engine: []const u8,
     family: []const u8,
+    recognition_mode: []const u8,
+    head: []const u8,
+    streaming_profile: []const u8,
     format: []const u8,
     languages: []const []const u8,
     license: []const u8,
@@ -85,6 +89,9 @@ const Model = struct {
     download_url: []u8,
     engine: []u8,
     family: []u8,
+    recognition_mode: []u8,
+    head: []u8,
+    streaming_profile: []u8,
     format: []u8,
     languages: [][]u8,
     license: []u8,
@@ -114,6 +121,12 @@ const Model = struct {
         errdefer allocator.free(engine);
         const family = try allocator.dupe(u8, spec.family);
         errdefer allocator.free(family);
+        const recognition_mode = try allocator.dupe(u8, spec.recognition_mode);
+        errdefer allocator.free(recognition_mode);
+        const head = try allocator.dupe(u8, spec.head);
+        errdefer allocator.free(head);
+        const streaming_profile = try allocator.dupe(u8, spec.streaming_profile);
+        errdefer allocator.free(streaming_profile);
         const format = try allocator.dupe(u8, spec.format);
         errdefer allocator.free(format);
         const license = try allocator.dupe(u8, spec.license);
@@ -152,6 +165,9 @@ const Model = struct {
             .download_url = download_url,
             .engine = engine,
             .family = family,
+            .recognition_mode = recognition_mode,
+            .head = head,
+            .streaming_profile = streaming_profile,
             .format = format,
             .languages = languages,
             .license = license,
@@ -182,6 +198,9 @@ const Model = struct {
             .download_url = self.download_url,
             .engine = self.engine,
             .family = self.family,
+            .recognition_mode = self.recognition_mode,
+            .head = self.head,
+            .streaming_profile = self.streaming_profile,
             .format = self.format,
             .languages = self.languages,
             .license = self.license,
@@ -204,6 +223,9 @@ const Model = struct {
         allocator.free(self.download_url);
         allocator.free(self.engine);
         allocator.free(self.family);
+        allocator.free(self.recognition_mode);
+        allocator.free(self.head);
+        allocator.free(self.streaming_profile);
         allocator.free(self.format);
         for (self.languages) |language| allocator.free(language);
         allocator.free(self.languages);
@@ -237,6 +259,9 @@ fn defaultModel(allocator: Allocator) !Model {
         .download_url = default_pin.url,
         .engine = "nemo_speech_cpp",
         .family = "parakeet_tdt",
+        .recognition_mode = "offline",
+        .head = "tdt",
+        .streaming_profile = "none",
         .format = "gguf",
         .languages = &default_languages,
         .license = "CC-BY-4.0",
@@ -719,6 +744,11 @@ const State = struct {
             self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", if (probe.message.len != 0) probe.message else "The model failed its runtime probe.");
             return;
         }
+        applyProbeCapabilities(self.allocator, &model, probe) catch {
+            self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
+            return;
+        };
+        Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe") catch unreachable;
         model.key = operation.key;
         model.installed_bytes = model.expected_bytes;
         model.managed = false;
@@ -732,7 +762,7 @@ const State = struct {
             self.fail(operation.completion, "index_publication_failed", "");
             return;
         };
-        self.completeValue(operation.completion, true, .{ .ok = true, .modelKey = operation.key, .probe = .{ .ok = true } });
+        self.completeValue(operation.completion, true, .{ .ok = true, .modelKey = operation.key, .probe = .{ .ok = true, .streaming = probe.streaming } });
     }
 
     fn executeSelect(self: *State, operation: SelectOperation) void {
@@ -752,6 +782,10 @@ const State = struct {
             self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", probe.message);
             return;
         }
+        applyProbeCapabilities(self.allocator, model, probe) catch {
+            self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
+            return;
+        };
         self.activateSnapshot(model.*) catch {
             self.fail(operation.completion, "index_publication_failed", "");
             return;
@@ -761,7 +795,7 @@ const State = struct {
             self.fail(operation.completion, "index_publication_failed", "");
             return;
         };
-        self.completeValue(operation.completion, true, .{ .ok = true, .modelKey = operation.key, .probe = .{ .ok = true } });
+        self.completeValue(operation.completion, true, .{ .ok = true, .modelKey = operation.key, .probe = .{ .ok = true, .streaming = probe.streaming } });
     }
 
     fn executeResolveHF(self: *State, operation: IdentifierOperation) void {
@@ -894,11 +928,15 @@ const State = struct {
             return;
         }
         if (self.findModel(model.key)) |index| {
-            const installed = self.models.items[index];
-            if (installed.managed and sameIdentity(installed, model.*) and self.validateManagedModel(installed)) {
+            const installed = &self.models.items[index];
+            if (installed.managed and sameIdentity(installed.*, model.*) and self.validateManagedModel(installed.*)) {
                 const probe = self.probe.probe(self.probe.context, installed.path, operation);
                 if (probe.ok) {
-                    self.activateSnapshot(installed) catch {
+                    applyProbeCapabilities(self.allocator, installed, probe) catch {
+                        self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
+                        return;
+                    };
+                    self.activateSnapshot(installed.*) catch {
                         self.fail(completion, "index_publication_failed", "");
                         return;
                     };
@@ -906,7 +944,7 @@ const State = struct {
                         self.fail(completion, "index_publication_failed", "");
                         return;
                     };
-                    self.completeValue(completion, true, .{ .ok = true, .modelKey = installed.key, .probe = .{ .ok = true } });
+                    self.completeValue(completion, true, .{ .ok = true, .modelKey = installed.key, .probe = .{ .ok = true, .streaming = probe.streaming } });
                     return;
                 }
             }
@@ -1074,7 +1112,7 @@ const State = struct {
         defer writer.deinit();
         var json = std.json.Stringify{ .writer = &writer.writer };
         try json.beginObject();
-        try jsonField(&json, "schemaVersion", 1);
+        try jsonField(&json, "schemaVersion", 2);
         try jsonField(&json, "url", model.download_url);
         try jsonField(&json, "revision", model.revision);
         try jsonField(&json, "artifact", model.artifact);
@@ -1166,25 +1204,29 @@ const State = struct {
             self.fail(completion, if (staged_probe.code.len != 0) staged_probe.code else "model_probe_failed", if (staged_probe.message.len != 0) staged_probe.message else "The model failed its runtime probe.");
             return;
         }
+        applyProbeCapabilities(self.allocator, model, staged_probe) catch {
+            self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
+            return;
+        };
+        Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe") catch unreachable;
         if (std.mem.eql(u8, model.compatibility, "unverified_candidate")) {
             Model.replace(self.allocator, &model.engine, "nemo_speech_cpp") catch unreachable;
             Model.replace(self.allocator, &model.family, "runtime_verified_asr") catch unreachable;
             Model.replace(self.allocator, &model.compatibility, "compatible") catch unreachable;
-            Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_probe") catch unreachable;
-            const verified_manifest = self.modelJsonAlloc(model.*) catch {
-                self.fail(completion, "verified_manifest_write_failed", "The runtime-verified manifest could not be written durably.");
-                return;
-            };
-            defer self.allocator.free(verified_manifest);
-            self.writeAtomic(staged_manifest, verified_manifest) catch {
-                self.fail(completion, "verified_manifest_write_failed", "The runtime-verified manifest could not be written durably.");
-                return;
-            };
-            syncDirectory(self.threaded_io.io(), staging) catch {
-                self.fail(completion, "publication_fsync_failed", "The model directory publication could not be made durable.");
-                return;
-            };
         }
+        const verified_manifest = self.modelJsonAlloc(model.*) catch {
+            self.fail(completion, "verified_manifest_write_failed", "The runtime-verified manifest could not be written durably.");
+            return;
+        };
+        defer self.allocator.free(verified_manifest);
+        self.writeAtomic(staged_manifest, verified_manifest) catch {
+            self.fail(completion, "verified_manifest_write_failed", "The runtime-verified manifest could not be written durably.");
+            return;
+        };
+        syncDirectory(self.threaded_io.io(), staging) catch {
+            self.fail(completion, "publication_fsync_failed", "The model directory publication could not be made durable.");
+            return;
+        };
 
         const id_root = std.fs.path.join(self.allocator, &.{ self.models_root, model.id }) catch {
             self.fail(completion, "out_of_memory", "The verified model root could not be prepared.");
@@ -1260,6 +1302,10 @@ const State = struct {
             self.fail(completion, "published_model_probe_failed", if (final_probe.message.len != 0) final_probe.message else "The published model failed its final runtime probe.");
             return;
         }
+        if (final_probe.streaming != staged_probe.streaming) {
+            self.fail(completion, "published_model_capability_changed", "The published model did not reproduce its staged runtime capabilities.");
+            return;
+        }
         self.upsertAndActivate(model.*) catch {
             self.fail(completion, "index_publication_failed", "The verified model was published, but the durable index update failed.");
             return;
@@ -1269,7 +1315,7 @@ const State = struct {
         self.publishProgress(operation, "installed", size, size);
         const message = std.fmt.allocPrint(self.allocator, "{s} is verified, warm, and active.", .{model.name}) catch "The model is verified, warm, and active.";
         defer if (message.ptr != "The model is verified, warm, and active.".ptr) self.allocator.free(message);
-        self.completeValue(completion, true, .{ .ok = true, .modelKey = model.key, .message = message, .probe = .{ .ok = true } });
+        self.completeValue(completion, true, .{ .ok = true, .modelKey = model.key, .message = message, .probe = .{ .ok = true, .streaming = final_probe.streaming } });
     }
 
     fn removeModel(self: *State, key: u64, delete_managed: bool, output: []u8) !usize {
@@ -1323,10 +1369,15 @@ const State = struct {
         try jsonField(&json, "activeModelLicense", if (active) |model| model.license else "");
         var text_buffer: [64]u8 = undefined;
         try jsonField(&json, "activeModelLanguages", if (active) |model| languageSummary(&text_buffer, model.languages.len) else "");
+        try jsonField(&json, "activeRecognitionMode", if (active) |model| model.recognition_mode else "");
+        try jsonField(&json, "activeModelHead", if (active) |model| model.head else "");
+        try jsonField(&json, "activeStreamingProfile", if (active) |model| model.streaming_profile else "");
         try jsonField(&json, "activeModelBytes", if (active) |model| model.installed_bytes else 0);
         try jsonField(&json, "activeModelSizeText", if (active) |model| formatByteCount(&text_buffer, model.installed_bytes) else "");
         var managed_bytes: u64 = 0;
-        for (self.models.items) |model| if (model.managed) { managed_bytes += model.installed_bytes; };
+        for (self.models.items) |model| if (model.managed) {
+            managed_bytes += model.installed_bytes;
+        };
         try jsonField(&json, "managedModelSizeText", formatByteCount(&text_buffer, managed_bytes));
         try json.objectField("models");
         try json.beginArray();
@@ -1344,6 +1395,9 @@ const State = struct {
             try json.objectField("languages");
             try json.write(model.languages);
             try jsonField(&json, "compatibility", model.compatibility);
+            try jsonField(&json, "recognitionMode", model.recognition_mode);
+            try jsonField(&json, "head", model.head);
+            try jsonField(&json, "streamingProfile", model.streaming_profile);
             try jsonField(&json, "active", model.key == self.active_key);
             try json.endObject();
         }
@@ -1368,9 +1422,15 @@ const State = struct {
         defer self.allocator.free(bytes);
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{}) catch return;
         defer parsed.deinit();
-        const object = switch (parsed.value) { .object => |value| value, else => return };
+        const object = switch (parsed.value) {
+            .object => |value| value,
+            else => return,
+        };
         const models_value = object.get("models") orelse return;
-        const records = switch (models_value) { .array => |value| value.items, else => return };
+        const records = switch (models_value) {
+            .array => |value| value.items,
+            else => return,
+        };
         for (records[0..@min(records.len, 128)]) |record| {
             var model = self.modelFromJson(record, true) catch continue;
             if (!validInstalledRecord(model)) {
@@ -1411,7 +1471,7 @@ const State = struct {
         defer if (!adopted) model.deinit(self.allocator);
         model.installed_bytes = size;
         try Model.replace(self.allocator, &model.path, model_path);
-        try Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_probe");
+        try Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe");
         const manifest = try self.modelJsonAlloc(model);
         defer self.allocator.free(manifest);
         try self.writeAtomic(manifest_path, manifest);
@@ -1451,7 +1511,7 @@ const State = struct {
         defer writer.deinit();
         var json = std.json.Stringify{ .writer = &writer.writer };
         try json.beginObject();
-        try jsonField(&json, "schemaVersion", 1);
+        try jsonField(&json, "schemaVersion", 2);
         try jsonField(&json, "activeModelKey", self.active_key);
         try json.objectField("models");
         try json.beginArray();
@@ -1495,8 +1555,9 @@ const State = struct {
         var model = try self.modelFromJson(parsed.value, false);
         errdefer model.deinit(self.allocator);
         if (!std.mem.eql(u8, model.engine, "nemo_speech_cpp") or
-            !std.mem.eql(u8, model.family, "parakeet_tdt") or
+            !(std.mem.eql(u8, model.family, "parakeet_tdt") or std.mem.eql(u8, model.family, "runtime_verified_asr")) or
             !std.mem.eql(u8, model.format, "gguf") or
+            !validCapabilities(model.recognition_mode, model.head, model.streaming_profile) or
             model.license.len == 0 or model.languages.len == 0 or
             !isLowerHex(model.sha256, 64) or model.expected_bytes == 0 or model.expected_bytes > max_artifact_bytes)
             return error.InvalidManifest;
@@ -1526,6 +1587,7 @@ const State = struct {
             !(std.mem.eql(u8, manifest.family, "parakeet_tdt") or std.mem.eql(u8, manifest.family, "runtime_verified_asr")) or
             !std.mem.eql(u8, manifest.format, "gguf") or
             !std.mem.eql(u8, manifest.compatibility, "compatible") or
+            !validCapabilities(manifest.recognition_mode, manifest.head, manifest.streaming_profile) or
             !isLowerHex(manifest.revision, 40) or !isLowerHex(manifest.sha256, 64) or
             manifest.expected_bytes == 0 or manifest.expected_bytes > max_artifact_bytes or
             !sameIdentity(manifest, expected)) return false;
@@ -1572,7 +1634,10 @@ const State = struct {
         defer self.allocator.free(bytes);
         const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{});
         defer parsed.deinit();
-        const root = switch (parsed.value) { .object => |value| value, else => return error.InvalidResume };
+        const root = switch (parsed.value) {
+            .object => |value| value,
+            else => return error.InvalidResume,
+        };
         const manifest_value = root.get("manifest") orelse return error.InvalidResume;
         var model = try self.modelFromJson(manifest_value, false);
         errdefer model.deinit(self.allocator);
@@ -1600,20 +1665,33 @@ const State = struct {
     }
 
     fn modelFromJson(self: *State, value: std.json.Value, installed_record: bool) !Model {
-        const object = switch (value) { .object => |entry| entry, else => return error.InvalidManifest };
+        const object = switch (value) {
+            .object => |entry| entry,
+            else => return error.InvalidManifest,
+        };
         const languages_value = object.get("languages") orelse return error.InvalidManifest;
-        const language_values = switch (languages_value) { .array => |array| array.items, else => return error.InvalidManifest };
+        const language_values = switch (languages_value) {
+            .array => |array| array.items,
+            else => return error.InvalidManifest,
+        };
         if (language_values.len > 128) return error.InvalidManifest;
         var language_slices = try self.allocator.alloc([]const u8, language_values.len);
         defer self.allocator.free(language_slices);
         for (language_values, 0..) |language, index| {
-            language_slices[index] = switch (language) { .string => |string| string, else => return error.InvalidManifest };
+            language_slices[index] = switch (language) {
+                .string => |string| string,
+                else => return error.InvalidManifest,
+            };
         }
         const artifact = jsonString(object.get("artifact")) orelse "model.gguf";
         const name = jsonString(object.get("displayName")) orelse artifact;
         const id = jsonString(object.get("id")) orelse "local/model";
         const repository = jsonString(object.get("repository")) orelse id;
         const expected_bytes = jsonUnsigned(object.get("expectedBytes")) orelse return error.InvalidManifest;
+        const engine = jsonString(object.get("engine")) orelse return error.InvalidManifest;
+        const family = jsonString(object.get("family")) orelse return error.InvalidManifest;
+        const legacy_mode = legacyRecognitionMode(family);
+        const legacy_head = if (std.mem.eql(u8, family, "parakeet_tdt")) "tdt" else "runtime_verified";
         const spec = ModelSpec{
             .key = jsonUnsigned(object.get("modelKey")) orelse 0,
             .id = id,
@@ -1625,8 +1703,11 @@ const State = struct {
             .expected_bytes = expected_bytes,
             .installed_bytes = jsonUnsigned(object.get("installedBytes")) orelse if (installed_record) expected_bytes else 0,
             .download_url = jsonString(object.get("downloadURL")) orelse "",
-            .engine = jsonString(object.get("engine")) orelse return error.InvalidManifest,
-            .family = jsonString(object.get("family")) orelse return error.InvalidManifest,
+            .engine = engine,
+            .family = family,
+            .recognition_mode = jsonString(object.get("recognitionMode")) orelse legacy_mode,
+            .head = jsonString(object.get("head")) orelse legacy_head,
+            .streaming_profile = jsonString(object.get("streamingProfile")) orelse "none",
             .format = jsonString(object.get("format")) orelse return error.InvalidManifest,
             .languages = language_slices,
             .license = jsonString(object.get("license")) orelse return error.InvalidManifest,
@@ -1639,6 +1720,7 @@ const State = struct {
         };
         if (spec.id.len > 256 or spec.name.len > 256 or spec.repository.len > 256 or spec.artifact.len > 256 or
             spec.license.len > 64 or spec.attribution.len > 256 or spec.path.len > std.fs.max_path_bytes or
+            !validCapabilities(spec.recognition_mode, spec.head, spec.streaming_profile) or
             spec.expected_bytes == 0 or spec.expected_bytes > max_artifact_bytes) return error.InvalidManifest;
         return Model.init(self.allocator, spec);
     }
@@ -1646,7 +1728,10 @@ const State = struct {
     fn modelFromHuggingFaceMetadata(self: *State, bytes: []const u8, identifier: []const u8) !Model {
         const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{});
         defer parsed.deinit();
-        const object = switch (parsed.value) { .object => |entry| entry, else => return error.InvalidMetadata };
+        const object = switch (parsed.value) {
+            .object => |entry| entry,
+            else => return error.InvalidMetadata,
+        };
         if (jsonBool(object.get("private")) orelse false) return error.PrivateRepository;
         if (isGated(object.get("gated"))) return error.GatedRepository;
         const revision = jsonString(object.get("sha")) orelse return error.MissingRevision;
@@ -1679,11 +1764,17 @@ const State = struct {
         if (license.len == 0 or license.len > 64) return error.MissingLicense;
 
         const siblings_value = object.get("siblings") orelse return error.NoGguf;
-        const siblings = switch (siblings_value) { .array => |array| array.items, else => return error.NoGguf };
+        const siblings = switch (siblings_value) {
+            .array => |array| array.items,
+            else => return error.NoGguf,
+        };
         var candidate: ?std.json.ObjectMap = null;
         var candidate_count: usize = 0;
         for (siblings[0..@min(siblings.len, 4096)]) |sibling_value| {
-            const sibling = switch (sibling_value) { .object => |entry| entry, else => continue };
+            const sibling = switch (sibling_value) {
+                .object => |entry| entry,
+                else => continue,
+            };
             const filename = jsonString(sibling.get("rfilename")) orelse continue;
             if (filename.len <= 256 and topLevelArtifact(filename) and hasExtension(filename, ".gguf")) {
                 candidate_count += 1;
@@ -1695,7 +1786,10 @@ const State = struct {
         const sibling = candidate.?;
         const artifact = jsonString(sibling.get("rfilename")).?;
         const lfs_value = sibling.get("lfs") orelse return error.InvalidLfs;
-        const lfs = switch (lfs_value) { .object => |entry| entry, else => return error.InvalidLfs };
+        const lfs = switch (lfs_value) {
+            .object => |entry| entry,
+            else => return error.InvalidLfs,
+        };
         var sha256 = jsonString(lfs.get("sha256")) orelse "";
         if (sha256.len == 0) {
             const oid = jsonString(lfs.get("oid")) orelse "";
@@ -1729,6 +1823,9 @@ const State = struct {
             .download_url = download_url,
             .engine = "unverified",
             .family = "unverified",
+            .recognition_mode = "unverified",
+            .head = "runtime_verified",
+            .streaming_profile = "none",
             .format = "gguf",
             .languages = language_slices.items,
             .license = license,
@@ -1744,7 +1841,7 @@ const State = struct {
 
 fn writeModelJson(json: *std.json.Stringify, model: Model) !void {
     try json.beginObject();
-    try jsonField(json, "schemaVersion", 1);
+    try jsonField(json, "schemaVersion", 2);
     try jsonField(json, "modelKey", model.key);
     try jsonField(json, "id", model.id);
     try jsonField(json, "displayName", model.name);
@@ -1758,6 +1855,9 @@ fn writeModelJson(json: *std.json.Stringify, model: Model) !void {
     try jsonField(json, "provider", "Hugging Face");
     try jsonField(json, "engine", model.engine);
     try jsonField(json, "family", model.family);
+    try jsonField(json, "recognitionMode", model.recognition_mode);
+    try jsonField(json, "head", model.head);
+    try jsonField(json, "streamingProfile", model.streaming_profile);
     try jsonField(json, "format", model.format);
     try json.objectField("languages");
     try json.write(model.languages);
@@ -1784,12 +1884,18 @@ fn stringifyFixed(output: []u8, value: anytype) !usize {
 
 fn jsonString(value: ?std.json.Value) ?[]const u8 {
     const actual = value orelse return null;
-    return switch (actual) { .string => |string| string, else => null };
+    return switch (actual) {
+        .string => |string| string,
+        else => null,
+    };
 }
 
 fn jsonBool(value: ?std.json.Value) ?bool {
     const actual = value orelse return null;
-    return switch (actual) { .bool => |boolean| boolean, else => null };
+    return switch (actual) {
+        .bool => |boolean| boolean,
+        else => null,
+    };
 }
 
 fn jsonUnsigned(value: ?std.json.Value) ?u64 {
@@ -1849,7 +1955,42 @@ fn validInstalledRecord(model: Model) bool {
     return model.key != 0 and model.path.len != 0 and model.installed_bytes == model.expected_bytes and
         std.mem.eql(u8, model.engine, "nemo_speech_cpp") and
         (std.mem.eql(u8, model.family, "parakeet_tdt") or std.mem.eql(u8, model.family, "runtime_verified_asr")) and
-        std.mem.eql(u8, model.format, "gguf") and std.mem.eql(u8, model.compatibility, "compatible");
+        std.mem.eql(u8, model.format, "gguf") and std.mem.eql(u8, model.compatibility, "compatible") and
+        validCapabilities(model.recognition_mode, model.head, model.streaming_profile) and
+        !std.mem.eql(u8, model.recognition_mode, "unverified");
+}
+
+fn legacyRecognitionMode(family: []const u8) []const u8 {
+    return if (std.mem.eql(u8, family, "parakeet_tdt") or std.mem.eql(u8, family, "runtime_verified_asr"))
+        "offline"
+    else
+        "unverified";
+}
+
+fn validCapabilities(recognition_mode: []const u8, head: []const u8, streaming_profile: []const u8) bool {
+    const mode_valid = std.mem.eql(u8, recognition_mode, "offline") or
+        std.mem.eql(u8, recognition_mode, "streaming") or
+        std.mem.eql(u8, recognition_mode, "unverified");
+    const head_valid = std.mem.eql(u8, head, "tdt") or std.mem.eql(u8, head, "rnnt") or
+        std.mem.eql(u8, head, "ctc") or std.mem.eql(u8, head, "runtime_verified");
+    const profile_valid = std.mem.eql(u8, streaming_profile, "none") or
+        std.mem.eql(u8, streaming_profile, "rnnt_low_latency") or
+        std.mem.eql(u8, streaming_profile, "ctc_buffered") or
+        std.mem.eql(u8, streaming_profile, "runtime_verified");
+    if (!mode_valid or !head_valid or !profile_valid) return false;
+    if (std.mem.eql(u8, recognition_mode, "streaming")) return !std.mem.eql(u8, streaming_profile, "none");
+    return std.mem.eql(u8, streaming_profile, "none");
+}
+
+fn applyProbeCapabilities(allocator: Allocator, model: *Model, probe: ProbeResult) !void {
+    try Model.replace(allocator, &model.recognition_mode, if (probe.streaming) "streaming" else "offline");
+    const runtime_only_family = std.mem.eql(u8, model.family, "unverified") or std.mem.eql(u8, model.family, "runtime_verified_asr");
+    if (runtime_only_family) try Model.replace(allocator, &model.head, "runtime_verified");
+    if (!probe.streaming) {
+        try Model.replace(allocator, &model.streaming_profile, "none");
+    } else if (runtime_only_family or std.mem.eql(u8, model.streaming_profile, "none")) {
+        try Model.replace(allocator, &model.streaming_profile, "runtime_verified");
+    }
 }
 
 fn validDownloadManifest(model: Model) bool {
@@ -2009,14 +2150,14 @@ fn downloadErrorMessage(err: anyerror) []const u8 {
     };
 }
 
-
 const ProbeCounter = struct {
     count: usize = 0,
+    streaming: bool = false,
     fn probe(context: *anyopaque, path: []const u8, generation: u64) ProbeResult {
         _ = generation;
         const self: *ProbeCounter = @ptrCast(@alignCast(context));
         self.count += 1;
-        return .{ .ok = std.mem.endsWith(u8, path, ".gguf") };
+        return .{ .ok = std.mem.endsWith(u8, path, ".gguf"), .streaming = self.streaming };
     }
 };
 
@@ -2227,4 +2368,33 @@ fn runContractProbes() !struct {
         .completionExactlyOnce = completion_exactly_once,
         .serializedMutationOwner = serialized_mutation_owner,
     };
+}
+
+test "runtime probe is authoritative for streaming capability" {
+    const allocator = std.testing.allocator;
+    var model = try defaultModel(allocator);
+    defer model.deinit(allocator);
+
+    try Model.replace(allocator, &model.recognition_mode, "streaming");
+    try Model.replace(allocator, &model.streaming_profile, "runtime_verified");
+    try applyProbeCapabilities(allocator, &model, .{ .ok = true, .streaming = false });
+    try std.testing.expectEqualStrings("offline", model.recognition_mode);
+    try std.testing.expectEqualStrings("tdt", model.head);
+    try std.testing.expectEqualStrings("none", model.streaming_profile);
+
+    try applyProbeCapabilities(allocator, &model, .{ .ok = true, .streaming = true });
+    try std.testing.expectEqualStrings("streaming", model.recognition_mode);
+    try std.testing.expectEqualStrings("runtime_verified", model.streaming_profile);
+}
+
+test "capability vocabulary rejects contradictory manifests" {
+    try std.testing.expectEqualStrings("offline", legacyRecognitionMode("parakeet_tdt"));
+    try std.testing.expectEqualStrings("offline", legacyRecognitionMode("runtime_verified_asr"));
+    try std.testing.expectEqualStrings("unverified", legacyRecognitionMode("unverified"));
+    try std.testing.expect(validCapabilities("offline", "tdt", "none"));
+    try std.testing.expect(validCapabilities("streaming", "rnnt", "rnnt_low_latency"));
+    try std.testing.expect(validCapabilities("streaming", "runtime_verified", "runtime_verified"));
+    try std.testing.expect(!validCapabilities("streaming", "tdt", "none"));
+    try std.testing.expect(!validCapabilities("offline", "tdt", "runtime_verified"));
+    try std.testing.expect(!validCapabilities("claimed", "tdt", "none"));
 }

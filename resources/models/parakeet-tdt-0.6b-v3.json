@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "key": 1,
   "id": "nvidia/parakeet-tdt-0.6b-v3",
   "displayName": "Parakeet TDT 0.6B v3",
@@ -8,6 +8,9 @@
   "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
   "engine": "nemo_speech_cpp",
   "family": "parakeet_tdt",
+  "recognitionMode": "offline",
+  "head": "tdt",
+  "streamingProfile": "none",
   "format": "gguf",
   "artifact": "parakeet-tdt-0.6b-v3.q8_0.gguf",
   "downloadUrl": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",

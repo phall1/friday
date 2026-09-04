@@ -106,8 +106,15 @@ pub const NemoRecognizer = struct {
         self.state.shutdownAndWait();
     }
 
-    /// Synchronous standalone runtime probe. The candidate is always destroyed.
-    pub fn probeModel(path: []const u8) !bool {
+    pub const ProbeCapabilities = struct {
+        offline: bool,
+        streaming: bool,
+    };
+
+    /// Synchronous standalone runtime probe. The candidate and any stream are
+    /// always destroyed. Streaming is reported only after the complete empty
+    /// stream lifecycle succeeds; recognizer creation alone is not evidence.
+    pub fn probeModel(path: []const u8) !ProbeCapabilities {
         const terminated = try std.heap.c_allocator.dupeZ(u8, path);
         defer std.heap.c_allocator.free(terminated);
         var backend = std.mem.zeroes(c.nemo_speech_asr_backend_config);
@@ -123,7 +130,24 @@ pub const NemoRecognizer = struct {
         var candidate: ?*c.nemo_speech_asr_recognizer = null;
         const status = c.nemo_speech_asr_create(&config, &candidate);
         defer if (candidate) |recognizer| c.nemo_speech_asr_destroy(recognizer);
-        return status == c.NEMO_SPEECH_ASR_OK and candidate != null;
+        if (status != c.NEMO_SPEECH_ASR_OK or candidate == null) return .{ .offline = false, .streaming = false };
+
+        var options = c.nemo_speech_asr_recognition_options_default();
+        options.interim_results = false;
+        var stream: ?*c.nemo_speech_asr_stream = null;
+        if (c.nemo_speech_asr_streaming_recognize(candidate.?, &options, &stream) != c.NEMO_SPEECH_ASR_OK or stream == null)
+            return .{ .offline = true, .streaming = false };
+        defer c.nemo_speech_asr_stream_close(stream.?);
+        const silence = [_]f32{0} ** 2_560;
+        if (c.nemo_speech_asr_stream_push_f32(stream.?, &silence, silence.len, 16_000) != c.NEMO_SPEECH_ASR_OK)
+            return .{ .offline = true, .streaming = false };
+        if (c.nemo_speech_asr_stream_finish(stream.?) != c.NEMO_SPEECH_ASR_OK)
+            return .{ .offline = true, .streaming = false };
+        var result: ?*c.nemo_speech_asr_result = null;
+        if (c.nemo_speech_asr_stream_next(stream.?, &result) != c.NEMO_SPEECH_ASR_OK)
+            return .{ .offline = true, .streaming = false };
+        defer if (result) |value| c.nemo_speech_asr_result_destroy(value);
+        return .{ .offline = true, .streaming = true };
     }
 };
 
