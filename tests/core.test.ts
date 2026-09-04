@@ -65,6 +65,41 @@ test("short modifier tap seeds lock and second tap locks without long-hold seedi
   assert.equal(model.lastQuickReleaseAtMs, 0);
 });
 
+test("double-tap lock release before audio start keeps the armed session", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|1|1000|dG9rZW4=|1||"));
+  model = dispatch(model, hostEvent("hotkey_up|1|1100"));
+  model = dispatch(model, hostEvent("hotkey_down|2|1200|dG9rZW4y|1||"));
+  assert.equal(model.workflow.kind === "starting" && model.workflow.lockCandidate, true);
+  // Releasing the locking tap while friday.audio.start is still in flight
+  // must not tear the session down: the start completes into a locked
+  // recording instead of orphaning a live capture.
+  model = dispatch(model, hostEvent("hotkey_up|2|1250"));
+  assert.equal(model.workflow.kind, "starting");
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":2,"generation":2}') });
+  assert.equal(model.workflow.kind === "recording" && model.workflow.control, "locked");
+});
+
+test("release after the hold timer cancels the in-flight audio start", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|1|1000|dG9rZW4=|1||"));
+  model = dispatch(model, { kind: "hold_elapsed", at: 1300 });
+  assert.equal(model.workflow.kind, "starting");
+  const released = update(model, hostEvent("hotkey_up|1|1400"));
+  model = modelOf(released);
+  assert.equal(model.workflow.kind, "ready");
+  const batch = commandOf(released) as unknown as { op: string; cmds: { op: string; key?: string; name?: string }[] };
+  assert.equal(batch.op, "batch");
+  const cancels = batch.cmds.filter((cmd) => cmd.op === "cancel").map((cmd) => cmd.key);
+  assert.equal(cancels.includes("hold-start"), true);
+  assert.equal(cancels.includes("audio-session"), true);
+  const discards = batch.cmds.filter((cmd) => cmd.op === "host_bytes").map((cmd) => cmd.name);
+  assert.equal(discards.includes("friday.audio.discard"), true);
+  // A late audio_started for the cancelled request cannot resurrect it.
+  const late = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":1,"generation":1}') });
+  assert.equal(late.workflow.kind, "ready");
+});
+
 test("new hotkey cancels transcribing generation and stale results are ignored", () => {
   let model = readyModel();
   model = { ...model, workflow: { kind: "transcribing", retryAudioAvailable: true, disposition: "transcribe" }, sessionId: 10, generation: 10, sessionSourceToken: bytes("old") };
@@ -225,8 +260,9 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(labels.includes("Models…"), true);
   assert.equal(labels.includes("Access…"), true);
   assert.equal(labels.includes("Quit Friday"), true);
-  assert.equal(readyMenu.iconPath.length, 0);
-  assert.equal(new TextDecoder().decode(readyMenu.presentation.title), "F");
+  assert.equal(new TextDecoder().decode(readyMenu.iconPath), "assets/menubar-icon.png");
+  assert.equal(new TextDecoder().decode(readyMenu.presentation.title), "");
+  assert.equal(readyMenu.presentation.iconOpacity, 1.0);
   assert.equal(readyMenu.activationCommand.length, 0);
   assert.equal(readyMenu.alternateActivationCommand.length, 0);
   assert.equal(readyMenu.openCommand.length, 0);

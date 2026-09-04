@@ -474,15 +474,23 @@ export function statusItem(model: Model): StatusItemState {
   items[items.length] = statusRow(23, model.launchAtLogin ? utf8Bytes("Disable Launch at Login") : utf8Bytes("Enable Launch at Login"), asciiBytes("friday.login"), model.loginStatus !== "checking", asciiBytes(""), "command");
   items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
   items[items.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
-  const title = model.workflow.kind === "recording" ? utf8Bytes("●") : model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping" ? utf8Bytes("···") : model.workflow.kind === "failed" ? utf8Bytes("!") : utf8Bytes("F");
-  const tone = model.workflow.kind === "failed" ? "critical" : model.workflow.kind === "not_ready" ? "warning" : model.workflow.kind === "recording" ? "critical" : "normal";
+  // The menu-bar mark never changes identity: the Friday waveform stays put
+  // and only its treatment moves — red while live, dimmed while working,
+  // ghosted while blocked, and a "!" badge only for a real failure.
+  const busy = model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping";
+  const live = model.workflow.kind === "recording" || model.workflow.kind === "starting";
+  const failed = model.workflow.kind === "failed";
+  const blocked = model.workflow.kind === "not_ready" || model.workflow.kind === "booting";
+  const title = failed ? utf8Bytes("!") : asciiBytes("");
+  const tone = failed || live ? "critical" : "normal";
+  const iconOpacity = failed || live ? 1.0 : busy ? 0.55 : blocked ? 0.35 : 1.0;
   return {
-    iconPath: asciiBytes(""),
+    iconPath: asciiBytes("assets/menubar-icon.png"),
     tooltip: workflowDetail(model),
     activationCommand: asciiBytes(""),
     alternateActivationCommand: asciiBytes(""),
     openCommand: asciiBytes(""),
-    presentation: { title, width: 28, tone, iconOpacity: 1.0, monospaced: true, fontSize: 13.0, fontWeight: "semibold" },
+    presentation: { title, width: 0, tone, iconOpacity, monospaced: true, fontSize: 13.0, fontWeight: "semibold" },
     items,
   };
 }
@@ -504,7 +512,7 @@ export function commandMsg(name: string): Msg | null {
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   if (msg.kind === "platform_failed") {
     const failedPlatform = updateAppState(model, msg);
-    if (failedPlatform !== null) return [failedPlatform, Cmd.showWindow("main")];
+    if (failedPlatform !== null) return [failedPlatform, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true)])];
   }
   const appState = updateAppState(model, msg);
   if (appState !== null) return appState;
@@ -528,7 +536,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         platformMessage: jsonString(msg.body, asciiBytes("\"message\":\"")),
       };
       const readyNext = model.workflow.kind === "booting" || model.workflow.kind === "not_ready" || model.workflow.kind === "ready" ? { ...next, workflow: readiness(next) } : next;
-      if (!next.platformSupported) return [readyNext, Cmd.showWindow("main")];
+      if (!next.platformSupported) return [readyNext, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true)])];
       if (next.hotkeyConfirmed && next.onboardingComplete) return [readyNext, Cmd.batch([
         Cmd.none,
         Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }),
@@ -537,6 +545,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
         Cmd.request("friday.hotkey.configure", next.hotkeyConfig, { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
         Cmd.hideWindow("main"),
+        Cmd.setDockPresence(false),
       ])];
       if (next.hotkeyConfirmed) return [readyNext, Cmd.batch([
         Cmd.none,
@@ -546,6 +555,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
         Cmd.request("friday.hotkey.configure", next.hotkeyConfig, { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" }),
         Cmd.showWindow("main"),
+        Cmd.setDockPresence(true),
       ])];
       if (next.onboardingComplete) return [readyNext, Cmd.batch([
         Cmd.none,
@@ -554,6 +564,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
         Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
         Cmd.hideWindow("main"),
+        Cmd.setDockPresence(false),
       ])];
       return [readyNext, Cmd.batch([
         Cmd.none,
@@ -562,6 +573,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
         Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
         Cmd.showWindow("main"),
+        Cmd.setDockPresence(true),
       ])];
     }
     case "automation_scene_requested":
@@ -569,14 +581,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "automation_login_requested":
       return [model, Cmd.request("friday.login.cycle_test", msg.value, { key: "automation-login", ok: "automation_login_finished", err: "automation_login_failed" })];
     case "show_settings":
-      return [{ ...model, page: "settings" }, Cmd.showWindow("main")];
+      return [{ ...model, page: "settings" }, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true)])];
     case "show_models":
-      return [{ ...model, page: "models" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+      return [{ ...model, page: "models" }, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
     case "show_permissions":
-      return [{ ...model, page: "permissions" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" })])];
+      return [{ ...model, page: "permissions" }, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" })])];
     case "show_diagnostics":
       if (!model.platformSupported) return model;
-      return [{ ...model, page: "diagnostics" }, Cmd.batch([Cmd.showWindow("main"), Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics", ok: "diagnostics_loaded", err: "diagnostics_failed" })])];
+      return [{ ...model, page: "diagnostics" }, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true), Cmd.request("friday.diagnostics", asciiBytes(""), { key: "diagnostics", ok: "diagnostics_loaded", err: "diagnostics_failed" })])];
     case "automation_contracts_requested":
       return [model, Cmd.request("friday.debug.contracts", msg.value, { key: "automation-contracts", ok: "automation_contracts_finished", err: "automation_contracts_failed" })];
     case "performance_fixture_requested":
@@ -921,10 +933,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         }
         if (model.workflow.kind === "starting") {
           if (generation !== model.generation || at < model.pressedAtMs) return model;
-          const current = model.workflow;
+          // A double-tap lock is armed the moment the second press lands, so
+          // releasing that tap must not tear the session down: audio_started
+          // promotes it to a locked recording. Tearing down here raced the
+          // in-flight audio start and orphaned a live capture.
+          if (model.workflow.lockCandidate) return model;
           const duration = at - model.pressedAtMs;
           const quick = duration < model.minimumHoldMs && duration <= model.doubleTapWindowMs ? at / 1 : 0 / 1;
-          return [{ ...model, hasImmediateResult: false, sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes(""), lastQuickReleaseAtMs: quick, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
+          // hold_elapsed may already have sent friday.audio.start, so the
+          // abort must cancel that in-flight request and discard any capture
+          // it managed to begin — not just the hold timer.
+          return [{ ...model, hasImmediateResult: false, sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes(""), lastQuickReleaseAtMs: quick, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
         }
         return model;
       }

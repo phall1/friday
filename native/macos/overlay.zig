@@ -27,8 +27,8 @@ pub const EventSink = struct {
     emit: *const fn (context: *anyopaque, action: []const u8) void,
 };
 
-const panel_width: CGFloat = 264;
-const panel_height: CGFloat = 52;
+const panel_width: CGFloat = 232;
+const panel_height: CGFloat = 36;
 const target_ivar: [*:0]const u8 = "_fridayOverlayState";
 const autosave_name = "FridayOverlayPosition";
 
@@ -46,10 +46,23 @@ const line_break_truncating_tail: NSInteger = 4;
 const floating_window_level_key: i32 = 5;
 const fade_in_seconds: f64 = 0.14;
 const fade_out_seconds: f64 = 0.12;
-const meter_animation_seconds: f64 = 0.11;
+const bar_count = 7;
+const bar_width: CGFloat = 3;
+const bar_pitch: CGFloat = 5;
+const bar_origin_x: CGFloat = 33;
+const bar_min_height: CGFloat = 3;
+const bar_max_height: CGFloat = 20;
+const panel_center_y: CGFloat = panel_height / 2;
+const tick_seconds: f64 = 1.0 / 30.0;
+const meter_attack: CGFloat = 0.5;
+const meter_release: CGFloat = 0.16;
 
 const Mode = enum { held, locked, transcribing };
 const Action = enum { none, stop, dismiss, cancel };
+
+fn restingHeights() [bar_count]CGFloat {
+    return .{ 4, 7, 10, 12, 10, 7, 4 };
+}
 
 const ProbeSnapshot = struct {
     ok: bool = false,
@@ -217,7 +230,7 @@ const State = struct {
     effect_view: Id = null,
     label: Id = null,
     status_dot: Id = null,
-    bars: [5]Id = @splat(null),
+    bars: [bar_count]Id = @splat(null),
     stop_button: Id = null,
     dismiss_button: Id = null,
     cancel_button: Id = null,
@@ -231,8 +244,9 @@ const State = struct {
     elapsed_seed: u64 = 0,
     last_elapsed_second: u64 = std.math.maxInt(u64),
     meter_clock_synced: bool = false,
+    meter_target: CGFloat = 0,
     smoothed_amplitude: CGFloat = 0,
-    transcribing_phase: usize = 0,
+    wave_phase: f64 = 0,
     last_action: Action = .none,
     probe: ProbeSnapshot = .{},
     services_mutex: Mutex = .{},
@@ -264,38 +278,37 @@ const State = struct {
         objc.send1(void, NSInteger, self.effect_view, objc.selector("setState:"), visual_effect_state_active);
         objc.send1(void, bool, self.effect_view, objc.selector("setWantsLayer:"), true);
         const effect_layer = objc.send0(Id, self.effect_view, objc.selector("layer"));
-        objc.send1(void, CGFloat, effect_layer, objc.selector("setCornerRadius:"), 12);
+        objc.send1(void, CGFloat, effect_layer, objc.selector("setCornerRadius:"), panel_height / 2);
         objc.send1(void, bool, effect_layer, objc.selector("setMasksToBounds:"), true);
         objc.send1(void, Id, self.panel, objc.selector("setContentView:"), self.effect_view);
         objc.release(self.effect_view);
 
-        self.status_dot = makeView(Rect.init(13, 22, 8, 8));
+        self.status_dot = makeView(Rect.init(15, panel_center_y - 4, 8, 8));
         if (self.status_dot == null) return false;
-        objc.send1(void, CGFloat, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setCornerRadius:"), 2);
+        objc.send1(void, CGFloat, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setCornerRadius:"), 4);
         addSubview(self.effect_view, self.status_dot);
 
-        const initial_heights = [_]CGFloat{ 6, 12, 18, 10, 7 };
-        for (&self.bars, initial_heights, 0..) |*slot, height, index| {
-            slot.* = makeView(Rect.init(31 + @as(CGFloat, @floatFromInt(index)) * 6, 26 - height / 2, 3, height));
+        for (&self.bars, 0..) |*slot, index| {
+            slot.* = makeView(Rect.init(bar_origin_x + @as(CGFloat, @floatFromInt(index)) * bar_pitch, panel_center_y - bar_min_height / 2, bar_width, bar_min_height));
             if (slot.* == null) return false;
-            objc.send1(void, CGFloat, objc.send0(Id, slot.*, objc.selector("layer")), objc.selector("setCornerRadius:"), 1.5);
+            objc.send1(void, CGFloat, objc.send0(Id, slot.*, objc.selector("layer")), objc.selector("setCornerRadius:"), bar_width / 2);
             addSubview(self.effect_view, slot.*);
         }
 
-        const initial_label = objc.nsString("Listening 0:00");
+        const initial_label = objc.nsString("0:00");
         self.label = objc.retain(objc.send1(Id, Id, objc.class("NSTextField"), objc.selector("labelWithString:"), initial_label));
         objc.release(initial_label);
         if (self.label == null) return false;
-        const digit_font = objc.send2(Id, CGFloat, CGFloat, objc.class("NSFont"), objc.selector("monospacedDigitSystemFontOfSize:weight:"), 12, 0.3);
+        const digit_font = objc.send2(Id, CGFloat, CGFloat, objc.class("NSFont"), objc.selector("monospacedDigitSystemFontOfSize:weight:"), 11, 0.3);
         objc.send1(void, Id, self.label, objc.selector("setFont:"), digit_font);
-        objc.send1(void, Rect, self.label, objc.selector("setFrame:"), Rect.init(67, 17, 96, 18));
+        objc.send1(void, Rect, self.label, objc.selector("setFrame:"), Rect.init(76, panel_center_y - 8, 44, 16));
         objc.send1(void, NSInteger, self.label, objc.selector("setLineBreakMode:"), line_break_truncating_tail);
         setAccessibilityLabel(self.label, "Recording elapsed time");
         addSubview(self.effect_view, self.label);
 
-        self.stop_button = makeButton("Stop", self.target, "fridayStop:", Rect.init(158, 12, 48, 28), "Stop recording", null);
-        self.dismiss_button = makeButton("–", self.target, "fridayDismiss:", Rect.init(206, 12, 26, 28), "Hide recording capsule", .{ .size = 16, .weight = 0.23 });
-        self.cancel_button = makeButton("×", self.target, "fridayCancel:", Rect.init(234, 12, 26, 28), "Cancel dictation", .{ .size = 16, .weight = 0.23 });
+        self.stop_button = makeButton("Stop", self.target, "fridayStop:", Rect.init(124, 6, 46, 24), "Stop recording", null);
+        self.dismiss_button = makeButton("–", self.target, "fridayDismiss:", Rect.init(174, 6, 24, 24), "Hide recording capsule", .{ .size = 15, .weight = 0.23 });
+        self.cancel_button = makeButton("×", self.target, "fridayCancel:", Rect.init(202, 6, 24, 24), "Cancel dictation", .{ .size = 15, .weight = 0.23 });
         if (self.stop_button == null or self.dismiss_button == null or self.cancel_button == null) return false;
         addSubview(self.effect_view, self.stop_button);
         addSubview(self.effect_view, self.dismiss_button);
@@ -317,7 +330,7 @@ const State = struct {
         self.appearance_observer_registered = true;
 
         self.updateVisualStyle();
-        self.applyAmplitude(0, false);
+        self.applyBarHeights(restingHeights());
         return true;
     }
 
@@ -338,39 +351,22 @@ const State = struct {
     }
 
     fn updateSignalStyle(self: *State) void {
-        const workspace = objc.send0(Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
-        const reduce_transparency = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceTransparency"));
-        const appearance = objc.send0(Id, self.effect_view, objc.selector("effectiveAppearance"));
-        const appearance_name = if (appearance != null) objc.send0(Id, appearance, objc.selector("name")) else null;
-        var appearance_buffer: [64]u8 = undefined;
-        const appearance_bytes = if (appearance_name != null) objc.copyUtf8Into(appearance_name, &appearance_buffer) else "";
-        const dark_appearance = std.mem.indexOf(u8, appearance_bytes, "Dark") != null;
-        const bright_live_signal = !reduce_transparency or dark_appearance;
-        const signal = if (self.mode == .transcribing)
-            objc.send0(Id, objc.class("NSColor"), objc.selector("labelColor"))
-        else if (bright_live_signal)
-            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.745, 0.949, 0.392, 1)
+        // Recording reads as the platform's recording red on the dot with
+        // adaptive label-colored bars; transcribing quiets both to the
+        // secondary label tone. Adaptive colors keep contrast correct in
+        // every appearance without a hand-tuned palette.
+        const dot_color = if (self.mode == .transcribing)
+            objc.send0(Id, objc.class("NSColor"), objc.selector("secondaryLabelColor"))
         else
-            objc.send4(Id, CGFloat, CGFloat, CGFloat, CGFloat, objc.class("NSColor"), objc.selector("colorWithSRGBRed:green:blue:alpha:"), 0.302, 0.486, 0.059, 1);
-        const signal_color = objc.send0(?*anyopaque, signal, objc.selector("CGColor"));
-        objc.send1(void, ?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
-        for (self.bars) |bar| objc.send1(void, ?*anyopaque, objc.send0(Id, bar, objc.selector("layer")), objc.selector("setBackgroundColor:"), signal_color);
-    }
-
-    fn linearized(component: CGFloat) CGFloat {
-        return if (component <= 0.04045) component / 12.92 else std.math.pow(CGFloat, (component + 0.055) / 1.055, 2.4);
-    }
-
-    fn luminance(red: CGFloat, green: CGFloat, blue: CGFloat) CGFloat {
-        return 0.2126 * linearized(red) + 0.7152 * linearized(green) + 0.0722 * linearized(blue);
-    }
-
-    fn signalContrastContract() bool {
-        const bright_luminance = luminance(0.745, 0.949, 0.392);
-        const dark_luminance = luminance(0.302, 0.486, 0.059);
-        const bright_on_black = (bright_luminance + 0.05) / 0.05;
-        const dark_on_white = 1.05 / (dark_luminance + 0.05);
-        return bright_on_black >= 4.5 and dark_on_white >= 4.5;
+            objc.send0(Id, objc.class("NSColor"), objc.selector("systemRedColor"));
+        const bar_color = if (self.mode == .transcribing)
+            objc.send0(Id, objc.class("NSColor"), objc.selector("secondaryLabelColor"))
+        else
+            objc.send0(Id, objc.class("NSColor"), objc.selector("labelColor"));
+        const dot_cg = objc.send0(?*anyopaque, dot_color, objc.selector("CGColor"));
+        const bar_cg = objc.send0(?*anyopaque, bar_color, objc.selector("CGColor"));
+        objc.send1(void, ?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("setBackgroundColor:"), dot_cg);
+        for (self.bars) |bar| objc.send1(void, ?*anyopaque, objc.send0(Id, bar, objc.selector("layer")), objc.selector("setBackgroundColor:"), bar_cg);
     }
 
     fn position(self: *State) void {
@@ -402,10 +398,14 @@ const State = struct {
         setHidden(self.stop_button, !locked);
         setHidden(self.cancel_button, false);
         setHidden(self.dismiss_button, false);
+        setHidden(self.label, false);
         self.elapsed_seed = elapsed;
         self.last_elapsed_second = std.math.maxInt(u64);
         self.meter_clock_synced = false;
+        self.meter_target = 0;
         self.smoothed_amplitude = 0;
+        self.wave_phase = 0;
+        self.applyBarHeights(restingHeights());
         self.replaceShownAt();
         self.updateElapsed(elapsed);
         self.replaceTimer();
@@ -419,8 +419,7 @@ const State = struct {
     }
     fn replaceTimer(self: *State) void {
         self.invalidateTimer();
-        const interval: f64 = if (self.mode == .transcribing) 0.12 else 0.2;
-        const timer = objc.send5(Id, f64, Id, Sel, Id, bool, objc.class("NSTimer"), objc.selector("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"), interval, self.target, objc.selector("fridayTick:"), null, true);
+        const timer = objc.send5(Id, f64, Id, Sel, Id, bool, objc.class("NSTimer"), objc.selector("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"), tick_seconds, self.target, objc.selector("fridayTick:"), null, true);
         self.timer = objc.retain(timer);
     }
     fn invalidateTimer(self: *State) void {
@@ -432,9 +431,10 @@ const State = struct {
     }
     fn tick(self: *State) void {
         if (self.mode == .transcribing) {
-            self.applyTranscribingFrame();
+            if (!self.reduceMotion()) self.applyTranscribingFrame();
             return;
         }
+        if (!self.reduceMotion()) self.applyRecordingFrame();
         if (self.shown_at == null) return;
         const interval = objc.send0(f64, self.shown_at, objc.selector("timeIntervalSinceNow"));
         const delta: u64 = @intFromFloat(@max(@as(f64, 0), @round(-interval * 1000)));
@@ -445,50 +445,55 @@ const State = struct {
         if (elapsed_second == self.last_elapsed_second) return;
         self.last_elapsed_second = elapsed_second;
         var buffer: [64]u8 = undefined;
-        const prefix = if (self.mode == .locked) "Locked" else "Listening";
-        const text = std.fmt.bufPrint(&buffer, "{s} {d}:{d:0>2}", .{ prefix, elapsed / 60000, (elapsed / 1000) % 60 }) catch return;
+        const text = std.fmt.bufPrint(&buffer, "{d}:{d:0>2}", .{ elapsed / 60000, (elapsed / 1000) % 60 }) catch return;
         setStringValue(self.label, text);
         setAccessibilityValue(self.label, text);
     }
-    fn applyBarHeights(self: *State, heights: [5]CGFloat, animated: bool) void {
-        const should_animate = animated and !self.reduceMotion();
-        if (should_animate) {
-            objc.send0(void, objc.class("NSAnimationContext"), objc.selector("beginGrouping"));
-            const context = objc.send0(Id, objc.class("NSAnimationContext"), objc.selector("currentContext"));
-            objc.send1(void, f64, context, objc.selector("setDuration:"), meter_animation_seconds);
-        }
+    fn applyBarHeights(self: *State, heights: [bar_count]CGFloat) void {
         for (self.bars, heights) |bar, height| {
             var frame = objc.send0(Rect, bar, objc.selector("frame"));
             frame.size.height = height;
-            frame.origin.y = 26 - height / 2;
-            const destination = if (should_animate) objc.send0(Id, bar, objc.selector("animator")) else bar;
-            objc.send1(void, Rect, destination, objc.selector("setFrame:"), frame);
+            frame.origin.y = panel_center_y - height / 2;
+            objc.send1(void, Rect, bar, objc.selector("setFrame:"), frame);
         }
-        if (should_animate) objc.send0(void, objc.class("NSAnimationContext"), objc.selector("endGrouping"));
     }
-    fn applyAmplitude(self: *State, amplitude: CGFloat, animated: bool) void {
-        const bases = [_]CGFloat{ 4, 5, 6, 5, 4 };
-        const ranges = [_]CGFloat{ 11, 21, 25, 19, 12 };
-        var heights: [5]CGFloat = undefined;
-        for (&heights, bases, ranges) |*height, base, range| height.* = base + range * amplitude;
-        self.applyBarHeights(heights, animated);
+    fn applyRecordingFrame(self: *State) void {
+        // Fast attack / slow release into a per-bar organ pipe: each bar has
+        // its own gain and a slow phase wobble so the meter reads as one
+        // living instrument instead of five stepped rectangles. Silence
+        // breathes at a low floor so the capsule never looks dead.
+        const target = self.meter_target;
+        const rate = if (target > self.smoothed_amplitude) meter_attack else meter_release;
+        self.smoothed_amplitude += (target - self.smoothed_amplitude) * rate;
+        self.wave_phase += tick_seconds * 6.0;
+        const amplitude = self.smoothed_amplitude;
+        const gains = [bar_count]CGFloat{ 0.5, 0.78, 1.0, 0.86, 1.0, 0.72, 0.46 };
+        var heights: [bar_count]CGFloat = undefined;
+        for (&heights, gains, 0..) |*height, gain, index| {
+            const phase = self.wave_phase + @as(f64, @floatFromInt(index)) * 1.7;
+            const wobble = 1.0 + 0.22 * @sin(phase);
+            const breathe = 0.05 + 0.03 * @sin(self.wave_phase * 0.6 + @as(f64, @floatFromInt(index)) * 0.9);
+            const level = @min(@max(amplitude * gain * wobble + breathe * (1.0 - amplitude), 0.0), 1.0);
+            height.* = bar_min_height + (bar_max_height - bar_min_height) * @as(CGFloat, @floatCast(level));
+        }
+        self.applyBarHeights(heights);
     }
     fn applyTranscribingFrame(self: *State) void {
-        const frames = [_][5]CGFloat{
-            .{ 5, 9, 15, 10, 6 },
-            .{ 6, 14, 9, 17, 7 },
-            .{ 8, 11, 18, 9, 13 },
-            .{ 5, 16, 10, 14, 6 },
-        };
-        self.applyBarHeights(frames[self.transcribing_phase % frames.len], true);
-        self.transcribing_phase += 1;
+        // A single traveling wave, continuous at frame rate — no stepped
+        // keyframes.
+        self.wave_phase += tick_seconds * 5.0;
+        var heights: [bar_count]CGFloat = undefined;
+        for (&heights, 0..) |*height, index| {
+            const phase = self.wave_phase - @as(f64, @floatFromInt(index)) * 0.85;
+            const level = 0.5 + 0.5 * @sin(phase);
+            height.* = bar_min_height + (bar_max_height - bar_min_height) * 0.75 * @as(CGFloat, @floatCast(level));
+        }
+        self.applyBarHeights(heights);
     }
     fn updateMeter(self: *State, amplitude_milli: NSUInteger, elapsed: u64) void {
         if (self.mode == .transcribing) return;
         const raw = @min(@as(CGFloat, @floatFromInt(amplitude_milli)) / 650.0, 1.0);
-        const target = @sqrt(raw);
-        self.smoothed_amplitude += (target - self.smoothed_amplitude) * 0.42;
-        self.applyAmplitude(self.smoothed_amplitude, true);
+        self.meter_target = @sqrt(raw);
         if (!self.meter_clock_synced) {
             self.elapsed_seed = elapsed;
             self.replaceShownAt();
@@ -507,11 +512,15 @@ const State = struct {
         setHidden(self.stop_button, true);
         setHidden(self.cancel_button, false);
         setHidden(self.dismiss_button, false);
-        setStringValue(self.label, "Transcribing");
+        setHidden(self.label, true);
         setAccessibilityValue(self.label, "Transcribing locally");
-        self.transcribing_phase = 0;
-        self.applyTranscribingFrame();
-        if (!self.reduceMotion()) self.replaceTimer();
+        self.wave_phase = 0;
+        if (self.reduceMotion()) {
+            self.applyBarHeights(restingHeights());
+        } else {
+            self.applyTranscribingFrame();
+            self.replaceTimer();
+        }
         if (!was_visible and !self.reduceMotion()) objc.send1(void, CGFloat, self.panel, objc.selector("setAlphaValue:"), 0);
         objc.send0(void, self.panel, objc.selector("orderFrontRegardless"));
         self.reveal(was_visible);
@@ -592,18 +601,17 @@ const State = struct {
 
         var label_buffer: [96]u8 = undefined;
         const locked_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
-        const locked_ok = std.mem.startsWith(u8, locked_label, "Locked");
+        const locked_ok = std.mem.eql(u8, locked_label, "0:01");
         self.updateMeter(500, 4321);
         const meter_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
-        const meter_ok = std.mem.eql(u8, meter_label, "Locked 0:04");
+        const meter_ok = std.mem.eql(u8, meter_label, "0:04");
         const live_signal_applied = objc.send0(?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("backgroundColor")) != null;
         self.showTranscribing();
-        const transcribing_label = objc.copyUtf8Into(objc.send0(Id, self.label, objc.selector("stringValue")), &label_buffer);
-        const transcribing_ok = std.mem.eql(u8, transcribing_label, "Transcribing");
+        const transcribing_ok = self.mode == .transcribing and objc.send0(bool, self.label, objc.selector("isHidden"));
         const controls_correct = objc.send0(bool, self.stop_button, objc.selector("isHidden")) and !objc.send0(bool, self.cancel_button, objc.selector("isHidden")) and !objc.send0(bool, self.dismiss_button, objc.selector("isHidden"));
         const reduced_motion_contract = if (self.reduceMotion()) self.timer == null else self.timer != null;
         const transcribing_signal_applied = objc.send0(?*anyopaque, objc.send0(Id, self.status_dot, objc.selector("layer")), objc.selector("backgroundColor")) != null;
-        const signal_contract = live_signal_applied and transcribing_signal_applied and signalContrastContract();
+        const signal_contract = live_signal_applied and transcribing_signal_applied;
 
         const reduce_transparency = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldReduceTransparency"));
         const increase_contrast = objc.send0(bool, workspace, objc.selector("accessibilityDisplayShouldIncreaseContrast"));

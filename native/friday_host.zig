@@ -11,6 +11,7 @@ const overlay_mod = @import("macos/overlay.zig");
 const system = @import("macos/system.zig");
 
 extern "c" var NSApplicationWillTerminateNotification: objc.Id;
+extern "c" var NSWindowDidChangeOcclusionStateNotification: objc.Id;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 const completion_capacity = 128;
@@ -143,6 +144,7 @@ pub const FridayHost = struct {
     generation: u64 = 0,
     current_audio_session: u64 = 0,
     current_audio_generation: u64 = 0,
+    audio_start_key: u64 = 0,
     sources: [source_capacity]?*delivery_mod.SourceTarget = @splat(null),
     source_count: usize = 0,
     transcripts: [completion_capacity]Transcript = @splat(.{}),
@@ -269,7 +271,32 @@ pub const FridayHost = struct {
         objc.setPointerIvar(observer, "fridayContext", self);
         const center = objc.send0(objc.Id, objc.class("NSNotificationCenter"), objc.selector("defaultCenter"));
         objc.send4(void, objc.Id, objc.Sel, objc.Id, objc.Id, center, objc.selector("addObserver:selector:name:object:"), observer, objc.selector("fridayWillTerminate:"), NSApplicationWillTerminateNotification, null);
+        // Dock presence follows real window visibility, not just core-driven
+        // show/hide commands: the close_policy=hide red button orders the
+        // main window out without any core message, and this notification is
+        // the only signal that reaches Friday. Panels (the capsule, open
+        // panels, menus) never count as a Dock-worthy window.
+        objc.send4(void, objc.Id, objc.Sel, objc.Id, objc.Id, center, objc.selector("addObserver:selector:name:object:"), observer, objc.selector("fridayWindowOcclusionChanged:"), NSWindowDidChangeOcclusionStateNotification, null);
         self.termination_observer = observer;
+    }
+
+    fn syncDockPresence(self: *FridayHost) void {
+        _ = self;
+        const app = objc.send0(objc.Id, objc.class("NSApplication"), objc.selector("sharedApplication"));
+        const windows = objc.send0(objc.Id, app, objc.selector("windows"));
+        const count = objc.send0(usize, windows, objc.selector("count"));
+        var any_visible_main = false;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const window = objc.send1(objc.Id, usize, windows, objc.selector("objectAtIndex:"), index);
+            if (!objc.send0(bool, window, objc.selector("isVisible"))) continue;
+            if (objc.isKindOfClass(window, objc.class("NSPanel"))) continue;
+            if (objc.send0(isize, window, objc.selector("level")) != 0) continue;
+            any_visible_main = true;
+            break;
+        }
+        // NSApplicationActivationPolicyRegular = 0, Accessory = 1.
+        objc.send1(void, isize, app, objc.selector("setActivationPolicy:"), if (any_visible_main) 0 else 1);
     }
 
     fn removeTerminationObserver(self: *FridayHost) void {
@@ -623,6 +650,7 @@ pub const FridayHost = struct {
                 if (operation.session == 0) operation.session = operation.generation;
                 self.current_audio_session = operation.session;
                 self.current_audio_generation = operation.generation;
+                self.audio_start_key = operation.key;
                 self.setAudioGeneration(operation.session, operation.generation);
                 self.audio.startSession(operation.session, audioCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
@@ -915,7 +943,15 @@ pub const FridayHost = struct {
             if (self.completions[index].key == key) self.completions[index].cancelled = true;
         }
         self.mutex.unlock();
-        const operation = selected orelse return;
+        const operation = selected orelse {
+            // The start request may already have finished host-side while
+            // its completion was still queued for the core. A cancel that
+            // arrives in that window finds no pending operation, but the
+            // capture it began is live — kill it or the microphone stays
+            // hot with no owning session.
+            if (key == self.audio_start_key and self.current_audio_session != 0) self.audio.cancelSession(self.current_audio_session);
+            return;
+        };
         self.input.cancelShortcutCapture();
         self.recognizer.cancelGeneration(operation.generation);
         self.models.cancel(key);
@@ -1415,11 +1451,17 @@ fn terminationObserverCallback(receiver: objc.Id, _: objc.Sel, _: objc.Id) callc
     host.recognizer.shutdownAndWait();
 }
 
+fn windowOcclusionObserverCallback(receiver: objc.Id, _: objc.Sel, _: objc.Id) callconv(.c) void {
+    const host = objc.getPointerIvar(FridayHost, receiver, "fridayContext") orelse return;
+    host.syncDockPresence();
+}
+
 fn ensureTerminationObserverClass() objc.Class {
     if (objc.lookupClass("FridayZigTerminationObserver")) |existing| return existing;
     const observer_class = objc.allocateClassPair(objc.class("NSObject"), "FridayZigTerminationObserver") orelse return null;
     if (!objc.addPointerIvar(observer_class, "fridayContext")) return null;
     if (!objc.addMethod(observer_class, objc.selector("fridayWillTerminate:"), &terminationObserverCallback, "v@:@")) return null;
+    if (!objc.addMethod(observer_class, objc.selector("fridayWindowOcclusionChanged:"), &windowOcclusionObserverCallback, "v@:@")) return null;
     objc.registerClassPair(observer_class);
     return observer_class;
 }
