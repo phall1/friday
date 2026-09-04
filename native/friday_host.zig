@@ -77,6 +77,7 @@ const Operation = struct {
     kind: AsyncKind = .hotkey_capture,
     stage: AsyncStage = .initial,
     generation: u64 = 0,
+    model_epoch: u64 = 0,
     session: u64 = 0,
     saved: ?[]u8 = null,
     path: [4096]u8 = undefined,
@@ -97,6 +98,7 @@ const CancellationTicket = struct {
     kind: AsyncKind,
     stage: AsyncStage,
     generation: u64,
+    model_epoch: u64,
     session: u64,
     callback_retired: bool,
 };
@@ -105,6 +107,7 @@ const CancellationCleanup = struct {
     input: bool = false,
     audio: bool = false,
     recognizer: bool = false,
+    activation: bool = false,
     model: bool = false,
     session_state: bool = false,
     callback_suppressed: bool = false,
@@ -225,7 +228,7 @@ pub const FridayHost = struct {
         try self.installTerminationObserver();
 
         if (self.models.activeModelPath()) |path| {
-            self.recognizer.activateModel(path, 0, .{ .context = self, .complete = startupActivation }) catch {};
+            self.recognizer.activateModel(path, self.models.beginOperation(), .{ .context = self, .complete = startupActivation }) catch {};
         }
         return self;
     }
@@ -416,7 +419,7 @@ pub const FridayHost = struct {
         if (std.mem.eql(u8, name, "friday.model.status")) return self.models.writeStatus(output) catch 0;
         if (std.mem.eql(u8, name, "friday.model.probes")) return models_mod.ModelRepository.writeContractProbes(output) catch 0;
         if (std.mem.eql(u8, name, "friday.model.cancel")) {
-            self.models.cancel(std.fmt.parseUnsigned(u64, payload, 10) catch 0);
+            self.cancelModelRequest(std.fmt.parseUnsigned(u64, payload, 10) catch 0);
             return copyResult(output, "{\"ok\":true}");
         }
         if (std.mem.eql(u8, name, "friday.model.remove")) {
@@ -712,21 +715,21 @@ pub const FridayHost = struct {
                 self.recognizer.transcribeAudio(decoded, operation.session, operation.generation, genericCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
             },
             .nemo_unload => self.recognizer.unload(genericCompletion(operation)) catch self.finishError(operation, "unload_failed", "The recognizer could not unload."),
-            .model_download => self.models.downloadDefault(operation.key, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_resume => self.models.resumePending(operation.key, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_resolve_hf => self.models.resolveHF(payload, operation.key, modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_download_hf => self.models.downloadResolvedHF(payload, operation.key, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_download => self.models.downloadDefault(operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_resume => self.models.resumePending(operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_resolve_hf => self.models.resolveHF(payload, operation.key, self.assignModelEpoch(operation), modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_download_hf => self.models.downloadResolvedHF(payload, operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
             .model_add_local => {
                 const path = json.decodeBase64Alloc(self.allocator, json.field(payload, "path")) catch return self.finishError(operation, "invalid_path", "The local model path is invalid.");
                 defer self.allocator.free(path);
-                self.models.addLocal(path, json.unsignedField(payload, "modelKey"), operation.generation, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
+                self.models.addLocal(path, json.unsignedField(payload, "modelKey"), operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
             },
             .model_add_hf => {
                 const identifier = json.decodeBase64Alloc(self.allocator, json.field(payload, "id")) catch return self.finishError(operation, "invalid_identifier", "The Hugging Face identifier is invalid.");
                 defer self.allocator.free(identifier);
-                self.models.resolveHF(identifier, operation.key, modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
+                self.models.resolveHF(identifier, operation.key, self.assignModelEpoch(operation), modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
             },
-            .model_select => self.models.select(json.unsignedField(payload, "modelKey"), operation.generation, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_select => self.models.select(json.unsignedField(payload, "modelKey"), operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
             .model_pick_local => self.pickLocalModel(operation),
             .debug_fixture_delivery => self.startFixture(operation, payload),
             .debug_performance => self.startPerformance(operation, payload),
@@ -817,7 +820,7 @@ pub const FridayHost = struct {
         operation.path_len = path.len;
         self.generation += 1;
         operation.generation = self.generation;
-        self.models.addLocal(operation.path[0..operation.path_len], 1000 + self.generation, operation.generation, modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The local model could not be added.");
+        self.models.addLocal(operation.path[0..operation.path_len], 1000 + self.generation, operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The local model could not be added.");
     }
 
     fn startFixture(self: *FridayHost, operation: *Operation, payload: []const u8) void {
@@ -837,7 +840,7 @@ pub const FridayHost = struct {
         pointer.* = source;
         self.addSource(pointer);
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(model_path, operation.generation, fixtureCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
+        self.recognizer.activateModel(model_path, self.assignModelEpoch(operation), fixtureCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
     }
 
     fn startPerformance(self: *FridayHost, operation: *Operation, payload: []const u8) void {
@@ -855,7 +858,7 @@ pub const FridayHost = struct {
         self.generation += 1;
         operation.generation = self.generation;
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(self.models.activeModelPath().?, operation.generation, performanceCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
+        self.recognizer.activateModel(self.models.activeModelPath().?, self.assignModelEpoch(operation), performanceCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
     }
 
     fn runPerformanceSample(self: *FridayHost, operation: *Operation) void {
@@ -963,6 +966,23 @@ pub const FridayHost = struct {
         return true;
     }
 
+    fn assignModelEpoch(self: *FridayHost, operation: *Operation) u64 {
+        const epoch = self.models.beginOperation();
+        operation.model_epoch = epoch;
+        return epoch;
+    }
+
+    fn cancelModelRequest(self: *FridayHost, request_key: u64) void {
+        self.mutex.lock();
+        var epoch: u64 = 0;
+        for (&self.operations) |*operation| if (operation.used and operation.key == request_key) {
+            epoch = operation.model_epoch;
+            break;
+        };
+        self.mutex.unlock();
+        self.models.cancel(epoch);
+    }
+
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         const ticket = self.claimCancellation(key) orelse return;
@@ -970,7 +990,8 @@ pub const FridayHost = struct {
         if (cleanup.input) self.input.cancelShortcutCapture();
         if (cleanup.audio) self.audio.cancelSession(ticket.session);
         if (cleanup.recognizer) self.recognizer.cancelGeneration(ticket.generation);
-        if (cleanup.model) self.models.cancel(ticket.key);
+        if (cleanup.activation) self.recognizer.cancelActivation(ticket.model_epoch);
+        if (cleanup.model) self.models.cancel(ticket.model_epoch);
         if (cleanup.session_state) {
             self.removeSourcesForGeneration(ticket.generation);
             if (self.takeTranscript(ticket.session, ticket.generation)) |text| self.allocator.free(text);
@@ -995,6 +1016,7 @@ pub const FridayHost = struct {
                 .kind = operation.kind,
                 .stage = operation.stage,
                 .generation = operation.generation,
+                .model_epoch = operation.model_epoch,
                 .session = operation.session,
                 .callback_retired = operation.callback_retired,
             };
@@ -1435,7 +1457,7 @@ pub const FridayHost = struct {
         const path = self.models.activeModelPath() orelse return self.finishOperation(operation, true, bytes);
         if (!self.saveOperationResult(operation, bytes)) return self.finishError(operation, "out_of_memory", "The model result could not be retained.");
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(path, operation.generation, modelActivationCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The selected model could not be loaded.");
+        self.recognizer.activateModel(path, operation.model_epoch, modelActivationCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The selected model could not be loaded.");
     }
 
     fn modelActivationCompletion(operation: *Operation) nemo_mod.AsyncCompletion {
@@ -1581,15 +1603,18 @@ fn cancellationCleanup(kind: AsyncKind, stage: AsyncStage, callback_retired: boo
         .audio_retry, .transcribe_capture => .{ .recognizer = true, .session_state = true },
         .transcribe_path => .{ .recognizer = true },
         .model_download, .model_resume, .model_resolve_hf, .model_download_hf, .model_add_hf => if (stage == .activating)
-            .{ .recognizer = true }
+            .{ .activation = true }
         else
             .{ .model = true },
         .model_add_local, .model_select, .model_pick_local => if (stage == .activating)
-            .{ .recognizer = true }
+            .{ .activation = true }
         else
-            .{},
-        .debug_fixture_delivery => .{ .recognizer = true, .session_state = true },
-        .debug_performance => .{ .recognizer = true },
+            .{ .model = true },
+        .debug_fixture_delivery => if (stage == .activating)
+            .{ .activation = true, .session_state = true }
+        else
+            .{ .recognizer = true, .session_state = true },
+        .debug_performance => if (stage == .activating) .{ .activation = true } else .{ .recognizer = true },
         .nemo_unload, .debug_contracts => .{},
     };
 }
@@ -1702,7 +1727,7 @@ test "queued operation completion retains its slot through cancellation and poll
     const cleanup = cancellationCleanup(ticket.kind, ticket.stage, ticket.callback_retired);
     try std.testing.expect(cleanup.audio);
     try std.testing.expect(cleanup.session_state);
-    try std.testing.expect(!cleanup.recognizer);
+    try std.testing.expect(!cleanup.recognizer and !cleanup.activation);
     try std.testing.expect(!cleanup.model);
     host.retireCancellation(ticket, cleanup.callback_suppressed);
 
@@ -1721,19 +1746,19 @@ test "queued operation completion retains its slot through cancellation and poll
 test "cancellation cleanup is tagged by operation kind stage and retirement" {
     const shortcut = cancellationCleanup(.hotkey_capture, .initial, false);
     try std.testing.expect(shortcut.input and shortcut.callback_suppressed);
-    try std.testing.expect(!shortcut.audio and !shortcut.recognizer and !shortcut.model and !shortcut.session_state);
+    try std.testing.expect(!shortcut.audio and !shortcut.recognizer and !shortcut.activation and !shortcut.model and !shortcut.session_state);
 
     const model = cancellationCleanup(.model_download, .initial, false);
     try std.testing.expect(model.model);
-    try std.testing.expect(!model.input and !model.audio and !model.recognizer and !model.session_state);
+    try std.testing.expect(!model.input and !model.audio and !model.recognizer and !model.activation and !model.session_state);
 
     const activating_model = cancellationCleanup(.model_select, .activating, false);
-    try std.testing.expect(activating_model.recognizer);
-    try std.testing.expect(!activating_model.model and !activating_model.audio and !activating_model.input);
+    try std.testing.expect(activating_model.activation);
+    try std.testing.expect(!activating_model.recognizer and !activating_model.model and !activating_model.audio and !activating_model.input);
 
     const transcription = cancellationCleanup(.transcribe_capture, .transcribing, false);
     try std.testing.expect(transcription.recognizer and transcription.session_state);
-    try std.testing.expect(!transcription.model and !transcription.audio and !transcription.input);
+    try std.testing.expect(!transcription.activation and !transcription.model and !transcription.audio and !transcription.input);
 
     const completed_transcription = cancellationCleanup(.transcribe_capture, .transcribing, true);
     try std.testing.expectEqual(CancellationCleanup{}, completed_transcription);

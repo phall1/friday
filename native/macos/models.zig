@@ -274,10 +274,10 @@ fn defaultModel(allocator: Allocator) !Model {
     });
 }
 
-const AsyncOperation = struct { operation: u64, completion: AsyncCompletion };
-const AddOperation = struct { path: []u8, key: u64, generation: u64, completion: AsyncCompletion };
-const IdentifierOperation = struct { identifier: []u8, operation: u64, completion: AsyncCompletion };
-const SelectOperation = struct { key: u64, generation: u64, completion: AsyncCompletion };
+const AsyncOperation = struct { request_key: u64, epoch: u64, completion: AsyncCompletion };
+const AddOperation = struct { path: []u8, key: u64, request_key: u64, epoch: u64, completion: AsyncCompletion };
+const IdentifierOperation = struct { identifier: []u8, request_key: u64, epoch: u64, completion: AsyncCompletion };
+const SelectOperation = struct { key: u64, request_key: u64, epoch: u64, completion: AsyncCompletion };
 
 const SyncRequest = struct {
     kind: union(enum) {
@@ -331,6 +331,34 @@ const Resume = struct {
     }
 };
 
+const CancelledEpochs = struct {
+    slots: [128]u64 = @splat(0),
+
+    fn insert(self: *CancelledEpochs, epoch: u64) bool {
+        if (epoch == 0) return false;
+        for (&self.slots) |*slot| {
+            if (slot.* == epoch) return true;
+            if (slot.* == 0) {
+                slot.* = epoch;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn contains(self: CancelledEpochs, epoch: u64) bool {
+        for (self.slots) |slot| if (slot == epoch) return true;
+        return false;
+    }
+
+    fn remove(self: *CancelledEpochs, epoch: u64) void {
+        for (&self.slots) |*slot| if (slot.* == epoch) {
+            slot.* = 0;
+            return;
+        };
+    }
+};
+
 pub const ModelRepository = struct {
     state: *State,
 
@@ -353,7 +381,6 @@ pub const ModelRepository = struct {
         const io = state.threaded_io.io();
         state.mutex.lockUncancelable(io);
         state.stopping = true;
-        state.cancelled_operation.store(std.math.maxInt(u64), .release);
         state.condition.signal(io);
         state.mutex.unlock(io);
         state.thread.?.join();
@@ -389,29 +416,41 @@ pub const ModelRepository = struct {
         return self.sync(.{ .status = {} }, output);
     }
 
-    pub fn downloadDefault(self: *ModelRepository, operation: u64, completion: AsyncCompletion) !void {
-        try self.enqueue(.{ .download_default = .{ .operation = operation, .completion = completion } });
+    pub fn beginOperation(self: *ModelRepository) u64 {
+        return self.state.next_operation_epoch.fetchAdd(1, .monotonic);
     }
 
-    pub fn resumePending(self: *ModelRepository, operation: u64, completion: AsyncCompletion) !void {
-        try self.enqueue(.{ .resume_pending = .{ .operation = operation, .completion = completion } });
+    pub fn downloadDefault(self: *ModelRepository, request_key: u64, epoch: u64, completion: AsyncCompletion) !void {
+        try self.enqueue(.{ .download_default = .{ .request_key = request_key, .epoch = epoch, .completion = completion } });
     }
 
-    pub fn cancel(self: *ModelRepository, operation: u64) void {
-        self.state.cancelled_operation.store(operation, .release);
+    pub fn resumePending(self: *ModelRepository, request_key: u64, epoch: u64, completion: AsyncCompletion) !void {
+        try self.enqueue(.{ .resume_pending = .{ .request_key = request_key, .epoch = epoch, .completion = completion } });
+    }
+
+    pub fn cancel(self: *ModelRepository, epoch: u64) void {
+        if (epoch == 0) return;
+        const state = self.state;
+        const io = state.threaded_io.io();
+        state.mutex.lockUncancelable(io);
+        defer state.mutex.unlock(io);
+        if (state.stopping) return;
+        _ = state.cancelled_epochs.insert(epoch);
     }
 
     pub fn addLocal(
         self: *ModelRepository,
         path: []const u8,
         key: u64,
-        generation: u64,
+        request_key: u64,
+        epoch: u64,
         completion: AsyncCompletion,
     ) !void {
         try self.enqueue(.{ .add_local = .{
             .path = try self.copyForCommand(path),
             .key = key,
-            .generation = generation,
+            .request_key = request_key,
+            .epoch = epoch,
             .completion = completion,
         } });
     }
@@ -419,12 +458,14 @@ pub const ModelRepository = struct {
     pub fn resolveHF(
         self: *ModelRepository,
         identifier: []const u8,
-        operation: u64,
+        request_key: u64,
+        epoch: u64,
         completion: AsyncCompletion,
     ) !void {
         try self.enqueue(.{ .resolve_hf = .{
             .identifier = try self.copyForCommand(identifier),
-            .operation = operation,
+            .request_key = request_key,
+            .epoch = epoch,
             .completion = completion,
         } });
     }
@@ -432,12 +473,14 @@ pub const ModelRepository = struct {
     pub fn downloadResolvedHF(
         self: *ModelRepository,
         identifier: []const u8,
-        operation: u64,
+        request_key: u64,
+        epoch: u64,
         completion: AsyncCompletion,
     ) !void {
         try self.enqueue(.{ .download_resolved_hf = .{
             .identifier = try self.copyForCommand(identifier),
-            .operation = operation,
+            .request_key = request_key,
+            .epoch = epoch,
             .completion = completion,
         } });
     }
@@ -445,12 +488,14 @@ pub const ModelRepository = struct {
     pub fn select(
         self: *ModelRepository,
         key: u64,
-        generation: u64,
+        request_key: u64,
+        epoch: u64,
         completion: AsyncCompletion,
     ) !void {
         try self.enqueue(.{ .select = .{
             .key = key,
-            .generation = generation,
+            .request_key = request_key,
+            .epoch = epoch,
             .completion = completion,
         } });
     }
@@ -516,7 +561,8 @@ const State = struct {
     tail: ?*Command = null,
     stopping: bool = false,
     thread: ?std.Thread = null,
-    cancelled_operation: std.atomic.Value(u64) = .init(0),
+    next_operation_epoch: std.atomic.Value(u64) = .init(1),
+    cancelled_epochs: CancelledEpochs = .{},
 
     snapshot_mutex: Io.Mutex = .init,
     models: std.ArrayList(Model) = .empty,
@@ -698,25 +744,29 @@ const State = struct {
     }
 
     fn executeDownloadDefault(self: *State, operation: AsyncOperation) void {
+        defer self.retireEpoch(operation.epoch);
         var model = defaultModel(self.allocator) catch {
             self.fail(operation.completion, "out_of_memory", "The model operation could not be prepared.");
             return;
         };
         defer model.deinit(self.allocator);
-        self.downloadModel(&model, operation.operation, operation.completion);
+        self.downloadModel(&model, operation.request_key, operation.epoch, operation.completion);
     }
 
     fn executeResume(self: *State, operation: AsyncOperation) void {
+        defer self.retireEpoch(operation.epoch);
         var pending_resume = self.findPendingResume() catch null;
         if (pending_resume == null) {
             self.fail(operation.completion, "resume_unavailable", "No valid partial model download is available to resume.");
             return;
         }
         defer pending_resume.?.deinit(self.allocator);
-        self.downloadModel(&pending_resume.?.model, operation.operation, operation.completion);
+        self.downloadModel(&pending_resume.?.model, operation.request_key, operation.epoch, operation.completion);
     }
 
     fn executeAddLocal(self: *State, operation: AddOperation) void {
+        defer self.retireEpoch(operation.epoch);
+        if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         if (!hasExtension(operation.path, ".gguf")) {
             self.fail(operation.completion, "incompatible", "Friday accepts manifest-backed Parakeet TDT GGUF files only.");
             return;
@@ -739,11 +789,12 @@ const State = struct {
             self.fail(operation.completion, "metadata_required", "The local model does not match its sidecar size/SHA-256 metadata.");
             return;
         }
-        const probe = self.probe.probe(self.probe.context, operation.path, operation.generation);
+        const probe = self.probe.probe(self.probe.context, operation.path, operation.request_key);
         if (!probe.ok) {
             self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", if (probe.message.len != 0) probe.message else "The model failed its runtime probe.");
             return;
         }
+        if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         applyProbeCapabilities(self.allocator, &model, probe) catch {
             self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
             return;
@@ -766,6 +817,8 @@ const State = struct {
     }
 
     fn executeSelect(self: *State, operation: SelectOperation) void {
+        defer self.retireEpoch(operation.epoch);
+        if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         const index = self.findModel(operation.key) orelse {
             self.fail(operation.completion, "model_unavailable", "");
             return;
@@ -777,11 +830,12 @@ const State = struct {
             self.fail(operation.completion, "model_unavailable", "");
             return;
         }
-        const probe = self.probe.probe(self.probe.context, model.path, operation.generation);
+        const probe = self.probe.probe(self.probe.context, model.path, operation.request_key);
         if (!probe.ok) {
             self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", probe.message);
             return;
         }
+        if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         applyProbeCapabilities(self.allocator, model, probe) catch {
             self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
             return;
@@ -799,12 +853,13 @@ const State = struct {
     }
 
     fn executeResolveHF(self: *State, operation: IdentifierOperation) void {
+        defer self.retireEpoch(operation.epoch);
         const identifier = std.mem.trim(u8, operation.identifier, " \t\r\n");
         if (!safeHuggingFaceIdentifier(identifier)) {
             self.fail(operation.completion, "invalid_identifier", "Use a public Hugging Face identifier in owner/repository form.");
             return;
         }
-        if (self.cancelled(operation.operation)) {
+        if (self.cancelled(operation.epoch)) {
             self.completeCancelled(operation.completion, 0);
             return;
         }
@@ -820,7 +875,7 @@ const State = struct {
         defer self.allocator.free(url);
 
         const metadata = self.fetchMetadata(url) catch |err| {
-            if (self.cancelled(operation.operation)) {
+            if (self.cancelled(operation.epoch)) {
                 self.completeCancelled(operation.completion, 0);
             } else if (err == error.AccessDenied) {
                 self.fail(operation.completion, "gated_or_private", "That repository is private or requires gated access.");
@@ -830,7 +885,7 @@ const State = struct {
             return;
         };
         defer self.allocator.free(metadata);
-        if (self.cancelled(operation.operation)) {
+        if (self.cancelled(operation.epoch)) {
             self.completeCancelled(operation.completion, 0);
             return;
         }
@@ -860,6 +915,8 @@ const State = struct {
     }
 
     fn executeDownloadResolvedHF(self: *State, operation: IdentifierOperation) void {
+        defer self.retireEpoch(operation.epoch);
+        if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         const identifier = std.mem.trim(u8, operation.identifier, " \t\r\n");
         for (self.candidates.items) |candidate| {
             if (std.mem.eql(u8, candidate.identifier, identifier)) {
@@ -868,7 +925,7 @@ const State = struct {
                     return;
                 };
                 defer model.deinit(self.allocator);
-                self.downloadModel(&model, operation.operation, operation.completion);
+                self.downloadModel(&model, operation.request_key, operation.epoch, operation.completion);
                 return;
             }
         }
@@ -894,9 +951,19 @@ const State = struct {
         try self.candidates.append(self.allocator, .{ .identifier = id_copy, .model = model_copy });
     }
 
-    fn cancelled(self: *State, operation: u64) bool {
-        const value = self.cancelled_operation.load(.acquire);
-        return value == operation or value == std.math.maxInt(u64);
+    fn cancelled(self: *State, epoch: u64) bool {
+        const io = self.threaded_io.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.stopping) return true;
+        return self.cancelled_epochs.contains(epoch);
+    }
+
+    fn retireEpoch(self: *State, epoch: u64) void {
+        const io = self.threaded_io.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.cancelled_epochs.remove(epoch);
     }
 
     fn completeCancelled(self: *State, completion: AsyncCompletion, resume_bytes: u64) void {
@@ -918,7 +985,8 @@ const State = struct {
         return self.allocator.realloc(buffer, writer.end);
     }
 
-    fn downloadModel(self: *State, model: *Model, operation: u64, completion: AsyncCompletion) void {
+    fn downloadModel(self: *State, model: *Model, request_key: u64, epoch: u64, completion: AsyncCompletion) void {
+        if (self.cancelled(epoch)) return self.completeCancelled(completion, 0);
         if (!validDownloadManifest(model.*)) {
             self.fail(completion, "invalid_download_url", "The resolved model download address is invalid.");
             return;
@@ -930,8 +998,9 @@ const State = struct {
         if (self.findModel(model.key)) |index| {
             const installed = &self.models.items[index];
             if (installed.managed and sameIdentity(installed.*, model.*) and self.validateManagedModel(installed.*)) {
-                const probe = self.probe.probe(self.probe.context, installed.path, operation);
+                const probe = self.probe.probe(self.probe.context, installed.path, request_key);
                 if (probe.ok) {
+                    if (self.cancelled(epoch)) return self.completeCancelled(completion, 0);
                     applyProbeCapabilities(self.allocator, installed, probe) catch {
                         self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
                         return;
@@ -992,10 +1061,10 @@ const State = struct {
             file.close(self.threaded_io.io());
         }
         self.downloaded_bytes = offset;
-        self.publishProgress(operation, "downloading", offset, model.expected_bytes);
+        self.publishProgress(request_key, "downloading", offset, model.expected_bytes);
 
-        const outcome = self.streamDownload(model.*, operation, partial_path, resume_path, offset, etag, last_modified) catch |err| {
-            self.publishProgress(operation, "failed", self.downloaded_bytes, self.total_bytes);
+        const outcome = self.streamDownload(model.*, request_key, epoch, partial_path, resume_path, offset, etag, last_modified) catch |err| {
+            self.publishProgress(request_key, "failed", self.downloaded_bytes, self.total_bytes);
             self.fail(completion, "download_failed", downloadErrorMessage(err));
             return;
         };
@@ -1004,12 +1073,12 @@ const State = struct {
             self.allocator.free(outcome.last_modified);
         }
         if (outcome.cancelled) {
-            self.publishProgress(operation, "cancelled", self.downloaded_bytes, self.total_bytes);
+            self.publishProgress(request_key, "cancelled", self.downloaded_bytes, self.total_bytes);
             self.completeCancelled(completion, self.downloaded_bytes);
             return;
         }
-        self.publishProgress(operation, "verifying", self.downloaded_bytes, self.total_bytes);
-        self.verifyAndPublish(model, operation, completion, operation_root, partial_path, resume_path);
+        self.publishProgress(request_key, "verifying", self.downloaded_bytes, self.total_bytes);
+        self.verifyAndPublish(model, request_key, epoch, completion, operation_root, partial_path, resume_path);
     }
 
     const DownloadOutcome = struct { cancelled: bool, etag: []u8, last_modified: []u8 };
@@ -1017,7 +1086,8 @@ const State = struct {
     fn streamDownload(
         self: *State,
         model: Model,
-        operation: u64,
+        request_key: u64,
+        epoch: u64,
         partial_path: []const u8,
         resume_path: []const u8,
         requested_offset: u64,
@@ -1077,7 +1147,7 @@ const State = struct {
         var body = response.reader(&.{});
         var buffer: [256 * 1024]u8 = undefined;
         while (true) {
-            if (self.cancelled(operation)) {
+            if (self.cancelled(epoch)) {
                 try partial.sync(self.threaded_io.io());
                 if (has_validator) try self.persistResume(resume_path, model, self.downloaded_bytes, etag, last_modified);
                 return .{ .cancelled = true, .etag = etag, .last_modified = last_modified };
@@ -1092,7 +1162,7 @@ const State = struct {
                 try self.persistResume(resume_path, model, self.downloaded_bytes, etag, last_modified);
                 last_persisted = self.downloaded_bytes;
             }
-            self.publishProgress(operation, "downloading", self.downloaded_bytes, self.total_bytes);
+            self.publishProgress(request_key, "downloading", self.downloaded_bytes, self.total_bytes);
         }
         try partial.sync(self.threaded_io.io());
         if (has_validator) try self.persistResume(resume_path, model, self.downloaded_bytes, etag, last_modified);
@@ -1132,12 +1202,14 @@ const State = struct {
     fn verifyAndPublish(
         self: *State,
         model: *Model,
-        operation: u64,
+        request_key: u64,
+        epoch: u64,
         completion: AsyncCompletion,
         operation_root: []const u8,
         partial_path: []const u8,
         resume_path: []const u8,
     ) void {
+        if (self.cancelled(epoch)) return self.completeCancelled(completion, self.downloaded_bytes);
         const size = fileSize(self.threaded_io.io(), partial_path) catch 0;
         const digest = hashFileHex(self.threaded_io.io(), partial_path) catch {
             self.fail(completion, "integrity_failed", "The model failed exact size/SHA-256 verification.");
@@ -1199,11 +1271,12 @@ const State = struct {
             return;
         };
 
-        const staged_probe = self.probe.probe(self.probe.context, staged_model, operation);
+        const staged_probe = self.probe.probe(self.probe.context, staged_model, request_key);
         if (!staged_probe.ok) {
             self.fail(completion, if (staged_probe.code.len != 0) staged_probe.code else "model_probe_failed", if (staged_probe.message.len != 0) staged_probe.message else "The model failed its runtime probe.");
             return;
         }
+        if (self.cancelled(epoch)) return self.completeCancelled(completion, self.downloaded_bytes);
         applyProbeCapabilities(self.allocator, model, staged_probe) catch {
             self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
             return;
@@ -1297,11 +1370,12 @@ const State = struct {
             self.fail(completion, "published_model_invalid", "The published final model failed manifest/size/SHA validation.");
             return;
         }
-        const final_probe = self.probe.probe(self.probe.context, final_model, operation);
+        const final_probe = self.probe.probe(self.probe.context, final_model, request_key);
         if (!final_probe.ok) {
             self.fail(completion, "published_model_probe_failed", if (final_probe.message.len != 0) final_probe.message else "The published model failed its final runtime probe.");
             return;
         }
+        if (self.cancelled(epoch)) return self.completeCancelled(completion, self.downloaded_bytes);
         if (final_probe.streaming != staged_probe.streaming) {
             self.fail(completion, "published_model_capability_changed", "The published model did not reproduce its staged runtime capabilities.");
             return;
@@ -1312,7 +1386,7 @@ const State = struct {
         };
         Dir.cwd().deleteFile(self.threaded_io.io(), resume_path) catch {};
         Dir.cwd().deleteTree(self.threaded_io.io(), operation_root) catch {};
-        self.publishProgress(operation, "installed", size, size);
+        self.publishProgress(request_key, "installed", size, size);
         const message = std.fmt.allocPrint(self.allocator, "{s} is verified, warm, and active.", .{model.name}) catch "The model is verified, warm, and active.";
         defer if (message.ptr != "The model is verified, warm, and active.".ptr) self.allocator.free(message);
         self.completeValue(completion, true, .{ .ok = true, .modelKey = model.key, .message = message, .probe = .{ .ok = true, .streaming = final_probe.streaming } });
@@ -2329,7 +2403,7 @@ fn runContractProbes() !struct {
     const pending_resume_hydrated = hydrated.partial_bytes == 4096 and std.mem.eql(u8, hydrated.etag, "probe-etag");
 
     var completion_counter = CompletionCounter{ .io = repository.state.threaded_io.io() };
-    try repository.resolveHF("../escape", 991, .{ .context = &completion_counter, .complete = CompletionCounter.complete });
+    try repository.resolveHF("../escape", 991, repository.beginOperation(), .{ .context = &completion_counter, .complete = CompletionCounter.complete });
     completion_counter.wait();
     const completion_exactly_once = completion_counter.count == 1;
     const serialized_mutation_owner = repository.state.thread != null and completion_exactly_once;
@@ -2397,4 +2471,24 @@ test "capability vocabulary rejects contradictory manifests" {
     try std.testing.expect(!validCapabilities("streaming", "tdt", "none"));
     try std.testing.expect(!validCapabilities("offline", "tdt", "runtime_verified"));
     try std.testing.expect(!validCapabilities("claimed", "tdt", "none"));
+}
+
+test "model cancellation epochs retire without poisoning retries" {
+    var cancelled: CancelledEpochs = .{};
+    var next_epoch: u64 = 1;
+    for (0..10_000) |_| {
+        const cancelled_epoch = next_epoch;
+        next_epoch += 1;
+        try std.testing.expect(cancelled.insert(cancelled_epoch));
+        try std.testing.expect(cancelled.contains(cancelled_epoch));
+
+        cancelled.remove(cancelled_epoch);
+        try std.testing.expect(!cancelled.contains(cancelled_epoch));
+        try std.testing.expect(!cancelled.contains(next_epoch));
+    }
+
+    for (1..129) |value| try std.testing.expect(cancelled.insert(@intCast(value)));
+    try std.testing.expect(!cancelled.insert(129));
+    for (1..129) |value| cancelled.remove(@intCast(value));
+    try std.testing.expect(cancelled.insert(129));
 }

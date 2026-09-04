@@ -73,8 +73,8 @@ pub const NemoRecognizer = struct {
     }
 
     /// Runtime-probes and then activates a model on the serial worker.
-    pub fn activateModel(self: *Self, path: []const u8, generation: u64, completion: AsyncCompletion) SubmitError!void {
-        try self.state.submitActivation(path, generation, completion);
+    pub fn activateModel(self: *Self, path: []const u8, epoch: u64, completion: AsyncCompletion) SubmitError!void {
+        try self.state.submitActivation(path, epoch, completion);
     }
 
     /// Transcribes a native-endian mono Float32 file at 16 kHz. The worker uses
@@ -92,6 +92,18 @@ pub const NemoRecognizer = struct {
         if (!state.has_cancelled_generation or generation > state.cancelled_through_generation) {
             state.has_cancelled_generation = true;
             state.cancelled_through_generation = generation;
+        }
+    }
+
+    /// Model activation uses a separate monotonic epoch domain so cancelling a
+    /// UI request can never poison present or future transcription generations.
+    pub fn cancelActivation(self: *Self, epoch: u64) void {
+        const state = self.state;
+        state.lock();
+        defer state.unlock();
+        if (!state.has_cancelled_activation_epoch or epoch > state.cancelled_through_activation_epoch) {
+            state.has_cancelled_activation_epoch = true;
+            state.cancelled_through_activation_epoch = epoch;
         }
     }
 
@@ -153,7 +165,7 @@ pub const NemoRecognizer = struct {
 
 const State = struct {
     const sample_rate: i32 = 16_000;
-    const ActivateOperation = struct { path: ?[:0]u8, generation: u64, completion: AsyncCompletion };
+    const ActivateOperation = struct { path: ?[:0]u8, epoch: u64, completion: AsyncCompletion };
     const TranscribeOperation = struct { path: [:0]u8, session_id: u64, generation: u64, completion: AsyncCompletion };
     const Operation = union(enum) { activate: ActivateOperation, transcribe: TranscribeOperation, unload: AsyncCompletion };
     const Request = struct { next: ?*Request = null, operation: Operation };
@@ -173,13 +185,15 @@ const State = struct {
     pending_transcriptions: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     has_cancelled_generation: bool = false,
     cancelled_through_generation: u64 = 0,
+    has_cancelled_activation_epoch: bool = false,
+    cancelled_through_activation_epoch: u64 = 0,
 
-    fn submitActivation(state: *State, path: []const u8, generation: u64, completion: AsyncCompletion) NemoRecognizer.SubmitError!void {
+    fn submitActivation(state: *State, path: []const u8, epoch: u64, completion: AsyncCompletion) NemoRecognizer.SubmitError!void {
         const owned_path = try state.allocator.dupeZ(u8, path);
         errdefer state.allocator.free(owned_path);
         const request = try state.allocator.create(Request);
         errdefer state.allocator.destroy(request);
-        request.* = .{ .operation = .{ .activate = .{ .path = owned_path, .generation = generation, .completion = completion } } };
+        request.* = .{ .operation = .{ .activate = .{ .path = owned_path, .epoch = epoch, .completion = completion } } };
         try state.enqueue(request, false);
     }
 
@@ -289,14 +303,14 @@ const State = struct {
         config.model = &model;
         var candidate: ?*c.nemo_speech_asr_recognizer = null;
         const status = c.nemo_speech_asr_create(&config, &candidate);
-        if (state.isCancelled(operation.generation)) {
+        if (state.isActivationCancelled(operation.epoch)) {
             if (candidate) |handle| c.nemo_speech_asr_destroy(handle);
-            state.deliver(operation.completion, .{ .activation_cancelled = operation.generation });
+            state.deliver(operation.completion, .{ .activation_cancelled = operation.epoch });
             return;
         }
         if (status != c.NEMO_SPEECH_ASR_OK or candidate == null) {
             defer if (candidate) |handle| c.nemo_speech_asr_destroy(handle);
-            state.deliver(operation.completion, .{ .activation_failed = .{ .generation = operation.generation, .message = lastError("The model failed its NeMo runtime probe.") } });
+            state.deliver(operation.completion, .{ .activation_failed = .{ .epoch = operation.epoch, .message = lastError("The model failed its NeMo runtime probe.") } });
             return;
         }
         if (state.recognizer) |old| c.nemo_speech_asr_destroy(old);
@@ -307,7 +321,7 @@ const State = struct {
         operation.path = null;
         state.unlock();
         const finished = nowMs();
-        state.deliver(operation.completion, .{ .activation_succeeded = .{ .generation = operation.generation, .load_duration_ms = finished -| started, .resident_bytes = residentBytes() } });
+        state.deliver(operation.completion, .{ .activation_succeeded = .{ .epoch = operation.epoch, .load_duration_ms = finished -| started, .resident_bytes = residentBytes() } });
     }
 
     fn transcribeOnWorker(state: *State, operation: TranscribeOperation) void {
@@ -387,6 +401,12 @@ const State = struct {
         return state.has_cancelled_generation and generation <= state.cancelled_through_generation;
     }
 
+    fn isActivationCancelled(state: *State, epoch: u64) bool {
+        state.lock();
+        defer state.unlock();
+        return state.has_cancelled_activation_epoch and epoch <= state.cancelled_through_activation_epoch;
+    }
+
     fn destroyRecognizerOnWorker(state: *State) void {
         if (state.recognizer) |recognizer| {
             c.nemo_speech_asr_destroy(recognizer);
@@ -422,8 +442,8 @@ const Ids = struct { session_id: u64, generation: u64 };
 const TimedIds = struct { ids: Ids, started: u64, finished: u64 };
 const Result = union(enum) {
     activation_cancelled: u64,
-    activation_failed: struct { generation: u64, message: []const u8 },
-    activation_succeeded: struct { generation: u64, load_duration_ms: u64, resident_bytes: u64 },
+    activation_failed: struct { epoch: u64, message: []const u8 },
+    activation_succeeded: struct { epoch: u64, load_duration_ms: u64, resident_bytes: u64 },
     transcription_cancelled: Ids,
     model_unavailable: Ids,
     audio_unavailable: Ids,
@@ -441,13 +461,13 @@ const Result = union(enum) {
 
     fn writeJson(result: Result, writer: *std.Io.Writer) !void {
         switch (result) {
-            .activation_cancelled => |generation| try writer.print("{{\"ok\":false,\"cancelled\":true,\"generation\":{d},\"code\":\"cancelled\"}}", .{generation}),
+            .activation_cancelled => |epoch| try writer.print("{{\"ok\":false,\"cancelled\":true,\"generation\":{d},\"code\":\"cancelled\"}}", .{epoch}),
             .activation_failed => |value| {
-                try writer.print("{{\"ok\":false,\"generation\":{d},\"code\":\"model_probe_failed\",\"message\":", .{value.generation});
+                try writer.print("{{\"ok\":false,\"generation\":{d},\"code\":\"model_probe_failed\",\"message\":", .{value.epoch});
                 try writeJsonString(writer, value.message);
                 try writer.writeAll("}");
             },
-            .activation_succeeded => |value| try writer.print("{{\"ok\":true,\"generation\":{d},\"loadDurationMs\":{d},\"residentBytes\":{d},\"message\":\"The model is warm and ready.\"}}", .{ value.generation, value.load_duration_ms, value.resident_bytes }),
+            .activation_succeeded => |value| try writer.print("{{\"ok\":true,\"generation\":{d},\"loadDurationMs\":{d},\"residentBytes\":{d},\"message\":\"The model is warm and ready.\"}}", .{ value.epoch, value.load_duration_ms, value.resident_bytes }),
             .transcription_cancelled => |value| try writer.print("{{\"ok\":false,\"cancelled\":true,\"sessionId\":{d},\"generation\":{d},\"code\":\"cancelled\"}}", .{ value.session_id, value.generation }),
             .model_unavailable => |value| try writer.print("{{\"ok\":false,\"sessionId\":{d},\"generation\":{d},\"code\":\"model_unavailable\",\"message\":\"The active model is not loaded.\"}}", .{ value.session_id, value.generation }),
             .audio_unavailable => |value| try writer.print("{{\"ok\":false,\"sessionId\":{d},\"generation\":{d},\"code\":\"audio_unavailable\",\"message\":\"Retry audio is unavailable.\"}}", .{ value.session_id, value.generation }),
@@ -706,4 +726,18 @@ test "speech near the end of a long capture is not diluted" {
     const whole_file_rms = @sqrt(whole_file_energy / @as(f64, @floatFromInt(samples.len)));
     try std.testing.expect(whole_file_rms < SpeechDetection.minimum_window_rms);
     try std.testing.expect(containsSpeech(samples));
+}
+
+test "activation cancellation is isolated from transcription generations" {
+    var recognizer = try NemoRecognizer.init(std.testing.allocator);
+    defer recognizer.deinit();
+
+    recognizer.cancelActivation(7);
+    try std.testing.expect(recognizer.state.isActivationCancelled(7));
+    try std.testing.expect(!recognizer.state.isActivationCancelled(8));
+    try std.testing.expect(!recognizer.state.isCancelled(7));
+
+    recognizer.cancelGeneration(11);
+    try std.testing.expect(recognizer.state.isCancelled(11));
+    try std.testing.expect(!recognizer.state.isActivationCancelled(11));
 }
