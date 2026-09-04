@@ -644,14 +644,15 @@ test("Hugging Face add requires explicit source confirmation", () => {
   assert.equal(commandOf(requested)?.op, "request");
 });
 
-test("known Parakeet alternatives seed a safe unconfirmed repository", () => {
+test("known Parakeet alternatives seed metadata inspection without parser eligibility", () => {
   const ready = readyModel();
   const chosen = dispatch({ ...ready, hfSourceConfirmed: true, hfResolved: true, hfResolvedConfirmed: true }, { kind: "choose_parakeet_ctc" });
   assert.equal(new TextDecoder().decode(chosen.hfDraft), "nvidia/parakeet-ctc-1.1b");
   assert.equal(chosen.hfSourceConfirmed, false);
   assert.equal(chosen.hfResolved, false);
   assert.equal(chosen.hfResolvedConfirmed, false);
-  assert.equal(new TextDecoder().decode(chosen.modelDownloadMessage).includes("Authorize one metadata request"), true);
+  assert.equal(new TextDecoder().decode(chosen.modelDownloadMessage).includes("metadata inspection"), true);
+  assert.equal(new TextDecoder().decode(chosen.modelDownloadMessage).includes("allowlist"), true);
 });
 
 test("busy model actions explain why they cannot run", () => {
@@ -846,7 +847,7 @@ test("pending partial status hydrates paused bytes and Resume command", () => {
   assert.equal(command.name, "friday.model.resume");
 });
 
-test("HF identifier flow resolves an unverified immutable candidate before local verification", () => {
+test("HF identifier flow keeps arbitrary candidates metadata-only", () => {
   let model = readyModel();
   model = dispatch(model, { kind: "hf_draft_edit", edit: { kind: "insert_text", text: bytes("community/parakeet-tdt-gguf") } });
   model = dispatch(model, { kind: "toggle_hf_source_confirmation" });
@@ -855,18 +856,29 @@ test("HF identifier flow resolves an unverified immutable candidate before local
   assert.equal(resolveCommand.name, "friday.model.resolve_hf");
   model = dispatch(modelOf(resolve), {
     kind: "hf_model_resolved",
-    body: bytes('{"ok":true,"identifier":"community/parakeet-tdt-gguf","revision":"0123456789abcdef0123456789abcdef01234567","artifact":"parakeet-q8.gguf","sizeText":"702 MB","license":"cc-by-4.0","provider":"Hugging Face","attribution":"community"}'),
+    body: bytes('{"ok":true,"identifier":"community/parakeet-tdt-gguf","revision":"0123456789abcdef0123456789abcdef01234567","artifact":"parakeet-q8.gguf","sizeText":"702 MB","license":"cc-by-4.0","provider":"Hugging Face","attribution":"community","runtimeEligible":false,"trustStatus":"metadata_only"}'),
   });
   assert.equal(model.hfResolved, true);
   const candidateMessage = new TextDecoder().decode(model.modelDownloadMessage);
-  assert.equal(candidateMessage.includes("Unverified"), true);
-  assert.equal(candidateMessage.includes("before it can become compatible or active"), true);
+  assert.equal(candidateMessage.includes("Metadata candidate"), true);
+  assert.equal(candidateMessage.includes("will not be downloaded, parsed, probed, or activated"), true);
   assert.equal(commandOf(update(model, { kind: "download_resolved_hf" })), null);
   model = dispatch(model, { kind: "toggle_hf_download_confirmation" });
-  const download = update(model, { kind: "download_resolved_hf" });
-  const downloadCommand = commandOf(download) as unknown as { name: string; payload: Uint8Array };
-  assert.equal(downloadCommand.name, "friday.model.download_hf");
-  assert.equal(new TextDecoder().decode(downloadCommand.payload), "community/parakeet-tdt-gguf");
+  assert.equal(model.hfResolvedConfirmed, false);
+  assert.equal(commandOf(update(model, { kind: "download_resolved_hf" })), null);
   const cleared = dispatch(model, { kind: "clear_hf_candidate" });
   assert.equal(cleared.hfResolved, false);
+});
+
+test("only a Friday-allowlisted immutable HF candidate can request exact bytes", () => {
+  const model = dispatch(readyModel(), {
+    kind: "hf_model_resolved",
+    body: bytes('{"ok":true,"identifier":"nvidia/parakeet-tdt-0.6b-v3","revision":"541d1f99c6b0c3cd0b11a95167540bb8edefd82b","artifact":"parakeet-tdt-0.6b-v3.q8_0.gguf","sizeText":"714 MB","license":"CC-BY-4.0","provider":"Hugging Face","attribution":"NVIDIA Parakeet TDT 0.6B v3","runtimeEligible":true,"trustStatus":"friday_allowlisted"}'),
+  });
+  assert.equal(model.hfResolvedAllowlisted, true);
+  const confirmed = dispatch(model, { kind: "toggle_hf_download_confirmation" });
+  const download = update(confirmed, { kind: "download_resolved_hf" });
+  const command = commandOf(download) as unknown as { name: string; payload: Uint8Array };
+  assert.equal(command.name, "friday.model.download_hf");
+  assert.equal(new TextDecoder().decode(command.payload), "nvidia/parakeet-tdt-0.6b-v3");
 });

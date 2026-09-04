@@ -11,9 +11,11 @@ function nativeReason(bytes: Uint8Array, fallback: Uint8Array): Uint8Array {
 export function updateModelState(model: Model, msg: Msg): Model | null {
   switch (msg.kind) {
     case "hf_model_resolved":
+      const allowlisted = contains(msg.body, asciiBytes("\"runtimeEligible\":true"));
       return {
         ...model,
         hfResolved: true,
+        hfResolvedAllowlisted: allowlisted,
         hfResolvedIdentifier: jsonString(msg.body, asciiBytes("\"identifier\":\"")),
         hfResolvedRevision: jsonString(msg.body, asciiBytes("\"revision\":\"")),
         hfResolvedArtifact: jsonString(msg.body, asciiBytes("\"artifact\":\"")),
@@ -23,17 +25,19 @@ export function updateModelState(model: Model, msg: Msg): Model | null {
         hfResolvedAttribution: jsonString(msg.body, asciiBytes("\"attribution\":\"")),
         hfResolvedConfirmed: false,
         modelDownloadState: "idle",
-        modelDownloadMessage: utf8Bytes("Unverified immutable candidate resolved. Download to verify locally before it can become compatible or active."),
+        modelDownloadMessage: allowlisted
+          ? utf8Bytes("Immutable candidate matches Friday’s production allowlist. Confirm the exact download to verify and activate it.")
+          : utf8Bytes("Metadata candidate resolved. It is not on Friday’s production allowlist, so its GGUF bytes will not be downloaded, parsed, probed, or activated."),
       };
     case "hf_resolve_failed":
-      return { ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not resolve a safe public Hugging Face download candidate.")) };
+      return { ...model, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false, modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not resolve bounded public Hugging Face metadata.")) };
     case "toggle_hf_download_confirmation":
-      return model.hfResolved ? { ...model, hfResolvedConfirmed: !model.hfResolvedConfirmed } : model;
+      return model.hfResolved && model.hfResolvedAllowlisted ? { ...model, hfResolvedConfirmed: !model.hfResolvedConfirmed } : model;
     case "clear_hf_candidate":
-      return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: asciiBytes("") };
+      return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false, modelDownloadMessage: asciiBytes("") };
     case "local_model_failed":
       if (contains(msg.error, asciiBytes("\"code\":\"user_cancelled\""))) return { ...model, modelDownloadMessage: utf8Bytes("No local model selected.") };
-      return { ...model, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not add that local model. Choose a compatible model and its matching manifest sidecar.")) };
+      return { ...model, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not add that local model. Choose an allowlisted artifact and its matching Friday manifest.")) };
     case "hf_model_failed":
       return { ...model, hfSourceConfirmed: false, modelDownloadState: "failed", modelDownloadMessage: nativeReason(msg.error, utf8Bytes("Friday could not verify and install that Hugging Face candidate.")) };
     case "model_select_failed":
@@ -47,10 +51,10 @@ export function updateModelState(model: Model, msg: Msg): Model | null {
         const next = new Uint8Array(model.hfDraft.length + addition.length);
         next.set(model.hfDraft, 0);
         next.set(addition, model.hfDraft.length);
-        return { ...model, hfDraft: next, hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false };
+        return { ...model, hfDraft: next, hfSourceConfirmed: false, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false };
       }
-      if (msg.edit.kind === "delete_backward" && model.hfDraft.length > 0) return { ...model, hfDraft: model.hfDraft.slice(0, model.hfDraft.length - 1), hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false };
-      if (msg.edit.kind === "clear") return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false };
+      if (msg.edit.kind === "delete_backward" && model.hfDraft.length > 0) return { ...model, hfDraft: model.hfDraft.slice(0, model.hfDraft.length - 1), hfSourceConfirmed: false, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false };
+      if (msg.edit.kind === "clear") return { ...model, hfDraft: asciiBytes(""), hfSourceConfirmed: false, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false };
       return model;
     case "toggle_hf_source_confirmation":
       return { ...model, hfSourceConfirmed: !model.hfSourceConfirmed };
@@ -60,8 +64,9 @@ export function updateModelState(model: Model, msg: Msg): Model | null {
         hfDraft: asciiBytes("nvidia/parakeet-ctc-1.1b"),
         hfSourceConfirmed: false,
         hfResolved: false,
+        hfResolvedAllowlisted: false,
         hfResolvedConfirmed: false,
-        modelDownloadMessage: utf8Bytes("Parakeet CTC selected. Authorize one metadata request to continue."),
+        modelDownloadMessage: utf8Bytes("Parakeet CTC selected for metadata inspection. It cannot be downloaded or opened unless a future Friday release adds an exact reviewed artifact to the allowlist."),
       };
     case "model_cleanup_finished":
       return { ...model, modelDownloadState: "idle", modelDownloadedBytes: 0 / 1, modelTotalBytes: 0 / 1, modelDownloadedBytesLabel: asciiBytes("0"), modelTotalBytesLabel: asciiBytes("0"), modelDownloadMessage: contains(msg.body, asciiBytes("\"removed\":true")) ? utf8Bytes("Failed and partial downloads removed.") : utf8Bytes("No failed or partial downloads were present.") };

@@ -37,17 +37,33 @@ const default_languages = [_][]const u8{
     "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
 };
 
-const DefaultPin = struct {
+/// Production parser admission is a compiled allowlist, not a claim made by a
+/// downloaded or user-provided manifest. Each entry mirrors one reviewed file
+/// in resources/models. Extending this array and the packaged manifest is an
+/// explicit code-review event; repository metadata alone can never extend it.
+const TrustedManifestPin = struct {
     key: u64 = 1,
     id: []const u8 = "nvidia/parakeet-tdt-0.6b-v3",
     name: []const u8 = "Parakeet TDT 0.6B v3",
+    repository: []const u8 = "nvidia/parakeet-tdt-0.6b-v3",
     revision: []const u8 = "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
     artifact: []const u8 = "parakeet-tdt-0.6b-v3.q8_0.gguf",
     sha256: []const u8 = "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e",
     expected_bytes: u64 = 713_975_456,
     url: []const u8 = "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",
+    engine: []const u8 = "nemo_speech_cpp",
+    family: []const u8 = "parakeet_tdt",
+    recognition_mode: []const u8 = "offline",
+    head: []const u8 = "tdt",
+    streaming_profile: []const u8 = "none",
+    format: []const u8 = "gguf",
+    parser_admission: []const u8 = "friday_production_allowlist_v1",
+    languages: []const []const u8 = &default_languages,
+    license: []const u8 = "CC-BY-4.0",
+    attribution: []const u8 = "NVIDIA Parakeet TDT 0.6B v3",
 };
-const default_pin = DefaultPin{};
+const trusted_manifest_pins = [_]TrustedManifestPin{.{}};
+const default_pin = trusted_manifest_pins[0];
 
 const ModelSpec = struct {
     key: u64,
@@ -66,6 +82,7 @@ const ModelSpec = struct {
     head: []const u8,
     streaming_profile: []const u8,
     format: []const u8,
+    parser_admission: []const u8,
     languages: []const []const u8,
     license: []const u8,
     attribution: []const u8,
@@ -93,6 +110,7 @@ const Model = struct {
     head: []u8,
     streaming_profile: []u8,
     format: []u8,
+    parser_admission: []u8,
     languages: [][]u8,
     license: []u8,
     attribution: []u8,
@@ -129,6 +147,8 @@ const Model = struct {
         errdefer allocator.free(streaming_profile);
         const format = try allocator.dupe(u8, spec.format);
         errdefer allocator.free(format);
+        const parser_admission = try allocator.dupe(u8, spec.parser_admission);
+        errdefer allocator.free(parser_admission);
         const license = try allocator.dupe(u8, spec.license);
         errdefer allocator.free(license);
         const attribution = try allocator.dupe(u8, spec.attribution);
@@ -169,6 +189,7 @@ const Model = struct {
             .head = head,
             .streaming_profile = streaming_profile,
             .format = format,
+            .parser_admission = parser_admission,
             .languages = languages,
             .license = license,
             .attribution = attribution,
@@ -202,6 +223,7 @@ const Model = struct {
             .head = self.head,
             .streaming_profile = self.streaming_profile,
             .format = self.format,
+            .parser_admission = self.parser_admission,
             .languages = self.languages,
             .license = self.license,
             .attribution = self.attribution,
@@ -227,6 +249,7 @@ const Model = struct {
         allocator.free(self.head);
         allocator.free(self.streaming_profile);
         allocator.free(self.format);
+        allocator.free(self.parser_admission);
         for (self.languages) |language| allocator.free(language);
         allocator.free(self.languages);
         allocator.free(self.license);
@@ -246,28 +269,33 @@ const Model = struct {
 };
 
 fn defaultModel(allocator: Allocator) !Model {
+    return trustedModel(allocator, default_pin, true, "hugging_face", default_pin.key);
+}
+
+fn trustedModel(allocator: Allocator, pin: TrustedManifestPin, managed: bool, source: []const u8, key: u64) !Model {
     return Model.init(allocator, .{
-        .key = default_pin.key,
-        .id = default_pin.id,
-        .name = default_pin.name,
-        .repository = default_pin.id,
-        .revision = default_pin.revision,
-        .artifact = default_pin.artifact,
-        .sha256 = default_pin.sha256,
-        .expected_bytes = default_pin.expected_bytes,
+        .key = key,
+        .id = pin.id,
+        .name = pin.name,
+        .repository = pin.repository,
+        .revision = pin.revision,
+        .artifact = pin.artifact,
+        .sha256 = pin.sha256,
+        .expected_bytes = pin.expected_bytes,
         .installed_bytes = 0,
-        .download_url = default_pin.url,
-        .engine = "nemo_speech_cpp",
-        .family = "parakeet_tdt",
-        .recognition_mode = "offline",
-        .head = "tdt",
-        .streaming_profile = "none",
-        .format = "gguf",
-        .languages = &default_languages,
-        .license = "CC-BY-4.0",
-        .attribution = "NVIDIA Parakeet TDT 0.6B v3",
-        .source = "hugging_face",
-        .managed = true,
+        .download_url = pin.url,
+        .engine = pin.engine,
+        .family = pin.family,
+        .recognition_mode = pin.recognition_mode,
+        .head = pin.head,
+        .streaming_profile = pin.streaming_profile,
+        .format = pin.format,
+        .parser_admission = pin.parser_admission,
+        .languages = pin.languages,
+        .license = pin.license,
+        .attribution = pin.attribution,
+        .source = source,
+        .managed = managed,
         .compatibility = "compatible",
         .verification = "",
         .path = "",
@@ -768,38 +796,40 @@ const State = struct {
         defer self.retireEpoch(operation.epoch);
         if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
         if (!hasExtension(operation.path, ".gguf")) {
-            self.fail(operation.completion, "incompatible", "Friday accepts manifest-backed Parakeet TDT GGUF files only.");
-            return;
-        }
-        if (!validGgufHeader(self.threaded_io.io(), operation.path)) {
-            self.fail(operation.completion, "malformed_gguf", "The selected file is not GGUF.");
+            self.fail(operation.completion, "not_allowlisted", "Friday can use only GGUF artifacts on its reviewed production allowlist.");
             return;
         }
         var model = self.loadLocalManifest(operation.path) catch {
-            self.fail(operation.completion, "metadata_required", "A local model requires a complete Friday manifest proving Parakeet TDT GGUF compatibility, integrity, languages, and license.");
+            self.fail(operation.completion, "manifest_required", "A local model requires a matching Friday allowlist manifest.");
             return;
         };
         defer model.deinit(self.allocator);
-        const actual_size = fileSize(self.threaded_io.io(), operation.path) catch 0;
-        const actual_sha = hashFileHex(self.threaded_io.io(), operation.path) catch {
-            self.fail(operation.completion, "metadata_required", "The local model could not be read.");
+        const pin = allowlistedManifest(model) orelse {
+            self.fail(operation.completion, "not_allowlisted", "Friday inspected the sidecar metadata but will not open these model bytes because this immutable artifact is not on the production allowlist.");
             return;
         };
-        if (actual_size != model.expected_bytes or !std.mem.eql(u8, &actual_sha, model.sha256)) {
-            self.fail(operation.completion, "metadata_required", "The local model does not match its sidecar size/SHA-256 metadata.");
+        const actual_size = fileSize(self.threaded_io.io(), operation.path) catch 0;
+        const actual_sha = hashFileHex(self.threaded_io.io(), operation.path) catch {
+            self.fail(operation.completion, "integrity_failed", "The local model could not be read for exact integrity verification.");
+            return;
+        };
+        if (actual_size != pin.expected_bytes or !std.mem.eql(u8, &actual_sha, pin.sha256)) {
+            self.fail(operation.completion, "integrity_failed", "The local model does not match the allowlisted size and SHA-256.");
+            return;
+        }
+        // The bounded GGUF reader and external NeMo parser are reached only after compiled
+        // allowlist admission and exact-byte verification.
+        if (!validGgufHeader(self.threaded_io.io(), operation.path)) {
+            self.fail(operation.completion, "allowlisted_artifact_invalid", "The allowlisted artifact failed its bounded GGUF check.");
             return;
         }
         const probe = self.probe.probe(self.probe.context, operation.path, operation.request_key);
-        if (!probe.ok) {
-            self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", if (probe.message.len != 0) probe.message else "The model failed its runtime probe.");
+        if (!probeMatchesManifest(&model, probe)) {
+            self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", if (probe.message.len != 0) probe.message else "The allowlisted model failed its declared runtime capability probe.");
             return;
         }
         if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
-        applyProbeCapabilities(self.allocator, &model, probe) catch {
-            self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
-            return;
-        };
-        Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe") catch unreachable;
+        Model.replace(self.allocator, &model.verification, "production_allowlist_exact_integrity_and_runtime_probe") catch unreachable;
         model.key = operation.key;
         model.installed_bytes = model.expected_bytes;
         model.managed = false;
@@ -831,15 +861,11 @@ const State = struct {
             return;
         }
         const probe = self.probe.probe(self.probe.context, model.path, operation.request_key);
-        if (!probe.ok) {
+        if (!probeMatchesManifest(model, probe)) {
             self.fail(operation.completion, if (probe.code.len != 0) probe.code else "model_probe_failed", probe.message);
             return;
         }
         if (self.cancelled(operation.epoch)) return self.completeCancelled(operation.completion, 0);
-        applyProbeCapabilities(self.allocator, model, probe) catch {
-            self.fail(operation.completion, "out_of_memory", "The verified model capabilities could not be recorded.");
-            return;
-        };
         self.activateSnapshot(model.*) catch {
             self.fail(operation.completion, "index_publication_failed", "");
             return;
@@ -899,6 +925,7 @@ const State = struct {
             self.fail(operation.completion, "out_of_memory", "The resolved model candidate could not be retained.");
             return;
         };
+        const allowlisted_pin = allowlistedArtifactIdentity(model);
         var size_buffer: [64]u8 = undefined;
         self.completeValue(operation.completion, true, .{
             .ok = true,
@@ -907,10 +934,12 @@ const State = struct {
             .artifact = model.artifact,
             .expectedBytes = model.expected_bytes,
             .sizeText = formatByteCount(&size_buffer, model.expected_bytes),
-            .license = model.license,
+            .license = if (allowlisted_pin) |pin| pin.license else model.license,
             .provider = "Hugging Face",
-            .attribution = model.attribution,
+            .attribution = if (allowlisted_pin) |pin| pin.attribution else model.attribution,
             .verificationStatus = "unverified_candidate",
+            .runtimeEligible = allowlisted_pin != null,
+            .trustStatus = if (allowlisted_pin != null) "friday_allowlisted" else "metadata_only",
         });
     }
 
@@ -920,8 +949,12 @@ const State = struct {
         const identifier = std.mem.trim(u8, operation.identifier, " \t\r\n");
         for (self.candidates.items) |candidate| {
             if (std.mem.eql(u8, candidate.identifier, identifier)) {
-                var model = candidate.model.clone(self.allocator) catch {
-                    self.fail(operation.completion, "out_of_memory", "The resolved model candidate could not be prepared.");
+                const pin = allowlistedArtifactIdentity(candidate.model) orelse {
+                    self.fail(operation.completion, "not_allowlisted", "Friday retained this repository as a metadata candidate only. Its GGUF bytes are not on the production parser allowlist and will not be downloaded or opened.");
+                    return;
+                };
+                var model = trustedModel(self.allocator, pin, true, "hugging_face", pin.key) catch {
+                    self.fail(operation.completion, "out_of_memory", "The allowlisted model could not be prepared.");
                     return;
                 };
                 defer model.deinit(self.allocator);
@@ -987,8 +1020,8 @@ const State = struct {
 
     fn downloadModel(self: *State, model: *Model, request_key: u64, epoch: u64, completion: AsyncCompletion) void {
         if (self.cancelled(epoch)) return self.completeCancelled(completion, 0);
-        if (!validDownloadManifest(model.*)) {
-            self.fail(completion, "invalid_download_url", "The resolved model download address is invalid.");
+        if (allowlistedManifest(model.*) == null or !validDownloadManifest(model.*)) {
+            self.fail(completion, "not_allowlisted", "Friday will download and open only immutable artifacts on its reviewed production allowlist.");
             return;
         }
         if (self.download_active) {
@@ -999,12 +1032,8 @@ const State = struct {
             const installed = &self.models.items[index];
             if (installed.managed and sameIdentity(installed.*, model.*) and self.validateManagedModel(installed.*)) {
                 const probe = self.probe.probe(self.probe.context, installed.path, request_key);
-                if (probe.ok) {
+                if (probeMatchesManifest(installed, probe)) {
                     if (self.cancelled(epoch)) return self.completeCancelled(completion, 0);
-                    applyProbeCapabilities(self.allocator, installed, probe) catch {
-                        self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
-                        return;
-                    };
                     self.activateSnapshot(installed.*) catch {
                         self.fail(completion, "index_publication_failed", "");
                         return;
@@ -1210,6 +1239,10 @@ const State = struct {
         resume_path: []const u8,
     ) void {
         if (self.cancelled(epoch)) return self.completeCancelled(completion, self.downloaded_bytes);
+        if (allowlistedManifest(model.*) == null) {
+            self.fail(completion, "not_allowlisted", "Friday refused parser access because the model is not on its production allowlist.");
+            return;
+        }
         const size = fileSize(self.threaded_io.io(), partial_path) catch 0;
         const digest = hashFileHex(self.threaded_io.io(), partial_path) catch {
             self.fail(completion, "integrity_failed", "The model failed exact size/SHA-256 verification.");
@@ -1219,8 +1252,10 @@ const State = struct {
             self.fail(completion, "integrity_failed", "The model failed exact size/SHA-256 verification.");
             return;
         }
+        // No GGUF parser receives bytes until the immutable allowlist identity,
+        // exact length, and SHA-256 have all matched.
         if (!validGgufHeader(self.threaded_io.io(), partial_path)) {
-            self.fail(completion, "gguf_metadata_invalid", "The artifact is not a bounded, readable GGUF candidate.");
+            self.fail(completion, "allowlisted_artifact_invalid", "The allowlisted artifact failed its bounded GGUF check.");
             return;
         }
 
@@ -1272,21 +1307,12 @@ const State = struct {
         };
 
         const staged_probe = self.probe.probe(self.probe.context, staged_model, request_key);
-        if (!staged_probe.ok) {
-            self.fail(completion, if (staged_probe.code.len != 0) staged_probe.code else "model_probe_failed", if (staged_probe.message.len != 0) staged_probe.message else "The model failed its runtime probe.");
+        if (!probeMatchesManifest(model, staged_probe)) {
+            self.fail(completion, if (staged_probe.code.len != 0) staged_probe.code else "model_probe_failed", if (staged_probe.message.len != 0) staged_probe.message else "The allowlisted model failed its declared runtime capability probe.");
             return;
         }
         if (self.cancelled(epoch)) return self.completeCancelled(completion, self.downloaded_bytes);
-        applyProbeCapabilities(self.allocator, model, staged_probe) catch {
-            self.fail(completion, "out_of_memory", "The verified model capabilities could not be recorded.");
-            return;
-        };
-        Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe") catch unreachable;
-        if (std.mem.eql(u8, model.compatibility, "unverified_candidate")) {
-            Model.replace(self.allocator, &model.engine, "nemo_speech_cpp") catch unreachable;
-            Model.replace(self.allocator, &model.family, "runtime_verified_asr") catch unreachable;
-            Model.replace(self.allocator, &model.compatibility, "compatible") catch unreachable;
-        }
+        Model.replace(self.allocator, &model.verification, "production_allowlist_exact_integrity_and_runtime_probe") catch unreachable;
         const verified_manifest = self.modelJsonAlloc(model.*) catch {
             self.fail(completion, "verified_manifest_write_failed", "The runtime-verified manifest could not be written durably.");
             return;
@@ -1371,7 +1397,7 @@ const State = struct {
             return;
         }
         const final_probe = self.probe.probe(self.probe.context, final_model, request_key);
-        if (!final_probe.ok) {
+        if (!probeMatchesManifest(model, final_probe)) {
             self.fail(completion, "published_model_probe_failed", if (final_probe.message.len != 0) final_probe.message else "The published model failed its final runtime probe.");
             return;
         }
@@ -1536,16 +1562,17 @@ const State = struct {
         });
         defer self.allocator.free(manifest_path);
         const size = fileSize(self.threaded_io.io(), model_path) catch return false;
-        if (size != default_pin.expected_bytes or !validGgufHeader(self.threaded_io.io(), model_path)) return false;
+        if (size != default_pin.expected_bytes) return false;
         const digest = hashFileHex(self.threaded_io.io(), model_path) catch return false;
         if (!std.mem.eql(u8, &digest, default_pin.sha256)) return false;
+        if (!validGgufHeader(self.threaded_io.io(), model_path)) return false;
 
         var model = try defaultModel(self.allocator);
         var adopted = false;
         defer if (!adopted) model.deinit(self.allocator);
         model.installed_bytes = size;
         try Model.replace(self.allocator, &model.path, model_path);
-        try Model.replace(self.allocator, &model.verification, "exact_integrity_and_runtime_capability_probe");
+        try Model.replace(self.allocator, &model.verification, "production_allowlist_exact_integrity_and_runtime_probe");
         const manifest = try self.modelJsonAlloc(model);
         defer self.allocator.free(manifest);
         try self.writeAtomic(manifest_path, manifest);
@@ -1628,12 +1655,8 @@ const State = struct {
         defer parsed.deinit();
         var model = try self.modelFromJson(parsed.value, false);
         errdefer model.deinit(self.allocator);
-        if (!std.mem.eql(u8, model.engine, "nemo_speech_cpp") or
-            !(std.mem.eql(u8, model.family, "parakeet_tdt") or std.mem.eql(u8, model.family, "runtime_verified_asr")) or
-            !std.mem.eql(u8, model.format, "gguf") or
-            !validCapabilities(model.recognition_mode, model.head, model.streaming_profile) or
-            model.license.len == 0 or model.languages.len == 0 or
-            !isLowerHex(model.sha256, 64) or model.expected_bytes == 0 or model.expected_bytes > max_artifact_bytes)
+        if (!std.mem.eql(u8, model.format, "gguf") or !isLowerHex(model.sha256, 64) or
+            model.expected_bytes == 0 or model.expected_bytes > max_artifact_bytes)
             return error.InvalidManifest;
         return model;
     }
@@ -1641,9 +1664,10 @@ const State = struct {
     fn validateLocalModel(self: *State, path: []const u8) bool {
         var model = self.loadLocalManifest(path) catch return false;
         defer model.deinit(self.allocator);
+        const pin = allowlistedManifest(model) orelse return false;
         const size = fileSize(self.threaded_io.io(), path) catch return false;
         const digest = hashFileHex(self.threaded_io.io(), path) catch return false;
-        return size == model.expected_bytes and std.mem.eql(u8, &digest, model.sha256);
+        return size == pin.expected_bytes and std.mem.eql(u8, &digest, pin.sha256);
     }
 
     fn validateManagedModel(self: *State, expected: Model) bool {
@@ -1656,18 +1680,12 @@ const State = struct {
         defer parsed.deinit();
         var manifest = self.modelFromJson(parsed.value, true) catch return false;
         defer manifest.deinit(self.allocator);
-        if (!manifest.managed or
-            !std.mem.eql(u8, manifest.engine, "nemo_speech_cpp") or
-            !(std.mem.eql(u8, manifest.family, "parakeet_tdt") or std.mem.eql(u8, manifest.family, "runtime_verified_asr")) or
-            !std.mem.eql(u8, manifest.format, "gguf") or
-            !std.mem.eql(u8, manifest.compatibility, "compatible") or
-            !validCapabilities(manifest.recognition_mode, manifest.head, manifest.streaming_profile) or
-            !isLowerHex(manifest.revision, 40) or !isLowerHex(manifest.sha256, 64) or
-            manifest.expected_bytes == 0 or manifest.expected_bytes > max_artifact_bytes or
+        const pin = allowlistedManifest(manifest) orelse return false;
+        if (!manifest.managed or !std.mem.eql(u8, manifest.compatibility, "compatible") or
             !sameIdentity(manifest, expected)) return false;
         const size = fileSize(self.threaded_io.io(), expected.path) catch return false;
         const digest = hashFileHex(self.threaded_io.io(), expected.path) catch return false;
-        return size == manifest.expected_bytes and std.mem.eql(u8, &digest, manifest.sha256);
+        return size == pin.expected_bytes and std.mem.eql(u8, &digest, pin.sha256);
     }
 
     fn safeManagedDirectory(self: *State, directory_path: []const u8) ![]u8 {
@@ -1715,6 +1733,7 @@ const State = struct {
         const manifest_value = root.get("manifest") orelse return error.InvalidResume;
         var model = try self.modelFromJson(manifest_value, false);
         errdefer model.deinit(self.allocator);
+        if (allowlistedManifest(model) == null) return error.UntrustedResume;
         const partial_bytes = fileSize(self.threaded_io.io(), partial_path) catch return error.InvalidResume;
         const stored_partial = jsonUnsigned(root.get("partialBytes")) orelse return error.InvalidResume;
         const url = jsonString(root.get("url")) orelse return error.InvalidResume;
@@ -1776,13 +1795,14 @@ const State = struct {
             .sha256 = jsonString(object.get("sha256")) orelse return error.InvalidManifest,
             .expected_bytes = expected_bytes,
             .installed_bytes = jsonUnsigned(object.get("installedBytes")) orelse if (installed_record) expected_bytes else 0,
-            .download_url = jsonString(object.get("downloadURL")) orelse "",
+            .download_url = jsonString(object.get("downloadURL")) orelse jsonString(object.get("downloadUrl")) orelse "",
             .engine = engine,
             .family = family,
             .recognition_mode = jsonString(object.get("recognitionMode")) orelse legacy_mode,
             .head = jsonString(object.get("head")) orelse legacy_head,
             .streaming_profile = jsonString(object.get("streamingProfile")) orelse "none",
             .format = jsonString(object.get("format")) orelse return error.InvalidManifest,
+            .parser_admission = jsonString(object.get("parserAdmission")) orelse "none",
             .languages = language_slices,
             .license = jsonString(object.get("license")) orelse return error.InvalidManifest,
             .attribution = jsonString(object.get("attribution")) orelse repository,
@@ -1901,6 +1921,7 @@ const State = struct {
             .head = "runtime_verified",
             .streaming_profile = "none",
             .format = "gguf",
+            .parser_admission = "metadata_only",
             .languages = language_slices.items,
             .license = license,
             .attribution = author,
@@ -1933,6 +1954,7 @@ fn writeModelJson(json: *std.json.Stringify, model: Model) !void {
     try jsonField(json, "head", model.head);
     try jsonField(json, "streamingProfile", model.streaming_profile);
     try jsonField(json, "format", model.format);
+    try jsonField(json, "parserAdmission", model.parser_admission);
     try json.objectField("languages");
     try json.write(model.languages);
     try jsonField(json, "license", model.license);
@@ -2025,13 +2047,43 @@ fn sameIdentity(left: Model, right: Model) bool {
         std.mem.eql(u8, left.sha256, right.sha256);
 }
 
+fn sameLanguages(actual: []const []u8, expected: []const []const u8) bool {
+    if (actual.len != expected.len) return false;
+    for (actual, expected) |left, right| if (!std.mem.eql(u8, left, right)) return false;
+    return true;
+}
+
+/// Identity-only matching is used for untrusted network metadata. It may
+/// establish that a candidate names already-reviewed bytes, but it does not
+/// trust any capability or family claim supplied by that repository.
+fn allowlistedArtifactIdentity(model: Model) ?TrustedManifestPin {
+    for (trusted_manifest_pins) |pin| {
+        if (model.expected_bytes == pin.expected_bytes and
+            std.mem.eql(u8, model.id, pin.id) and std.mem.eql(u8, model.repository, pin.repository) and
+            std.mem.eql(u8, model.revision, pin.revision) and std.mem.eql(u8, model.artifact, pin.artifact) and
+            std.mem.eql(u8, model.sha256, pin.sha256)) return pin;
+    }
+    return null;
+}
+
+/// Full manifest matching protects parser admission for local sidecars,
+/// persisted indexes, managed manifests, downloads, and resumes. All model
+/// capabilities come from the compiled Friday allowlist.
+fn allowlistedManifest(model: Model) ?TrustedManifestPin {
+    const pin = allowlistedArtifactIdentity(model) orelse return null;
+    if (!std.mem.eql(u8, model.name, pin.name) or !std.mem.eql(u8, model.download_url, pin.url) or
+        !std.mem.eql(u8, model.engine, pin.engine) or !std.mem.eql(u8, model.family, pin.family) or
+        !std.mem.eql(u8, model.recognition_mode, pin.recognition_mode) or !std.mem.eql(u8, model.head, pin.head) or
+        !std.mem.eql(u8, model.streaming_profile, pin.streaming_profile) or !std.mem.eql(u8, model.format, pin.format) or
+        !std.mem.eql(u8, model.parser_admission, pin.parser_admission) or
+        !sameLanguages(model.languages, pin.languages) or !std.mem.eql(u8, model.license, pin.license) or
+        !std.mem.eql(u8, model.attribution, pin.attribution)) return null;
+    return pin;
+}
+
 fn validInstalledRecord(model: Model) bool {
     return model.key != 0 and model.path.len != 0 and model.installed_bytes == model.expected_bytes and
-        std.mem.eql(u8, model.engine, "nemo_speech_cpp") and
-        (std.mem.eql(u8, model.family, "parakeet_tdt") or std.mem.eql(u8, model.family, "runtime_verified_asr")) and
-        std.mem.eql(u8, model.format, "gguf") and std.mem.eql(u8, model.compatibility, "compatible") and
-        validCapabilities(model.recognition_mode, model.head, model.streaming_profile) and
-        !std.mem.eql(u8, model.recognition_mode, "unverified");
+        std.mem.eql(u8, model.compatibility, "compatible") and allowlistedManifest(model) != null;
 }
 
 fn legacyRecognitionMode(family: []const u8) []const u8 {
@@ -2056,22 +2108,15 @@ fn validCapabilities(recognition_mode: []const u8, head: []const u8, streaming_p
     return std.mem.eql(u8, streaming_profile, "none");
 }
 
-fn applyProbeCapabilities(allocator: Allocator, model: *Model, probe: ProbeResult) !void {
-    try Model.replace(allocator, &model.recognition_mode, if (probe.streaming) "streaming" else "offline");
-    const runtime_only_family = std.mem.eql(u8, model.family, "unverified") or std.mem.eql(u8, model.family, "runtime_verified_asr");
-    if (runtime_only_family) try Model.replace(allocator, &model.head, "runtime_verified");
-    if (!probe.streaming) {
-        try Model.replace(allocator, &model.streaming_profile, "none");
-    } else if (runtime_only_family or std.mem.eql(u8, model.streaming_profile, "none")) {
-        try Model.replace(allocator, &model.streaming_profile, "runtime_verified");
-    }
+fn probeMatchesManifest(model: *const Model, probe: ProbeResult) bool {
+    return probe.ok and probe.streaming == std.mem.eql(u8, model.recognition_mode, "streaming");
 }
 
 fn validDownloadManifest(model: Model) bool {
     return model.managed and model.key != 0 and model.expected_bytes > 0 and model.expected_bytes <= max_artifact_bytes and
         isLowerHex(model.revision, 40) and isLowerHex(model.sha256, 64) and topLevelArtifact(model.artifact) and
         std.mem.startsWith(u8, model.download_url, "https://huggingface.co/") and
-        (std.mem.eql(u8, model.compatibility, "compatible") or std.mem.eql(u8, model.compatibility, "unverified_candidate"));
+        std.mem.eql(u8, model.compatibility, "compatible") and allowlistedManifest(model) != null;
 }
 
 fn sourceLabel(source: []const u8) []const u8 {
@@ -2258,6 +2303,17 @@ const CompletionCounter = struct {
     }
 };
 
+/// Deterministic malformed/fuzz regression corpus. These bytes are exercised
+/// only through repository admission; the invariant under test is that none
+/// reaches `validGgufHeader` or the external NeMo/GGUF parser.
+const malformed_model_corpus = [_]struct { name: []const u8, bytes: []const u8 }{
+    .{ .name = "empty", .bytes = "" },
+    .{ .name = "magic-only", .bytes = "GGUF" },
+    .{ .name = "truncated-valid-looking-header", .bytes = "GGUF\x03\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00" },
+    .{ .name = "oversized-counts", .bytes = "GGUF\x03\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" },
+    .{ .name = "html-response", .bytes = "<!doctype html><title>not a model</title>" },
+};
+
 fn metadataRejected(state: *State, bytes: []const u8) bool {
     var candidate = state.modelFromHuggingFaceMetadata(bytes, "fixture/model") catch return true;
     candidate.deinit(state.allocator);
@@ -2267,7 +2323,8 @@ fn metadataRejected(state: *State, bytes: []const u8) bool {
 fn runContractProbes() !struct {
     ok: bool,
     resumeOffset: u64,
-    malformedRejected: bool,
+    malformedRejectedBeforeParser: bool,
+    malformedCorpusCases: usize,
     shaFailed: bool,
     sidecarRequired: bool,
     managedDeleteBounded: bool,
@@ -2278,8 +2335,8 @@ fn runContractProbes() !struct {
     hfCandidateUnverified: bool,
     hfMaliciousCandidateUnverified: bool,
     hfMaliciousPublicationRejected: bool,
-    hfRuntimeProbeRequired: bool,
-    hfUnknownFamilyFallback: bool,
+    hfMetadataOnly: bool,
+    hfDownloadBlockedBeforeParser: bool,
     hfPrivateRejected: bool,
     hfAmbiguousRejected: bool,
     hfNoHashRejected: bool,
@@ -2314,7 +2371,6 @@ fn runContractProbes() !struct {
     const bad = try std.fs.path.join(allocator, &.{ root, "bad.gguf" });
     defer allocator.free(bad);
     try Dir.cwd().writeFile(io, .{ .sub_path = bad, .data = "NOPE" });
-    const malformed = !validGgufHeader(io, bad);
     const bad_digest = try hashFileHex(io, bad);
     const sha_failed = !std.mem.eql(u8, &bad_digest, default_pin.sha256);
 
@@ -2348,6 +2404,35 @@ fn runContractProbes() !struct {
         break :sidecar false;
     };
 
+    // A forged sidecar can copy every public allowlist field, so the corpus
+    // reaches exact-byte verification. Its malformed bytes must still be
+    // rejected before either the GGUF reader or NeMo probe is called.
+    const corpus_root = try std.fs.path.join(allocator, &.{ root, "MalformedCorpus" });
+    defer allocator.free(corpus_root);
+    try Dir.cwd().createDirPath(io, corpus_root);
+    var forged = try defaultModel(allocator);
+    defer forged.deinit(allocator);
+    const forged_manifest = try repository.state.modelJsonAlloc(forged);
+    defer allocator.free(forged_manifest);
+    var corpus_rejected = true;
+    for (malformed_model_corpus, 0..) |entry, index| {
+        const case_root = try std.fs.path.join(allocator, &.{ corpus_root, entry.name });
+        defer allocator.free(case_root);
+        try Dir.cwd().createDirPath(io, case_root);
+        const corpus_model = try std.fs.path.join(allocator, &.{ case_root, "model.gguf" });
+        defer allocator.free(corpus_model);
+        try Dir.cwd().writeFile(io, .{ .sub_path = corpus_model, .data = entry.bytes });
+        const corpus_manifest = try std.fs.path.join(allocator, &.{ case_root, "manifest.json" });
+        defer allocator.free(corpus_manifest);
+        try Dir.cwd().writeFile(io, .{ .sub_path = corpus_manifest, .data = forged_manifest });
+        var corpus_completion = CompletionCounter{ .io = repository.state.threaded_io.io() };
+        const key = 9001 + index;
+        try repository.addLocal(corpus_model, key, key, repository.beginOperation(), .{ .context = &corpus_completion, .complete = CompletionCounter.complete });
+        corpus_completion.wait();
+        corpus_rejected = corpus_rejected and repository.state.findModel(key) == null;
+    }
+    const malformed_rejected_before_parser = probe_counter.count == 0 and corpus_rejected;
+
     const outside = try std.fs.path.join(allocator, &.{ root, "Outside" });
     defer allocator.free(outside);
     try Dir.cwd().createDirPath(io, outside);
@@ -2369,8 +2454,12 @@ fn runContractProbes() !struct {
     const hf_candidate_fixture = candidate.expected_bytes == 1_048_576 and std.mem.eql(u8, candidate.artifact, "model.gguf");
     const hf_candidate_unverified = std.mem.eql(u8, candidate.engine, "unverified") and
         std.mem.eql(u8, candidate.family, "unverified") and std.mem.eql(u8, candidate.compatibility, "unverified_candidate");
-    const hf_runtime_probe_required = probe_counter.count == 0 and !validInstalledRecord(candidate);
-    const hf_unknown_family_fallback = std.mem.eql(u8, candidate.family, "unverified");
+    const hf_metadata_only = allowlistedArtifactIdentity(candidate) == null and probe_counter.count == 0 and !validInstalledRecord(candidate);
+    try repository.state.storeCandidate("fixture/model", candidate);
+    var hf_completion = CompletionCounter{ .io = repository.state.threaded_io.io() };
+    try repository.downloadResolvedHF("fixture/model", 9002, repository.beginOperation(), .{ .context = &hf_completion, .complete = CompletionCounter.complete });
+    hf_completion.wait();
+    const hf_download_blocked_before_parser = probe_counter.count == 0 and repository.state.findModel(candidate.key) == null;
 
     const malicious_metadata = try std.mem.replaceOwned(u8, allocator, valid_metadata, "model.gguf", "../model.gguf");
     defer allocator.free(malicious_metadata);
@@ -2409,16 +2498,17 @@ fn runContractProbes() !struct {
     const serialized_mutation_owner = repository.state.thread != null and completion_exactly_once;
 
     const cleanup_truthful = empty_cleanup and removed_cleanup;
-    const probes_ok = resume_offset == 4096 and malformed and sha_failed and sidecar_required and
+    const probes_ok = resume_offset == 4096 and malformed_rejected_before_parser and sha_failed and sidecar_required and
         managed_delete_bounded and missing_active_reset and final_collision_rejected and cleanup_truthful and
-        hf_candidate_fixture and hf_candidate_unverified and malicious_rejected and hf_runtime_probe_required and
-        hf_unknown_family_fallback and private_rejected and ambiguous_rejected and no_hash_rejected and
+        hf_candidate_fixture and hf_candidate_unverified and malicious_rejected and hf_metadata_only and
+        hf_download_blocked_before_parser and private_rejected and ambiguous_rejected and no_hash_rejected and
         incompatible_rejected and identifier_validation and pending_resume_hydrated and content_range_exact and
         resume_identity_bound and completion_exactly_once and serialized_mutation_owner;
     return .{
         .ok = probes_ok,
         .resumeOffset = resume_offset,
-        .malformedRejected = malformed,
+        .malformedRejectedBeforeParser = malformed_rejected_before_parser,
+        .malformedCorpusCases = malformed_model_corpus.len,
         .shaFailed = sha_failed,
         .sidecarRequired = sidecar_required,
         .managedDeleteBounded = managed_delete_bounded,
@@ -2429,8 +2519,8 @@ fn runContractProbes() !struct {
         .hfCandidateUnverified = hf_candidate_unverified,
         .hfMaliciousCandidateUnverified = malicious_rejected,
         .hfMaliciousPublicationRejected = malicious_rejected and !validInstalledRecord(candidate),
-        .hfRuntimeProbeRequired = hf_runtime_probe_required,
-        .hfUnknownFamilyFallback = hf_unknown_family_fallback,
+        .hfMetadataOnly = hf_metadata_only,
+        .hfDownloadBlockedBeforeParser = hf_download_blocked_before_parser,
         .hfPrivateRejected = private_rejected,
         .hfAmbiguousRejected = ambiguous_rejected,
         .hfNoHashRejected = no_hash_rejected,
@@ -2444,21 +2534,61 @@ fn runContractProbes() !struct {
     };
 }
 
-test "runtime probe is authoritative for streaming capability" {
+test "runtime probe must agree with allowlisted capabilities" {
     const allocator = std.testing.allocator;
     var model = try defaultModel(allocator);
     defer model.deinit(allocator);
 
-    try Model.replace(allocator, &model.recognition_mode, "streaming");
-    try Model.replace(allocator, &model.streaming_profile, "runtime_verified");
-    try applyProbeCapabilities(allocator, &model, .{ .ok = true, .streaming = false });
-    try std.testing.expectEqualStrings("offline", model.recognition_mode);
-    try std.testing.expectEqualStrings("tdt", model.head);
-    try std.testing.expectEqualStrings("none", model.streaming_profile);
+    try std.testing.expect(probeMatchesManifest(&model, .{ .ok = true, .streaming = false }));
+    try std.testing.expect(!probeMatchesManifest(&model, .{ .ok = true, .streaming = true }));
+    try std.testing.expect(!probeMatchesManifest(&model, .{ .ok = false, .streaming = false }));
+    try std.testing.expect(allowlistedManifest(model) != null);
+}
 
-    try applyProbeCapabilities(allocator, &model, .{ .ok = true, .streaming = true });
-    try std.testing.expectEqualStrings("streaming", model.recognition_mode);
-    try std.testing.expectEqualStrings("runtime_verified", model.streaming_profile);
+test "metadata candidates cannot extend the production parser allowlist" {
+    const allocator = std.testing.allocator;
+    var candidate = try Model.init(allocator, .{
+        .key = 99,
+        .id = "community/model",
+        .name = "Untrusted",
+        .repository = "community/model",
+        .revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        .artifact = "model.gguf",
+        .sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        .expected_bytes = 1_048_576,
+        .installed_bytes = 0,
+        .download_url = "https://huggingface.co/community/model/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/model.gguf",
+        .engine = "unverified",
+        .family = "unverified",
+        .recognition_mode = "unverified",
+        .head = "runtime_verified",
+        .streaming_profile = "none",
+        .format = "gguf",
+        .parser_admission = "metadata_only",
+        .languages = &.{"en"},
+        .license = "apache-2.0",
+        .attribution = "community",
+        .source = "hugging_face",
+        .managed = true,
+        .compatibility = "unverified_candidate",
+        .verification = "",
+        .path = "",
+    });
+    defer candidate.deinit(allocator);
+
+    try std.testing.expect(allowlistedArtifactIdentity(candidate) == null);
+    try std.testing.expect(allowlistedManifest(candidate) == null);
+    try std.testing.expect(!validDownloadManifest(candidate));
+    try std.testing.expect(!validInstalledRecord(candidate));
+}
+
+test "malformed model corpus and metadata candidates stop before parser probes" {
+    const probes = try runContractProbes();
+    try std.testing.expect(probes.ok);
+    try std.testing.expectEqual(malformed_model_corpus.len, probes.malformedCorpusCases);
+    try std.testing.expect(probes.malformedRejectedBeforeParser);
+    try std.testing.expect(probes.hfMetadataOnly);
+    try std.testing.expect(probes.hfDownloadBlockedBeforeParser);
 }
 
 test "capability vocabulary rejects contradictory manifests" {

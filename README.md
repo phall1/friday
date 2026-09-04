@@ -28,13 +28,15 @@ Normal stop drains capture, visibly enters **transcribing**, runs local final-on
 
 ## Models and offline behavior
 
-On first setup Friday offers its pinned, verified default model automatically when the model step becomes visible. Downloads are user-visible, cancellable, SHA-256 verified, resumable after relaunch, runtime-probed, and atomically installed.
+On first setup Friday offers its pinned, verified default model automatically when the model step becomes visible. Downloads are user-visible, cancellable, SHA-256 verified, resumable after relaunch, runtime-probed, and atomically installed. Production parser admission is limited to immutable, hash-pinned artifacts on Friday’s compiled allowlist; today that list contains only the default Parakeet TDT artifact.
 
 The Models page also supports:
 
-- **Local model** — select a compatible Parakeet TDT GGUF plus its matching Friday manifest sidecar. Friday references the original file and never deletes it.
-- **Known Parakeet alternative** — choose Parakeet CTC 1.1B to fill its official repository identifier, then explicitly authorize metadata resolution and exact local verification.
-- **Public Hugging Face identifier** — enter `owner/repository`; Friday may resolve only an **unverified immutable candidate** when the public metadata has an exact revision, exactly one top-level GGUF, ASR/GGUF hints, LFS SHA/size, license, and attribution. That metadata never proves compatibility. A separately authorized download must pass exact integrity, bounded GGUF inspection, and the real local NeMo create/destroy probe before Friday publishes, lists, selects, or calls it compatible.
+- **Local model** — select an exact allowlisted artifact plus its matching Friday manifest sidecar. Friday checks allowlist identity and exact size/SHA-256 before any GGUF/NeMo parser call, references the original file, and never deletes it.
+- **Known Parakeet alternative** — choose Parakeet CTC 1.1B to fill its official repository identifier for metadata inspection. It is not currently parser-eligible.
+- **Public Hugging Face identifier** — enter `owner/repository`; Friday may resolve an **unverified immutable metadata candidate** when public JSON has an exact revision, exactly one top-level GGUF name, ASR/GGUF hints, LFS SHA/size, license, and attribution. Arbitrary candidate bytes are not downloaded, parsed, runtime-probed, recognized with, or activated. Download is offered only when immutable identity matches a compiled Friday allowlist entry; exact integrity verification still precedes parser access.
+
+This conservative policy accepts less model choice in exchange for keeping repository-controlled GGUF bytes out of the full unsandboxed app trust boundary. Friday does not claim that an in-process parser is sandboxed or that a background thread provides containment. Adding model support requires a reviewed manifest/code change and a newly signed release.
 
 After a verified model is installed and active, recording and transcription work offline. Network access is limited to explicit model metadata/download actions. Remove from Friday drops a reference. Delete Friday’s Copy is shown only for Friday-managed files. Failed/partial downloads can be cleaned without deleting installed models.
 

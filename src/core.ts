@@ -106,6 +106,7 @@ export interface Model {
   readonly activeModelSizeText: Uint8Array;
   readonly managedModelSizeText: Uint8Array;
   readonly hfResolved: boolean;
+  readonly hfResolvedAllowlisted: boolean;
   readonly hfResolvedIdentifier: Uint8Array;
   readonly hfResolvedRevision: Uint8Array;
   readonly hfResolvedArtifact: Uint8Array;
@@ -296,8 +297,8 @@ export function blockerText(model: Model): Uint8Array {
   if (!model.inputMonitoringPermission && !model.limitedModeAccepted) return utf8Bytes("Input Monitoring is required for the global shortcut. Manual Start remains available in limited mode.");
   if (!model.hotkeyConfirmed && !model.limitedModeAccepted) return utf8Bytes("Choose and confirm a global dictation shortcut.");
   if (!model.modelReady || model.selectedModelKey === 0) {
-    if (model.modelDownloadState === "failed") return utf8Bytes("The Parakeet model download failed. Retry or choose a compatible local model.");
-    return utf8Bytes("Download or select a compatible Parakeet TDT GGUF model.");
+    if (model.modelDownloadState === "failed") return utf8Bytes("The Parakeet model download failed. Retry or choose an allowlisted local artifact.");
+    return utf8Bytes("Download or select a Friday-allowlisted Parakeet TDT GGUF artifact.");
   }
   if (!model.onboardingComplete) return utf8Bytes("Finish setup before using Friday.");
   return utf8Bytes("Friday is ready.");
@@ -672,10 +673,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "local_model_added":
       return [{ ...model, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Local model added and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "download_resolved_hf":
-      if (!model.hfResolved || !model.hfResolvedConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Resolve the candidate and authorize its exact download for local verification.") };
-      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading the immutable candidate for exact local verification…") }, Cmd.request("friday.model.download_hf", model.hfResolvedIdentifier, { key: "model-hf-download", ok: "hf_model_added", err: "hf_model_failed" })];
+      if (!model.hfResolvedAllowlisted) return { ...model, modelDownloadMessage: utf8Bytes("This repository is metadata-only. Friday will not download or open GGUF bytes that are not on its production allowlist.") };
+      if (!model.hfResolved || !model.hfResolvedConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Resolve the allowlisted candidate and authorize its exact download.") };
+      return [{ ...model, modelDownloadState: "downloading", modelDownloadMessage: utf8Bytes("Downloading the allowlisted immutable artifact for exact verification…") }, Cmd.request("friday.model.download_hf", model.hfResolvedIdentifier, { key: "model-hf-download", ok: "hf_model_added", err: "hf_model_failed" })];
     case "hf_model_added":
-      return [{ ...model, hfSourceConfirmed: false, hfResolved: false, hfResolvedConfirmed: false, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Verified Hugging Face model downloaded and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
+      return [{ ...model, hfSourceConfirmed: false, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false, modelDownloadState: "installed", modelDownloadMessage: utf8Bytes("Allowlisted Hugging Face model downloaded, verified, and selected.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "model_selected":
       return [{ ...model, modelDownloadMessage: utf8Bytes("Active model changed.") }, Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })];
     case "model_removed":
@@ -684,7 +686,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.hfDraft.length === 0) return { ...model, modelDownloadMessage: utf8Bytes("Enter a public Hugging Face identifier first.") };
       if (!model.hfSourceConfirmed) return { ...model, modelDownloadMessage: utf8Bytes("Confirm that Friday may contact Hugging Face to resolve public metadata.") };
       if (!model.platformSupported) return model;
-      return [{ ...model, hfResolved: false, hfResolvedConfirmed: false, modelDownloadMessage: utf8Bytes("Resolving immutable download-candidate metadata from Hugging Face…") }, Cmd.request("friday.model.resolve_hf", model.hfDraft, { key: "model-hf-resolve", ok: "hf_model_resolved", err: "hf_resolve_failed" })];
+      return [{ ...model, hfResolved: false, hfResolvedAllowlisted: false, hfResolvedConfirmed: false, modelDownloadMessage: utf8Bytes("Resolving immutable candidate metadata from Hugging Face…") }, Cmd.request("friday.model.resolve_hf", model.hfDraft, { key: "model-hf-resolve", ok: "hf_model_resolved", err: "hf_resolve_failed" })];
     case "remove_model_reference":
       if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before removing the active model.") };
       if (model.selectedModelKey === 0) return { ...model, modelDownloadMessage: utf8Bytes("No active model is available to remove.") };

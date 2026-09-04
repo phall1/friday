@@ -76,15 +76,15 @@ If transcription fails and retry audio is available, choose **Retry Transcriptio
 
 ### Verified default model
 
-The setup model page offers **Parakeet TDT 0.6B v3**, pinned to an immutable Hugging Face revision, exact byte count, and SHA-256. Friday shows downloaded and total bytes, supports explicit Cancel/Retry, resumes a valid partial after relaunch, verifies size/hash, probes the runtime, and publishes atomically before selection.
+The setup model page offers **Parakeet TDT 0.6B v3**, pinned to an immutable Hugging Face revision, exact byte count, and SHA-256. It is currently the only artifact on Friday’s production parser allowlist. Friday shows downloaded and total bytes, supports explicit Cancel/Retry, resumes a valid partial after relaunch, verifies allowlist identity and size/hash before the GGUF runtime sees bytes, probes the runtime, and publishes atomically before selection.
 
 ### Local model
 
-Choose **Add Local Model…** and select a compatible Parakeet TDT GGUF with its matching Friday manifest sidecar. The sidecar must identify engine/family/format, immutable identity, exact size/SHA, license, languages, and required artifacts. Friday references user-owned local files. **Remove from Friday** removes only the reference and never deletes the original.
+Choose **Add Local Model…** and select an exact copy of a Friday-allowlisted GGUF with its matching Friday manifest sidecar. Every manifest identity/capability field and the artifact’s size/SHA-256 must match the compiled allowlist before Friday performs GGUF inspection or a NeMo probe. An arbitrary sidecar cannot grant parser access. Friday references user-owned local files. **Remove from Friday** removes only the reference and never deletes the original.
 
 ### Public Hugging Face model
 
-The Models page offers **Parakeet CTC 1.1B** as a known English-language repository. **Use Parakeet CTC repository** fills its official Hugging Face identifier; it does not bypass consent or verification.
+The Models page offers **Parakeet CTC 1.1B** as a known English-language repository. **Use Parakeet CTC repository** fills its official Hugging Face identifier for metadata inspection; no current Parakeet CTC artifact is on Friday’s parser allowlist, so it cannot be downloaded or opened by the runtime.
 
 Enter a public `owner/repository` identifier. Friday first asks permission to contact Hugging Face for public metadata. Resolution can produce only an **Unverified candidate**, and only when metadata establishes:
 
@@ -94,7 +94,9 @@ Enter a public `owner/repository` identifier. Friday first asks permission to co
 - LFS SHA-256 and exact byte size,
 - bounded license and attribution.
 
-Repository names, tags, and claims do not prove model family or compatibility. Friday shows the exact candidate metadata and asks whether to download those bytes for local verification. The download must pass size/SHA, bounded GGUF metadata inspection, and the real local NeMo recognizer create/destroy probe. Only then does Friday publish and select it as compatible. When bounded GGUF metadata does not prove Parakeet TDT but the supported final-ASR runtime probe succeeds, Friday records the truthful family `runtime_verified_asr` rather than inventing a Parakeet label. Private, gated, ambiguous, unhashed, malformed, non-ASR-hinted, or runtime-rejected candidates never become selectable.
+Repository names, tags, and claims do not prove model family or compatibility. Friday shows exact bounded candidate metadata, but a candidate that does not match a compiled Friday allowlist entry remains metadata-only: its GGUF bytes are not downloaded, parsed, runtime-probed, recognized with, or activated. For an allowlist match, Friday asks whether to download those exact bytes, then verifies size/SHA before bounded GGUF inspection and the real local NeMo recognizer probe. Private, gated, ambiguous, unhashed, malformed, non-ASR-hinted, unallowlisted, or runtime-rejected candidates never become selectable.
+
+Friday is distributed outside the App Sandbox and its GGUF runtime is in-process. A worker thread is not a security boundary, so Friday deliberately does not describe parsing as contained. The accepted tradeoff is narrower model choice: extending compatibility requires a reviewed hash-pinned manifest in a newly signed Friday release.
 
 ### Offline use, storage, and removal
 

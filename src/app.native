@@ -166,6 +166,7 @@
 
                 <if test="{showModels}">
                   <row cross="center"><text><span weight="medium">Local models</span></text><spacer grow="1"/><button size="sm" on-press="choose_local_model">Add Local Model…</button></row>
+                  <text foreground="text_muted" wrap="true">Only exact artifacts from Friday’s reviewed production allowlist can be opened by the local GGUF runtime.</text>
                   <if test="{isBusy}"><text>Finish or cancel dictation before changing models.</text></if>
                   <separator/>
                   <if test="{hfResolved}">
@@ -175,9 +176,8 @@
                       <text>{hfResolvedLicense} · {hfResolvedSize}</text>
                       <text foreground="text_muted"><span mono="true">rev {hfResolvedRevision}</span></text>
                       <text foreground="text_muted" wrap="true">Artifact {hfResolvedArtifact} · Attribution {hfResolvedAttribution}</text>
-                      <text wrap="true">Download to verify locally. Friday checks exact bytes, bounded GGUF metadata, and the real local recognizer before this model can become active.</text>
-                      <switch size="sm" checked="{hfResolvedConfirmed}" on-toggle="toggle_hf_download_confirmation">Authorize this exact download for local verification</switch>
-                      <row><button size="sm" variant="ghost" on-press="clear_hf_candidate">Choose Another Repository</button><spacer grow="1"/><button size="sm" variant="primary" on-press="download_resolved_hf" disabled="{not hfResolvedConfirmed or modelDownloadActive or isBusy}">Download to Verify Locally</button></row>
+                      <if test="{hfResolvedAllowlisted}"><text wrap="true">This exact revision, artifact, byte count, and SHA-256 match a reviewed Friday production manifest. Only after the hash matches may Friday’s in-process GGUF runtime open it.</text><switch size="sm" checked="{hfResolvedConfirmed}" on-toggle="toggle_hf_download_confirmation">Authorize this exact allowlisted download</switch><row><button size="sm" variant="ghost" on-press="clear_hf_candidate">Choose Another Repository</button><spacer grow="1"/><button size="sm" variant="primary" on-press="download_resolved_hf" disabled="{not hfResolvedConfirmed or modelDownloadActive or isBusy}">Download Allowlisted Model</button></row></if>
+                      <else><text wrap="true">Metadata only. This artifact is not on Friday’s production allowlist, so Friday will not download, parse, runtime-probe, recognize with, or activate its GGUF bytes.</text><button size="sm" variant="ghost" on-press="clear_hf_candidate">Choose Another Repository</button></else>
                     </column>
                   </if>
                   <else>
@@ -186,12 +186,12 @@
                     <if test="{not defaultModelInstalled}"><separator/><row gap="14" cross="center"><text foreground="text_muted"><span mono="true">○</span></text><column grow="1"><text>Parakeet TDT 0.6B v3</text><text foreground="text_muted">25 languages · CC-BY-4.0 · 714 MB</text></column><if test="{modelDownloadState == 'idle'}"><button size="sm" variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><button size="sm" on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadPaused}"><button size="sm" variant="primary" on-press="retry_model_download">Resume Download</button></if><if test="{modelDownloadFailed}"><button size="sm" variant="primary" on-press="retry_model_download">Retry Download</button></if></row><if test="{modelTotalBytes > 0}"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/><text foreground="text_muted"><span mono="true">{modelDownloadedBytesLabel} / {modelTotalBytesLabel} bytes</span></text></if></if>
                     <separator/>
                     <row gap="16" cross="center"><column grow="1"><text>Parakeet CTC 1.1B</text><text foreground="text_muted">English · CC-BY-4.0 · 1.18 GB</text></column><button size="sm" on-press="choose_parakeet_ctc" disabled="{modelDownloadActive or isBusy}">Use Parakeet CTC repository</button></row>
-                    <text foreground="text_muted" wrap="true">The larger English model is offered as a known repository. Friday still resolves immutable metadata and verifies the real local runtime before installation.</text>
+                    <text foreground="text_muted" wrap="true">The larger English model is offered for metadata inspection. It remains unavailable for installation until Friday ships an exact reviewed artifact on the production allowlist.</text>
                     <separator/>
                     <text>Add from Hugging Face</text>
                     <text-field size="sm" text="{hfDraft}" on-input="hf_draft_edit" placeholder="owner/repository" label="Hugging Face model identifier"/>
                     <switch size="sm" checked="{hfSourceConfirmed}" on-toggle="toggle_hf_source_confirmation">Allow Friday to contact Hugging Face and resolve public metadata</switch>
-                    <row><text foreground="text_muted" grow="1">Repository metadata is not compatibility proof.</text><button size="sm" on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Resolve Candidate Metadata</button></row>
+                    <row><text foreground="text_muted" grow="1">Repository metadata never grants parser access.</text><button size="sm" on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Inspect Candidate Metadata</button></row>
                   </else>
                   <separator/>
                   <row gap="8"><text foreground="text_muted" grow="1"><span mono="true">{round(modelCount)} {plural(round(modelCount), 'model', 'models')} · {managedModelSizeText} managed</span></text><button size="sm" variant="ghost" on-press="cleanup_model_downloads" disabled="{modelDownloadActive}">Clean Partial Downloads</button></row>

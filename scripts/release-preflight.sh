@@ -90,6 +90,7 @@ if (lock.packages?.['']?.devDependencies?.['@native-sdk/cli'] !== exact['@native
 if (model.revision !== '541d1f99c6b0c3cd0b11a95167540bb8edefd82b') fail('default model revision is not pinned');
 if (model.sha256 !== 'e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e') fail('default model SHA-256 is not pinned');
 if (model.expectedBytes !== 713975456) fail('default model byte count is not pinned');
+if (model.parserAdmission !== 'friday_production_allowlist_v1') fail('default model is not explicitly admitted by the production parser policy');
 NODE
   require_file "$ROOT/patches/@native-sdk+cli+0.10.1.patch"
 }

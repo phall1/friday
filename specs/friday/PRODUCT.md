@@ -100,15 +100,15 @@ Figma: none provided
 
 37. Friday resumes or retries model downloads only after a user-visible retry action or a normal app relaunch that clearly shows the pending download state.
 
-38. Friday allows the user to add a compatible local model from disk.
+38. Friday allows the user to add a local model from disk only when its complete manifest identity exactly matches a Friday-reviewed production allowlist entry and its bytes match that entry’s size and SHA-256 before parser access.
 
-39. Friday allows the user to add a compatible Hugging Face model by identifier.
+39. Friday allows the user to inspect bounded public Hugging Face metadata by identifier. It downloads or adds a model only when the resolved immutable revision, artifact, byte count, and SHA-256 exactly match a Friday-reviewed production allowlist entry.
 
-40. Friday does not present arbitrary local files or arbitrary Hugging Face repositories as compatible ASR models.
+40. Friday does not present arbitrary local files or arbitrary Hugging Face repositories as compatible ASR models and never sends their GGUF bytes to the in-process parser or recognizer.
 
-41. A model is selectable only when Friday can identify it as loadable by Friday's local ASR runtime; streaming, language, punctuation, vocabulary, and quality capabilities are separate evidence and are never inferred from loadability.
+41. A model is selectable only when its immutable manifest identity is on Friday’s production allowlist, its bytes pass exact integrity checks, and its declared capabilities pass the corresponding local runtime probe; streaming, language, punctuation, vocabulary, and quality capabilities remain separate evidence.
 
-42. If a local or Hugging Face model is incompatible, Friday states that the model is incompatible and does not make it active.
+42. If a local or Hugging Face model is not allowlisted or fails integrity/runtime verification, Friday states why it is unavailable and does not make it active.
 
 43. Friday distinguishes the selected model from available but inactive models.
 
@@ -342,7 +342,7 @@ Figma: none provided
 
 155. Friday presents one calm, native voice-instrument surface whose hierarchy remains clear in light, dark, high-contrast, and reduced-motion environments; color communicates live or exceptional state rather than decoration.
 
-156. Friday offers Parakeet CTC 1.1B as a known repository shortcut without weakening the consent, immutable-metadata, integrity, or local runtime-verification requirements for non-default Hugging Face models.
+156. Friday offers Parakeet CTC 1.1B as a known repository shortcut for metadata inspection only. It remains unavailable for download, parsing, probing, selection, or recognition until a future Friday release adds an exact reviewed artifact to the production allowlist.
 
 157. Friday begins accepted hotkey capture within the existing 75 ms p95 budget and retains speech that begins immediately after hotkey-down; it does not use an always-on or pre-keydown microphone buffer.
 

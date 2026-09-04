@@ -20,5 +20,6 @@
   "license": "CC-BY-4.0",
   "attribution": "NVIDIA Parakeet TDT 0.6B v3",
   "managed": true,
-  "compatibility": "compatible"
+  "compatibility": "compatible",
+  "parserAdmission": "friday_production_allowlist_v1"
 }

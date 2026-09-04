@@ -87,7 +87,7 @@ cat >"$failed_gate/package-lock.json" <<'EOF'
 EOF
 printf '{"version":"0.1.0"}\n' >"$failed_gate/app.json"
 cat >"$failed_gate/resources/models/parakeet-tdt-0.6b-v3.json" <<'EOF'
-{"revision":"541d1f99c6b0c3cd0b11a95167540bb8edefd82b","sha256":"e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e","expectedBytes":713975456}
+{"revision":"541d1f99c6b0c3cd0b11a95167540bb8edefd82b","sha256":"e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e","expectedBytes":713975456,"parserAdmission":"friday_production_allowlist_v1"}
 EOF
 printf 'patch\n' >"$failed_gate/patches/@native-sdk+cli+0.10.1.patch"
 printf 'runtime\n' >"$failed_gate/third_party/nemo-speech/lib/runtime.dylib"

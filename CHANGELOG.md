@@ -6,6 +6,7 @@ All notable changes to Friday are documented here.
 
 ### Changed
 
+- Restricted production GGUF parser and recognizer access to Friday-reviewed immutable, hash-pinned manifest identities. Arbitrary local and Hugging Face artifacts remain metadata candidates only; they are never downloaded or runtime-probed in the unsandboxed app.
 - Recast the recording capsule as a slim pill: no status words, just elapsed time; recording shows the platform-red dot with adaptive label bars, transcribing shows a quiet continuous traveling wave, and the meter animates at frame rate with fast-attack/slow-release dynamics instead of stepped keyframes.
 - Gave the menu-bar item one persistent identity — the Friday waveform mark as a template image — instead of swapping letters and dots; state reads through treatment (red while live, dimmed while transcribing, ghosted while blocked, `!` badge on failure), so the mark never looks like it vanished.
 - Friday now appears in the Dock while a window is visible and returns to a pure menu-bar app when the last window closes, including via the close button.
