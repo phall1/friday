@@ -535,9 +535,11 @@ pub const FridayHost = struct {
                 const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
                 operation.session = identity.session;
                 operation.generation = identity.generation;
-                const path = self.audio.retryAudioPath() orelse return self.finishUnavailable(operation, "audio_unavailable", "Captured audio is unavailable.", false);
                 if (self.models.activeModelPath() == null) return self.finishUnavailable(operation, "model_unavailable", "The active model is unavailable.", true);
-                self.recognizer.transcribeAudio(path, operation.session, operation.generation, transcribeCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
+                self.audio.submitRetry(.{ .context = operation, .submit = submitRetryTranscription }) catch |failure| switch (failure) {
+                    error.RetryUnavailable => self.finishUnavailable(operation, "audio_unavailable", "Captured audio is unavailable.", false),
+                    else => self.finishError(operation, "transcription_failed", "Local transcription could not start."),
+                };
             },
             .audio_finish => {
                 const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
@@ -550,8 +552,10 @@ pub const FridayHost = struct {
                 const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
                 operation.session = identity.session;
                 operation.generation = identity.generation;
-                const path = self.audio.retryAudioPath() orelse return self.finishUnavailable(operation, "retry_unavailable", "Retry audio is unavailable.", false);
-                self.recognizer.transcribeAudio(path, operation.session, operation.generation, transcribeCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
+                self.audio.submitRetry(.{ .context = operation, .submit = submitRetryTranscription }) catch |failure| switch (failure) {
+                    error.RetryUnavailable => self.finishUnavailable(operation, "retry_unavailable", "Retry audio is unavailable.", false),
+                    else => self.finishError(operation, "transcription_failed", "Local transcription could not start."),
+                };
             },
             .transcribe_path => {
                 operation.session = json.unsignedField(payload, "session");
@@ -1149,6 +1153,12 @@ pub const FridayHost = struct {
         return @ptrCast(@alignCast(operation.context));
     }
 
+    fn submitRetryTranscription(context: *anyopaque, path: []const u8) !void {
+        const operation: *Operation = @ptrCast(@alignCast(context));
+        const self = operationHost(operation);
+        try self.recognizer.transcribeAudio(path, operation.session, operation.generation, transcribeCompletion(operation));
+    }
+
     fn genericCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
         operationHost(operation).finishOperation(operation, ok, bytes);
@@ -1350,6 +1360,7 @@ pub fn testExtension() !void {
     try operations_mod.testContracts();
     try artifacts_mod.testContracts();
     try diagnostics_mod.testContracts();
+    try audio_mod.testContracts();
     const live = LifecycleSnapshot{ .active = true, .session = 31, .generation = 32, .deadline_ms = 0, .channel_live = true };
     try std.testing.expect(!lifecycleMustAbort(live, 0, 100));
     try std.testing.expect(!lifecycleMustAbort(live, 31, 100));
