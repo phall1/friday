@@ -1,5 +1,6 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
+const operations_mod = @import("host/operation_registry.zig");
 const audio_mod = @import("macos/audio.zig");
 const delivery_mod = @import("macos/delivery.zig");
 const input_mod = @import("macos/input.zig");
@@ -14,8 +15,8 @@ extern "c" var NSApplicationWillTerminateNotification: objc.Id;
 extern "c" var NSWindowDidChangeOcclusionStateNotification: objc.Id;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
-const completion_capacity = 128;
-const result_capacity = 64 * 1024;
+const completion_capacity = operations_mod.capacity;
+const result_capacity = operations_mod.result_capacity;
 const event_channel_key: u64 = 7001;
 const source_capacity = 8;
 const sample_capacity = 64;
@@ -24,98 +25,12 @@ const lifecycle_handoff_timeout_ms: u64 = 1_000;
 
 extern "c" fn usleep(useconds: c_uint) c_int;
 
-const SpinMutex = struct {
-    inner: std.atomic.Mutex = .unlocked,
-
-    fn lock(self: *SpinMutex) void {
-        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
-    }
-
-    fn unlock(self: *SpinMutex) void {
-        self.inner.unlock();
-    }
-};
-
-const Completion = struct {
-    key: u64 = 0,
-    ok: bool = false,
-    length: usize = 0,
-    cancelled: bool = false,
-    operation: ?*Operation = null,
-    bytes: [result_capacity]u8 = undefined,
-};
-
-const AsyncKind = enum {
-    hotkey_capture,
-    audio_start,
-    audio_stop,
-    audio_finish,
-    audio_retry,
-    transcribe_capture,
-    transcribe_path,
-    nemo_unload,
-    model_download,
-    model_resume,
-    model_pick_local,
-    model_resolve_hf,
-    model_download_hf,
-    model_add_local,
-    model_add_hf,
-    model_select,
-    debug_contracts,
-    debug_fixture_delivery,
-    debug_performance,
-};
-
-const AsyncStage = enum { initial, stopping, activating, transcribing };
-
-const Operation = struct {
-    host: *FridayHost = undefined,
-    used: bool = false,
-    pending: bool = false,
-    cancelled: bool = false,
-    cancelling: bool = false,
-    callback_retired: bool = false,
-    completion_queued: bool = false,
-    key: u64 = 0,
-    kind: AsyncKind = .hotkey_capture,
-    stage: AsyncStage = .initial,
-    generation: u64 = 0,
-    model_epoch: u64 = 0,
-    session: u64 = 0,
-    saved: ?[]u8 = null,
-    path: [4096]u8 = undefined,
-    path_len: usize = 0,
-    output_path: [4096]u8 = undefined,
-    output_path_len: usize = 0,
-    iterations: usize = 0,
-    completed_iterations: usize = 0,
-    inference: [50]u64 = @splat(0),
-    stop_to_text: [50]u64 = @splat(0),
-    delivery: [50]u64 = @splat(0),
-    resident: [50]u64 = @splat(0),
-};
-
-const CancellationTicket = struct {
-    operation: *Operation,
-    key: u64,
-    kind: AsyncKind,
-    stage: AsyncStage,
-    generation: u64,
-    model_epoch: u64,
-    session: u64,
-    callback_retired: bool,
-};
-
-const CancellationCleanup = struct {
-    input: bool = false,
-    audio: bool = false,
-    recognizer: bool = false,
-    activation: bool = false,
-    model: bool = false,
-    session_state: bool = false,
-    callback_suppressed: bool = false,
-};
+const SpinMutex = operations_mod.SpinMutex;
+const AsyncKind = operations_mod.Kind;
+const AsyncStage = operations_mod.Stage;
+const Operation = operations_mod.Operation;
+const CancellationTicket = operations_mod.Cancellation;
+const CancellationCleanup = operations_mod.Cleanup;
 
 const Transcript = struct {
     used: bool = false,
@@ -155,13 +70,7 @@ pub const FridayHost = struct {
 
     mutex: SpinMutex = .{},
     request_mutex: SpinMutex = .{},
-    completions: [completion_capacity]Completion = @splat(.{}),
-    completion_head: usize = 0,
-    completion_tail: usize = 0,
-    completion_count: usize = 0,
-    operations: [completion_capacity]Operation = @splat(.{}),
-    pending_count: usize = 0,
-    closing: bool = false,
+    operation_registry: operations_mod.Registry,
 
     channels: ?native_sdk.HostChannelBinding = null,
     event_handle: ?native_sdk.ChannelHandle = null,
@@ -217,6 +126,7 @@ pub const FridayHost = struct {
             .audio = undefined,
             .recognizer = undefined,
             .models = undefined,
+            .operation_registry = operations_mod.Registry.init(allocator),
         };
 
         if (getenv("FRIDAY_AUTOMATION_METRICS_OUTPUT")) |path| {
@@ -254,8 +164,8 @@ pub const FridayHost = struct {
         self.lifecycle_stop.store(true, .release);
         if (self.lifecycle_thread) |thread| thread.join();
         self.lifecycle_thread = null;
+        self.operation_registry.close();
         self.mutex.lock();
-        self.closing = true;
         self.event_handle = null;
         self.channels = null;
         const services = self.services;
@@ -277,7 +187,7 @@ pub const FridayHost = struct {
 
         for (self.sources[0..self.source_count]) |entry| if (entry) |source| self.destroySource(source);
         for (&self.transcripts) |*entry| if (entry.text) |text| self.allocator.free(text);
-        for (&self.operations) |*operation| if (operation.saved) |saved| self.allocator.free(saved);
+        self.operation_registry.deinit();
         self.allocator.free(self.data_directory);
         if (self.performance_output_path) |path| self.allocator.free(path);
         self.allocator.destroy(self);
@@ -298,11 +208,8 @@ pub const FridayHost = struct {
 
     fn bindServices(context: *anyopaque, services: *const native_sdk.platform.PlatformServices) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
+        if (self.operation_registry.isClosing()) return;
         self.mutex.lock();
-        if (self.closing) {
-            self.mutex.unlock();
-            return;
-        }
         self.services = services.*;
         self.mutex.unlock();
 
@@ -356,9 +263,10 @@ pub const FridayHost = struct {
 
     fn bindChannels(context: *anyopaque, channels: native_sdk.HostChannelBinding) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
+        if (self.operation_registry.isClosing()) return;
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.closing) self.channels = channels;
+        self.channels = channels;
     }
 
     fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
@@ -388,13 +296,15 @@ pub const FridayHost = struct {
     }
 
     fn subscribe(self: *FridayHost, key: u64) void {
+        if (self.operation_registry.isClosing()) return self.enqueue(key, false, "{\"ok\":false,\"code\":\"channel_binding_unavailable\"}");
         self.mutex.lock();
-        const channels = if (!self.closing) self.channels else null;
+        const channels = self.channels;
         self.mutex.unlock();
         const binding_value = channels orelse return self.enqueue(key, false, "{\"ok\":false,\"code\":\"channel_binding_unavailable\"}");
         const handle = binding_value.acquire_fn(binding_value.context, event_channel_key);
+        if (self.operation_registry.isClosing()) return self.enqueue(key, false, "{\"ok\":false,\"code\":\"channel_unavailable\"}");
         self.mutex.lock();
-        if (!self.closing) self.event_handle = handle;
+        self.event_handle = handle;
         self.mutex.unlock();
         self.enqueue(key, handle != null, if (handle != null) "{\"ok\":true,\"subscribed\":true}" else "{\"ok\":false,\"code\":\"channel_unavailable\"}");
     }
@@ -921,46 +831,23 @@ pub const FridayHost = struct {
     }
 
     fn beginOperation(self: *FridayHost, key: u64, kind: AsyncKind) ?*Operation {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.closing) return null;
-        for (&self.operations) |*operation| if (operation.used and operation.key == key) return null;
-        for (&self.operations) |*operation| if (!operation.used) {
-            operation.* = .{ .host = self, .used = true, .pending = true, .key = key, .kind = kind };
-            self.pending_count += 1;
-            return operation;
-        };
-        return null;
+        return self.operation_registry.begin(self, key, kind);
     }
 
     fn finishOperation(self: *FridayHost, operation: *Operation, ok: bool, bytes: []const u8) void {
-        self.mutex.lock();
-        if (!operation.used or operation.callback_retired) {
-            self.mutex.unlock();
-            return;
-        }
-        operation.callback_retired = true;
-        const lifecycle_generation = operation.generation;
-        const lifecycle_operation = isLifecycleOperation(operation.kind);
-        const should_deliver = operation.pending and !operation.cancelled and !self.closing and
-            (!lifecycle_operation or lifecycle_generation > self.retired_lifecycle_generation);
-        if (operation.pending) {
-            operation.pending = false;
-            if (self.pending_count > 0) self.pending_count -= 1;
-        }
-        if (should_deliver) operation.completion_queued = self.enqueueOperationLocked(operation, ok, bytes);
-        const delivery_failed = should_deliver and !operation.completion_queued and lifecycle_generation != 0;
-        const stop_handoff_completed = operation.kind == .audio_stop and operation.completion_queued;
-        const lifecycle_session = operation.session;
-        const services = if (operation.completion_queued) self.services else null;
-        self.releaseOperationIfRetiredLocked(operation);
-        self.mutex.unlock();
+        const result = self.operation_registry.finish(operation, ok, bytes);
         var wake_failed = false;
-        if (services) |live| live.wake() catch {
-            wake_failed = true;
-        };
-        if (stop_handoff_completed) self.clearLifecycleDeadline(lifecycle_session, lifecycle_generation);
-        if (delivery_failed or wake_failed) self.requestLifecycleAbort(lifecycle_generation);
+        if (result.queued) {
+            self.mutex.lock();
+            const services = self.services;
+            self.mutex.unlock();
+            if (services) |live| live.wake() catch {
+                wake_failed = true;
+            };
+        }
+        if (result.kind == .audio_stop and result.queued)
+            self.clearLifecycleDeadline(result.session, result.generation);
+        if (result.delivery_failed or wake_failed) self.requestLifecycleAbort(result.generation);
     }
 
     fn finishError(self: *FridayHost, operation: *Operation, code: []const u8, message: []const u8) void {
@@ -981,33 +868,15 @@ pub const FridayHost = struct {
     }
 
     fn saveOperationResult(self: *FridayHost, operation: *Operation, bytes: []const u8) bool {
-        if (operation.saved) |saved| self.allocator.free(saved);
-        operation.saved = self.allocator.dupe(u8, bytes) catch return false;
-        return true;
-    }
-
-    fn releaseOperationLocked(self: *FridayHost, operation: *Operation) void {
-        if (operation.saved) |saved| self.allocator.free(saved);
-        operation.* = .{};
-    }
-
-    fn releaseOperationIfRetiredLocked(self: *FridayHost, operation: *Operation) void {
-        if (operation.used and operation.callback_retired and !operation.cancelling and !operation.completion_queued) self.releaseOperationLocked(operation);
+        return self.operation_registry.save(operation, bytes);
     }
 
     fn operationPending(self: *FridayHost, operation: *Operation) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return operation.used and operation.pending and !self.closing and
-            (!isLifecycleOperation(operation.kind) or operation.generation > self.retired_lifecycle_generation);
+        return self.operation_registry.operationPending(operation);
     }
 
     fn transitionOperation(self: *FridayHost, operation: *Operation, stage: AsyncStage) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (!operation.used or !operation.pending or self.closing) return false;
-        operation.stage = stage;
-        return true;
+        return self.operation_registry.transition(operation, stage);
     }
 
     fn assignModelEpoch(self: *FridayHost, operation: *Operation) u64 {
@@ -1017,20 +886,13 @@ pub const FridayHost = struct {
     }
 
     fn cancelModelRequest(self: *FridayHost, request_key: u64) void {
-        self.mutex.lock();
-        var epoch: u64 = 0;
-        for (&self.operations) |*operation| if (operation.used and operation.key == request_key) {
-            epoch = operation.model_epoch;
-            break;
-        };
-        self.mutex.unlock();
-        self.models.cancel(epoch);
+        self.models.cancel(self.operation_registry.modelEpochForKey(request_key));
     }
 
     fn cancel(context: *anyopaque, key: u64) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        const ticket = self.claimCancellation(key) orelse return;
-        const cleanup = cancellationCleanup(ticket.kind, ticket.stage, ticket.callback_retired);
+        const ticket = self.operation_registry.claimCancellation(key) orelse return;
+        const cleanup = ticket.cleanup();
         if (cleanup.input) self.input.cancelShortcutCapture();
         if (cleanup.audio) self.audio.cancelSession(ticket.session);
         if (cleanup.recognizer) self.recognizer.cancelGeneration(ticket.generation);
@@ -1039,53 +901,12 @@ pub const FridayHost = struct {
         if (cleanup.session_state) {
             self.request_mutex.lock();
             self.removeSourcesForGeneration(ticket.generation);
-            if (self.takeTranscript(ticket.session, ticket.generation)) |text| self.allocator.free(text);
+            if (self.takeTranscript(ticket.session, ticket.generation)) |transcript| self.allocator.free(transcript);
             self.clearAudioGeneration(ticket.session);
             self.completeLifecycle(ticket.session, ticket.generation);
             self.request_mutex.unlock();
         }
-        self.retireCancellation(ticket, cleanup.callback_suppressed);
-    }
-
-    fn claimCancellation(self: *FridayHost, key: u64) ?CancellationTicket {
-        self.mutex.lock();
-        var ticket: ?CancellationTicket = null;
-        for (&self.operations) |*operation| if (operation.used and operation.key == key and !operation.cancelled) {
-            operation.cancelled = true;
-            operation.cancelling = true;
-            if (operation.pending) {
-                operation.pending = false;
-                if (self.pending_count > 0) self.pending_count -= 1;
-            }
-            ticket = .{
-                .operation = operation,
-                .key = operation.key,
-                .kind = operation.kind,
-                .stage = operation.stage,
-                .generation = operation.generation,
-                .model_epoch = operation.model_epoch,
-                .session = operation.session,
-                .callback_retired = operation.callback_retired,
-            };
-            break;
-        };
-        var offset: usize = 0;
-        while (offset < self.completion_count) : (offset += 1) {
-            const index = (self.completion_head + offset) % self.completions.len;
-            if (self.completions[index].key == key) self.completions[index].cancelled = true;
-        }
-        self.mutex.unlock();
-        return ticket;
-    }
-
-    fn retireCancellation(self: *FridayHost, ticket: CancellationTicket, callback_suppressed: bool) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const operation = ticket.operation;
-        if (!operation.used or operation.key != ticket.key) return;
-        if (callback_suppressed) operation.callback_retired = true;
-        operation.cancelling = false;
-        self.releaseOperationIfRetiredLocked(operation);
+        self.operation_registry.retireCancellation(ticket, cleanup.callback_suppressed);
     }
 
     fn enqueue(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) void {
@@ -1093,54 +914,18 @@ pub const FridayHost = struct {
     }
 
     fn enqueueResult(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) bool {
+        const queued = self.operation_registry.enqueue(key, ok, bytes);
         self.mutex.lock();
-        const queued = self.enqueueLocked(key, ok, bytes);
         const services = self.services;
         self.mutex.unlock();
         if (queued) if (services) |live| live.wake() catch self.requestCurrentLifecycleAbort();
         return queued;
     }
 
-    fn enqueueLocked(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) bool {
-        return self.enqueueCompletionLocked(key, ok, bytes, null);
-    }
-
-    fn enqueueOperationLocked(self: *FridayHost, operation: *Operation, ok: bool, bytes: []const u8) bool {
-        return self.enqueueCompletionLocked(operation.key, ok, bytes, operation);
-    }
-
-    fn enqueueCompletionLocked(self: *FridayHost, key: u64, ok: bool, bytes: []const u8, operation: ?*Operation) bool {
-        if (self.closing or self.completion_count == self.completions.len) return false;
-        const slot = &self.completions[self.completion_tail];
-        const length = @min(bytes.len, slot.bytes.len);
-        @memcpy(slot.bytes[0..length], bytes[0..length]);
-        slot.key = key;
-        slot.ok = ok;
-        slot.length = length;
-        slot.cancelled = false;
-        slot.operation = operation;
-        self.completion_tail = (self.completion_tail + 1) % self.completions.len;
-        self.completion_count += 1;
-        return true;
-    }
-
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         self.finishMicrophonePermissionProbe();
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        while (self.completion_count > 0) {
-            const slot = &self.completions[self.completion_head];
-            self.completion_head = (self.completion_head + 1) % self.completions.len;
-            self.completion_count -= 1;
-            if (slot.operation) |operation| {
-                operation.completion_queued = false;
-                self.releaseOperationIfRetiredLocked(operation);
-                slot.operation = null;
-            }
-            if (!slot.cancelled) return .{ .key = slot.key, .ok = slot.ok, .bytes = slot.bytes[0..slot.length] };
-        }
-        return null;
+        return self.operation_registry.poll();
     }
 
     fn finishMicrophonePermissionProbe(self: *FridayHost) void {
@@ -1153,9 +938,7 @@ pub const FridayHost = struct {
 
     fn pending(context: *anyopaque) bool {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.completion_count > 0 or self.pending_count > 0;
+        return self.operation_registry.pending();
     }
 
     fn inputEvent(context: *anyopaque, bytes: []const u8) void {
@@ -1290,8 +1073,9 @@ pub const FridayHost = struct {
     }
 
     fn emit(self: *FridayHost, bytes: []const u8) bool {
+        const closing = self.operation_registry.isClosing();
         self.mutex.lock();
-        const handle = if (!self.closing) self.event_handle else null;
+        const handle = if (!closing) self.event_handle else null;
         self.mutex.unlock();
         const outcome = if (handle) |live| live.post(bytes) else native_sdk.ChannelHandle.PostResult.closed;
         return switch (outcome) {
@@ -1308,9 +1092,10 @@ pub const FridayHost = struct {
 
     fn activateLifecycle(self: *FridayHost, session: u64, generation: u64) void {
         if (session == 0 or generation == 0) return;
+        if (self.operation_registry.isClosing()) return;
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.closing or generation <= self.retired_lifecycle_generation) return;
+        if (generation <= self.retired_lifecycle_generation) return;
         self.current_audio_session = session;
         self.current_audio_generation = generation;
         self.lifecycle_deadline_ms = 0;
@@ -1380,6 +1165,7 @@ pub const FridayHost = struct {
         self.current_audio_generation = 0;
         self.retired_lifecycle_generation = @max(self.retired_lifecycle_generation, generation);
         self.mutex.unlock();
+        self.operation_registry.retireGeneration(generation);
 
         // The watchdog is the single teardown owner. Producers only request
         // revocation, so audio callbacks never join their own worker and no
@@ -1397,13 +1183,17 @@ pub const FridayHost = struct {
 
     fn completeLifecycle(self: *FridayHost, session: u64, generation: u64) void {
         self.mutex.lock();
-        defer self.mutex.unlock();
-        if (!self.lifecycle_active or self.current_audio_session != session or self.current_audio_generation != generation) return;
+        if (!self.lifecycle_active or self.current_audio_session != session or self.current_audio_generation != generation) {
+            self.mutex.unlock();
+            return;
+        }
         self.lifecycle_active = false;
         self.lifecycle_deadline_ms = 0;
         self.current_audio_session = 0;
         self.current_audio_generation = 0;
         self.retired_lifecycle_generation = @max(self.retired_lifecycle_generation, generation);
+        self.mutex.unlock();
+        self.operation_registry.retireGeneration(generation);
     }
 
     fn completeLifecycleGeneration(self: *FridayHost, generation: u64) void {
@@ -1570,14 +1360,18 @@ pub const FridayHost = struct {
         return .{ .context = operation, .complete = genericCallback };
     }
 
+    fn operationHost(operation: *Operation) *FridayHost {
+        return @ptrCast(@alignCast(operation.context));
+    }
+
     fn genericCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        operation.host.finishOperation(operation, ok, bytes);
+        operationHost(operation).finishOperation(operation, ok, bytes);
     }
 
     fn audioCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) {
             self.audio.cancelSession(operation.session);
             self.finishOperation(operation, ok, bytes);
@@ -1602,7 +1396,7 @@ pub const FridayHost = struct {
 
     fn transcribeCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         self.updateTranscriptionState(operation, ok, bytes);
         self.clearAudioGeneration(operation.session);
@@ -1611,7 +1405,7 @@ pub const FridayHost = struct {
 
     fn finishCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (operation.stage == .stopping) {
             if (!ok) return self.finishOperation(operation, false, bytes);
@@ -1636,7 +1430,7 @@ pub const FridayHost = struct {
 
     fn finishNemoCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         self.updateTranscriptionState(operation, ok, bytes);
         var output: [result_capacity]u8 = undefined;
@@ -1648,7 +1442,7 @@ pub const FridayHost = struct {
 
     fn modelCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (!ok) return self.finishOperation(operation, false, bytes);
         const path = self.models.activeModelPath() orelse return self.finishOperation(operation, true, bytes);
@@ -1663,7 +1457,7 @@ pub const FridayHost = struct {
 
     fn modelActivationCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         self.models.markRuntimeReady(self.models.activeModelKey(), ok);
         if (!ok) return self.finishOperation(operation, false, bytes);
@@ -1672,7 +1466,7 @@ pub const FridayHost = struct {
 
     fn fixtureCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (!ok) {
             self.removeSourcesForGeneration(operation.generation);
@@ -1700,7 +1494,7 @@ pub const FridayHost = struct {
 
     fn performanceCallback(context: *anyopaque, ok: bool, bytes: []const u8) void {
         const operation: *Operation = @ptrCast(@alignCast(context));
-        const self = operation.host;
+        const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (!ok) return self.finishOperation(operation, false, bytes);
         if (operation.stage == .activating) return self.runPerformanceSample(operation);
@@ -1753,10 +1547,11 @@ fn lifecycleMustAbort(snapshot: LifecycleSnapshot, requested_generation: u64, no
 fn lifecycleMain(self: *FridayHost) void {
     while (!self.lifecycle_stop.load(.acquire)) {
         const requested_generation = self.lifecycle_abort_generation.swap(0, .acq_rel);
+        const closing = self.operation_registry.isClosing();
         self.mutex.lock();
-        const handle = if (!self.closing and self.lifecycle_active) self.event_handle else null;
+        const handle = if (!closing and self.lifecycle_active) self.event_handle else null;
         var snapshot = LifecycleSnapshot{
-            .active = !self.closing and self.lifecycle_active,
+            .active = !closing and self.lifecycle_active,
             .session = self.current_audio_session,
             .generation = self.current_audio_generation,
             .deadline_ms = self.lifecycle_deadline_ms,
@@ -1904,16 +1699,10 @@ fn operationTestHost() FridayHost {
     var host: FridayHost = undefined;
     host.allocator = std.testing.allocator;
     host.mutex = .{};
-    host.completion_head = 0;
-    host.completion_tail = 0;
-    host.completion_count = 0;
-    host.pending_count = 0;
-    host.closing = false;
+    host.operation_registry = operations_mod.Registry.init(std.testing.allocator);
     host.services = null;
     host.channels = null;
     host.event_handle = null;
-    host.completions = @splat(.{});
-    host.operations = @splat(.{});
     host.audio_generations = @splat(.{});
     host.current_audio_session = 0;
     host.current_audio_generation = 0;
@@ -1927,142 +1716,6 @@ fn operationTestHost() FridayHost {
     host.microphone_permission_probe_active = std.atomic.Value(bool).init(false);
     host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
     return host;
-}
-
-const CancellationStress = struct {
-    host: *FridayHost,
-    operation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    requested: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    completed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    fn run(self: *CancellationStress) void {
-        var iteration: usize = 0;
-        while (iteration < 10_000 and !self.stop.load(.acquire)) {
-            const requested = self.requested.load(.acquire);
-            if (requested == iteration) {
-                std.atomic.spinLoopHint();
-                continue;
-            }
-            const operation: *Operation = @ptrFromInt(self.operation.load(.acquire));
-            self.host.finishOperation(operation, true, "late");
-            iteration = requested;
-            self.completed.store(iteration, .release);
-        }
-    }
-};
-
-test "completion queue preserves order cancellation and pending state" {
-    var host = operationTestHost();
-    host.enqueue(1, true, "first");
-    host.enqueue(2, true, "second");
-    FridayHost.cancel(&host, 1);
-    const first = FridayHost.poll(&host).?;
-    try std.testing.expectEqual(@as(u64, 2), first.key);
-    try std.testing.expectEqualStrings("second", first.bytes);
-    try std.testing.expect(!FridayHost.pending(&host));
-}
-
-test "queued operation completion retains its slot through cancellation and poll" {
-    var host = operationTestHost();
-    const operation = host.beginOperation(41, .audio_start).?;
-    operation.session = 9;
-    operation.generation = 11;
-    host.finishOperation(operation, true, "started");
-    host.finishOperation(operation, false, "duplicate");
-
-    try std.testing.expect(operation.used);
-    try std.testing.expect(operation.callback_retired);
-    try std.testing.expect(operation.completion_queued);
-    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
-    try std.testing.expect(host.beginOperation(41, .model_download) == null);
-
-    const ticket = host.claimCancellation(41).?;
-    const cleanup = cancellationCleanup(ticket.kind, ticket.stage, ticket.callback_retired);
-    try std.testing.expect(cleanup.audio);
-    try std.testing.expect(cleanup.session_state);
-    try std.testing.expect(!cleanup.recognizer and !cleanup.activation);
-    try std.testing.expect(!cleanup.model);
-    host.retireCancellation(ticket, cleanup.callback_suppressed);
-
-    try std.testing.expect(operation.used);
-    try std.testing.expect(FridayHost.poll(&host) == null);
-    try std.testing.expect(!operation.used);
-    const replacement = host.beginOperation(41, .model_download).?;
-    try std.testing.expectEqual(operation, replacement);
-    host.finishOperation(replacement, true, "fresh");
-    const completion = FridayHost.poll(&host).?;
-    try std.testing.expectEqual(@as(u64, 41), completion.key);
-    try std.testing.expectEqualStrings("fresh", completion.bytes);
-    try std.testing.expect(FridayHost.poll(&host) == null);
-}
-
-test "cancellation cleanup is tagged by operation kind stage and retirement" {
-    const shortcut = cancellationCleanup(.hotkey_capture, .initial, false);
-    try std.testing.expect(shortcut.input and shortcut.callback_suppressed);
-    try std.testing.expect(!shortcut.audio and !shortcut.recognizer and !shortcut.activation and !shortcut.model and !shortcut.session_state);
-
-    const model = cancellationCleanup(.model_download, .initial, false);
-    try std.testing.expect(model.model);
-    try std.testing.expect(!model.input and !model.audio and !model.recognizer and !model.activation and !model.session_state);
-
-    const activating_model = cancellationCleanup(.model_select, .activating, false);
-    try std.testing.expect(activating_model.activation);
-    try std.testing.expect(!activating_model.recognizer and !activating_model.model and !activating_model.audio and !activating_model.input);
-
-    const transcription = cancellationCleanup(.transcribe_capture, .transcribing, false);
-    try std.testing.expect(transcription.recognizer and transcription.session_state);
-    try std.testing.expect(!transcription.activation and !transcription.model and !transcription.audio and !transcription.input);
-
-    const completed_transcription = cancellationCleanup(.transcribe_capture, .transcribing, true);
-    try std.testing.expectEqual(CancellationCleanup{}, completed_transcription);
-}
-
-test "cancel complete and reallocate stress keeps retirement ownership stable" {
-    var host = operationTestHost();
-    var stress = CancellationStress{ .host = &host };
-    const worker = try std.Thread.spawn(.{}, CancellationStress.run, .{&stress});
-    defer {
-        stress.stop.store(true, .release);
-        worker.join();
-    }
-
-    var stable_slot: ?*Operation = null;
-    for (1..10_001) |iteration| {
-        const key: u64 = @intCast(iteration);
-        const operation = host.beginOperation(key, .transcribe_path).?;
-        if (stable_slot) |slot| try std.testing.expectEqual(slot, operation) else stable_slot = operation;
-        operation.session = key;
-        operation.generation = key;
-        const ticket = host.claimCancellation(key).?;
-        stress.operation.store(@intFromPtr(operation), .release);
-        stress.requested.store(iteration, .release);
-        if (iteration % 2 == 0) {
-            while (stress.completed.load(.acquire) != iteration) std.atomic.spinLoopHint();
-            try std.testing.expect(operation.used);
-            host.retireCancellation(ticket, false);
-        } else {
-            host.retireCancellation(ticket, false);
-            while (stress.completed.load(.acquire) != iteration) std.atomic.spinLoopHint();
-        }
-        try std.testing.expect(!operation.used);
-        try std.testing.expectEqual(@as(usize, 0), host.pending_count);
-        try std.testing.expectEqual(@as(usize, 0), host.completion_count);
-    }
-}
-
-test "operation completion is consumed once and closing suppresses late delivery" {
-    var host = operationTestHost();
-    const operation = host.beginOperation(77, .audio_start).?;
-    operation.generation = 1;
-    host.finishOperation(operation, true, "done");
-    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
-
-    const late = host.beginOperation(78, .audio_start).?;
-    late.generation = 2;
-    host.closing = true;
-    host.finishOperation(late, false, "late");
-    try std.testing.expectEqual(@as(usize, 1), host.completion_count);
 }
 
 test "lifecycle lease fails closed on channel loss explicit abort and expired handoff" {
@@ -2090,7 +1743,7 @@ test "lifecycle completion queue rejection requests generation cleanup" {
     host.lifecycle_active = true;
     host.current_audio_session = 44;
     host.current_audio_generation = 45;
-    host.completion_count = host.completions.len;
+    host.operation_registry.completion_count = operations_mod.capacity;
     const operation = host.beginOperation(90, .audio_start).?;
     operation.session = 44;
     operation.generation = 45;
@@ -2101,7 +1754,7 @@ test "lifecycle completion queue rejection requests generation cleanup" {
     host.requestLifecycleAbort(44);
     try std.testing.expectEqual(@as(u64, 45), host.lifecycle_abort_generation.load(.acquire));
     try std.testing.expect(!operation.used);
-    try std.testing.expectEqual(@as(usize, 0), host.pending_count);
+    try std.testing.expectEqual(@as(usize, 0), host.operation_registry.pending_count);
 }
 
 test "audio terminal events reject generation zero and stale identities" {
