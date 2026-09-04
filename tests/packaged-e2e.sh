@@ -172,7 +172,7 @@ launch_scene transcribing-dark
 # resumable relaunch state, exact duration/drop bounds, route cleanup, and
 # shortcut conflicts.
 launch_scene settings-light FRIDAY_AUTOMATION_CONTRACTS=1
-"$CLI" automate assert 'shaFailed' 'hfCandidateUnverified' 'hfMaliciousCandidateUnverified' 'hfMaliciousPublicationRejected' 'hfRuntimeProbeRequired' 'hfUnknownFamilyFallback' 'hfPrivateRejected' 'hfAmbiguousRejected' 'hfIncompatibleRejected' 'pendingResumeHydrated' 'durationSeconds' 'reasonMatched' 'droppedFrameFailure' 'processTranslated' >/dev/null
+"$CLI" automate assert 'shaFailed' 'hfCandidateUnverified' 'hfMaliciousCandidateUnverified' 'hfMaliciousPublicationRejected' 'hfRuntimeProbeRequired' 'hfUnknownFamilyFallback' 'hfPrivateRejected' 'hfAmbiguousRejected' 'hfIncompatibleRejected' 'pendingResumeHydrated' 'durationSeconds' 'reasonMatched' 'droppedFrameFailure' 'processTranslated' '"keyboardContract":true' '"voiceOverContract":true' '"announcementContract":true' '"noLiveUpdateAnnouncements":true' '"nonColorStateContract":true' '"hitRegionContract":true' '"terminalContract":true' >/dev/null
 
 # Generate a private, disposable 16 kHz mono Float32 five-second fixture.
 say -v Samantha -r 150 -o "$WORK/fixture.aiff" 'Friday local dictation works. Friday local dictation works.'

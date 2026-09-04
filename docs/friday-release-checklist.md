@@ -100,7 +100,16 @@ unset FRIDAY_APP_BINARY
 - [ ] Every scene has required accessible roles/names.
 - [ ] Tab and Shift-Tab traversal succeeds.
 - [ ] No automation dispatch error is present.
-- [ ] `docs/friday-behavior-coverage.md` has a row for each PRODUCT invariant 1–156 and no external item is represented as an automated pass.
+- [ ] `docs/friday-behavior-coverage.md` has a row for each PRODUCT invariant 1–170 and no external item is represented as an automated pass.
+- [ ] The packaged native-contract result reports `keyboardContract`, `voiceOverContract`, `announcementContract`, `noLiveUpdateAnnouncements`, `nonColorStateContract`, `hitRegionContract`, and `terminalContract` as `true`, with identical nonzero `sourcePid`/`frontmostPid` and `fridayActive:false`.
+
+The native capsule contract exercises the production AppKit controls and
+announcement gate. It proves configured key equivalents/focus order, exposed
+AXPress actions, target-action dispatch, point-sized hit regions, semantic
+de-duplication, excluded timer/meter accessibility updates, appearance policy,
+and process nonactivation. It does not prove what VoiceOver speaks, how Full
+Keyboard Access or Voice Control behaves in a user's configuration, pointer
+delivery from another process, or visual readability.
 
 ## Signed packaged E2E and privacy
 
@@ -203,10 +212,13 @@ Use the exact notarized candidate in a normal logged-in GUI session:
 - [ ] Launch from Applications after downloading the stapled DMG through a quarantine-applying path.
 - [ ] External CGEvent hold, release, and double-tap lock work in the normal logged-in GUI session.
 - [ ] External pointer clicks overlay Stop and Cancel while Friday remains inactive and the source app retains focus.
+- [ ] With Full Keyboard Access enabled, traverse the real capsule and invoke Stop, Hide, Cancel, and any shown recovery action; Friday remains inactive and the source app retains focus until an explicitly activating recovery destination is chosen.
+- [ ] With VoiceOver enabled, invoke the real capsule actions and hear exactly one semantic announcement for recording, locked recording, transcribing, paste/copy, and failure transitions; hear no timer, meter, or partial-transcript chatter.
+- [ ] With Voice Control enabled, address each capsule action by its exposed name and confirm its hit region matches the visible control.
 - [ ] Automatic AX delivery succeeds into TextEdit, Terminal, and a browser text field; wrong-app focus is refused; clipboard fallback still reports truthfully.
 - [ ] Revoke/regrant Microphone, Input Monitoring, and Accessibility and observe live recovery without deleting grants afterward.
 - [ ] Observe unsupported Intel and macOS 13 launch/message on real hardware or a supported VM; setup/download/recording stay disabled.
-- [ ] Inspect settings/overlay in increased contrast and reduced transparency.
+- [ ] Inspect settings/overlay at representative display scales in increased contrast, reduced transparency, and reduced motion.
 - [ ] Capture Instruments Energy Log for idle menu-bar, recording, and warm five-second transcription.
 
 Record dates, OS/hardware, artifact SHA-256, pass/fail, and screenshot/log/trace paths. These items remain blockers until observed; contract probes are not substitutes.
