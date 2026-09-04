@@ -4,6 +4,13 @@ All notable changes to Friday are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Recast the recording capsule as a slim pill: no status words, just elapsed time; recording shows the platform-red dot with adaptive label bars, transcribing shows a quiet continuous traveling wave, and the meter animates at frame rate with fast-attack/slow-release dynamics instead of stepped keyframes.
+- Gave the menu-bar item one persistent identity — the Friday waveform mark as a template image — instead of swapping letters and dots; state reads through treatment (red while live, dimmed while transcribing, ghosted while blocked, `!` badge on failure), so the mark never looks like it vanished.
+- Friday now appears in the Dock while a window is visible and returns to a pure menu-bar app when the last window closes, including via the close button.
+- Tightened the Controls settings page: single-label rows, terse hints, no duplicated switch names or paragraph-level explanations.
+
 ### Added
 
 - Apple Silicon/macOS 14 launch probe with non-dismissible unsupported-hardware/system UI and a Quit-only unsupported status menu.
@@ -28,6 +35,7 @@ All notable changes to Friday are documented here.
 
 ### Fixed
 
+- A quick release during a double-tap lock no longer races the in-flight audio start and orphans a live microphone capture; the locked session now survives the release, and a release after the hold timer cancels both the hold timer and the in-flight start, discarding any capture it already began.
 - Kept Friday alive behind its menu-bar item when the main window closes, made status-item activation menu-only, and added an explicit **Open Friday…** action.
 - Removed the development-tree rpath from packaged binaries, standardized the bundle as `Friday.app`, and added package-time metadata/rpath assertions.
 - Disabled ggml 0.12's broken Metal residency-set path before recognizer startup, preventing its deterministic `ggml_metal_rsets_free` abort during application shutdown on macOS 26.

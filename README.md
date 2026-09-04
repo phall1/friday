@@ -18,7 +18,7 @@ Friday asks separately for:
 
 Recover a revoked permission from Friday’s **Access** page or System Settings → Privacy & Security, then return to Friday; it rechecks live.
 
-Closing Friday’s window hides it without quitting. Clicking the always-on **F** menu-bar item opens only its menu; choose **Open Friday…** for the main window, or use the menu to manage models and permissions, start recording, or quit.
+Closing Friday’s window hides it without quitting, and the Dock icon follows the window: opening Friday shows it, closing the window removes it, while the always-on **Friday** menu-bar item stays put. Clicking the menu-bar mark opens only its menu; choose **Open Friday…** for the main window, or use the menu to manage models and permissions, start recording, or quit. The mark keeps one identity in every state — red while recording, dimmed while transcribing, and a `!` badge only on failure.
 
 ## Dictation
 

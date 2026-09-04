@@ -6,7 +6,7 @@ Friday supports Apple Silicon Macs running macOS 14 or later. Intel Macs are uns
 
 For a public release, open the notarized arm64-only `Friday-0.1.0-arm64.dmg`, drag Friday to Applications, and launch it there. A development build may be team-signed but unnotarized; it is for local validation, not redistribution. Friday never ships an Intel or universal slice and refuses to run through Rosetta.
 
-Friday lives in the menu bar and does not open its main window after completed setup. Clicking the menu-bar item opens only its menu; choose **Open Friday…** when you want the main window. Closing that window does not quit Friday. Use **Quit Friday** in the menu to stop it.
+Friday lives in the menu bar and does not open its main window after completed setup. Clicking the menu-bar item opens only its menu; choose **Open Friday…** when you want the main window. Closing that window does not quit Friday — and Friday leaves the Dock only while no window is visible — so the window is a normal citizen while it is open, and Friday returns to a pure menu-bar app when it is closed. Use **Quit Friday** in the menu to stop it.
 
 ## Setup and permissions
 
