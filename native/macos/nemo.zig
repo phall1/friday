@@ -326,19 +326,11 @@ const State = struct {
         };
         defer audio.deinit();
         const samples = audio.samples();
-        var energy: f64 = 0;
-        var peak: f32 = 0;
-        for (samples) |sample| {
-            energy += @as(f64, sample) * @as(f64, sample);
-            const magnitude = @abs(sample);
-            if (magnitude > peak) peak = magnitude;
-        }
         if (state.isCancelled(operation.generation)) {
             state.completeTranscription(operation, .{ .transcription_cancelled = ids(operation) });
             return;
         }
-        const rms = @sqrt(energy / @as(f64, @floatFromInt(samples.len)));
-        if (rms < 0.0015 or peak < 0.008) {
+        if (!containsSpeech(samples)) {
             state.completeTranscription(operation, .{ .silence = .{ .ids = ids(operation), .started = started, .finished = nowMs() } });
             return;
         }
@@ -476,7 +468,7 @@ const Result = union(enum) {
 };
 
 const MappedAudio = struct {
-    address: *anyopaque,
+    address: ?*anyopaque,
     byte_count: usize,
 
     fn open(path: [:0]const u8) !MappedAudio {
@@ -484,24 +476,87 @@ const MappedAudio = struct {
         if (fd < 0) return error.AudioUnavailable;
         defer _ = c.close(fd);
         var stat: c.struct_stat = undefined;
-        if (c.fstat(fd, &stat) != 0 or stat.st_size <= 0) return error.AudioUnavailable;
+        if (c.fstat(fd, &stat) != 0 or stat.st_size < 0) return error.AudioUnavailable;
         const byte_count = std.math.cast(usize, stat.st_size) orelse return error.AudioUnavailable;
         if (byte_count % @sizeOf(f32) != 0) return error.AudioUnavailable;
+        if (byte_count == 0) return .{ .address = null, .byte_count = 0 };
         const mapped = c.mmap(null, byte_count, c.PROT_READ, c.MAP_PRIVATE, fd, 0);
         if (mapped == c.MAP_FAILED) return error.AudioUnavailable;
         return .{ .address = mapped.?, .byte_count = byte_count };
     }
 
     fn deinit(audio: *MappedAudio) void {
-        _ = c.munmap(audio.address, audio.byte_count);
+        if (audio.address) |address| _ = c.munmap(address, audio.byte_count);
         audio.* = undefined;
     }
 
     fn samples(audio: *const MappedAudio) []const f32 {
-        const pointer: [*]align(@alignOf(f32)) const f32 = @ptrCast(@alignCast(audio.address));
+        const address = audio.address orelse return &.{};
+        const pointer: [*]align(@alignOf(f32)) const f32 = @ptrCast(@alignCast(address));
         return pointer[0 .. audio.byte_count / @sizeOf(f32)];
     }
 };
+
+const SpeechDetection = struct {
+    // Windows are short enough to preserve sparse speech but long enough that
+    // an isolated click cannot satisfy the sustained-window requirement.
+    const window_samples: usize = 20 * 16_000 / 1000;
+    const minimum_capture_samples: usize = 120 * 16_000 / 1000;
+    const minimum_window_rms: f32 = 0.0015;
+    const minimum_window_peak: f32 = 0.004;
+    const noise_floor_ratio: f32 = 2.0;
+    const noise_floor_rise: f32 = 0.001;
+    const unconditional_speech_rms: f32 = 0.012;
+    const sustained_windows: usize = 3;
+};
+
+const WindowLevel = struct { rms: f32, peak: f32 };
+
+fn windowLevel(samples: []const f32) WindowLevel {
+    var energy: f64 = 0;
+    var peak: f32 = 0;
+    for (samples) |sample| {
+        if (!std.math.isFinite(sample)) continue;
+        energy += @as(f64, sample) * @as(f64, sample);
+        peak = @max(peak, @abs(sample));
+    }
+    return .{
+        .rms = @floatCast(@sqrt(energy / @as(f64, @floatFromInt(samples.len)))),
+        .peak = peak,
+    };
+}
+
+fn containsSpeech(samples: []const f32) bool {
+    if (samples.len < SpeechDetection.minimum_capture_samples) return false;
+
+    const window_count = samples.len / SpeechDetection.window_samples;
+    var noise_floor = std.math.inf(f32);
+    for (0..window_count) |index| {
+        const start = index * SpeechDetection.window_samples;
+        noise_floor = @min(noise_floor, windowLevel(samples[start..][0..SpeechDetection.window_samples]).rms);
+    }
+    const active_rms = @max(
+        SpeechDetection.minimum_window_rms,
+        @max(
+            noise_floor * SpeechDetection.noise_floor_ratio,
+            noise_floor + SpeechDetection.noise_floor_rise,
+        ),
+    );
+
+    var consecutive_active: usize = 0;
+    for (0..window_count) |index| {
+        const start = index * SpeechDetection.window_samples;
+        const level = windowLevel(samples[start..][0..SpeechDetection.window_samples]);
+        const energetic = level.rms >= SpeechDetection.unconditional_speech_rms or level.rms >= active_rms;
+        if (energetic and level.peak >= SpeechDetection.minimum_window_peak) {
+            consecutive_active += 1;
+            if (consecutive_active >= SpeechDetection.sustained_windows) return true;
+        } else {
+            consecutive_active = 0;
+        }
+    }
+    return false;
+}
 
 fn ids(operation: State.TranscribeOperation) Ids {
     return .{ .session_id = operation.session_id, .generation = operation.generation };
@@ -568,4 +623,87 @@ test "final transcript JSON escaping and metrics contract" {
     defer output.deinit();
     try (Result{ .transcription_succeeded = .{ .ids = .{ .session_id = 9, .generation = 3 }, .text = "say \"hello\"\n", .audio_duration_ms = 1000, .started = 10, .finished = 25, .resident_bytes = 4096 } }).writeJson(&output.writer);
     try std.testing.expectEqualStrings("{\"ok\":true,\"sessionId\":9,\"generation\":3,\"text\":\"say \\\"hello\\\"\\n\",\"silence\":false,\"audioDurationMs\":1000,\"inferenceStartedAtMs\":10,\"transcriptReadyAtMs\":25,\"latencyMs\":15,\"residentBytes\":4096,\"retryAudioAvailable\":true}", output.written());
+}
+
+fn syntheticSamples(milliseconds: usize) ![]f32 {
+    const samples = try std.testing.allocator.alloc(f32, milliseconds * 16_000 / 1000);
+    @memset(samples, 0);
+    return samples;
+}
+
+fn fillSyntheticVoice(samples: []f32, amplitude: f32) void {
+    for (samples, 0..) |*sample, index| {
+        // A deterministic voiced-like harmonic with a small envelope change.
+        const carrier: f32 = if ((index / 8) % 2 == 0) 1 else -1;
+        const envelope: f32 = if ((index / SpeechDetection.window_samples) % 2 == 0) 1 else 0.8;
+        sample.* = amplitude * carrier * envelope;
+    }
+}
+
+test "empty capture contains no speech" {
+    try std.testing.expect(!containsSpeech(&.{}));
+}
+
+test "zero-byte audio maps as an empty capture" {
+    var audio = try MappedAudio.open("/dev/null");
+    defer audio.deinit();
+    try std.testing.expectEqual(@as(usize, 0), audio.samples().len);
+    try std.testing.expect(!containsSpeech(audio.samples()));
+}
+
+test "captures from one through one hundred milliseconds contain no speech" {
+    for ([_]usize{ 1, 20, 99, 100 }) |milliseconds| {
+        const samples = try syntheticSamples(milliseconds);
+        defer std.testing.allocator.free(samples);
+        fillSyntheticVoice(samples, 0.5);
+        try std.testing.expect(!containsSpeech(samples));
+    }
+}
+
+test "isolated clicks contain no speech" {
+    const samples = try syntheticSamples(500);
+    defer std.testing.allocator.free(samples);
+    samples[SpeechDetection.window_samples / 2] = 0.9;
+    samples[SpeechDetection.window_samples * 8 + 3] = -0.8;
+    samples[SpeechDetection.window_samples * 16 + 7] = 0.7;
+    try std.testing.expect(!containsSpeech(samples));
+}
+
+test "low stationary fan-like noise contains no speech" {
+    const samples = try syntheticSamples(1000);
+    defer std.testing.allocator.free(samples);
+    for (samples, 0..) |*sample, index| {
+        const carrier: f32 = if ((index / 40) % 2 == 0) 1 else -1;
+        const drift: f32 = if ((index / SpeechDetection.window_samples) % 3 == 0) 1.05 else 0.95;
+        sample.* = 0.006 * carrier * drift;
+    }
+    try std.testing.expect(!containsSpeech(samples));
+}
+
+test "quiet sustained speech is retained" {
+    const samples = try syntheticSamples(1000);
+    defer std.testing.allocator.free(samples);
+    fillSyntheticVoice(samples[SpeechDetection.window_samples * 12 .. SpeechDetection.window_samples * 22], 0.0045);
+    try std.testing.expect(containsSpeech(samples));
+}
+
+test "sparse sustained speech is retained" {
+    const samples = try syntheticSamples(3000);
+    defer std.testing.allocator.free(samples);
+    fillSyntheticVoice(samples[SpeechDetection.window_samples * 10 .. SpeechDetection.window_samples * 14], 0.006);
+    fillSyntheticVoice(samples[SpeechDetection.window_samples * 100 .. SpeechDetection.window_samples * 104], 0.006);
+    try std.testing.expect(containsSpeech(samples));
+}
+
+test "speech near the end of a long capture is not diluted" {
+    const samples = try syntheticSamples(60_000);
+    defer std.testing.allocator.free(samples);
+    const speech_start = SpeechDetection.window_samples * 2990;
+    fillSyntheticVoice(samples[speech_start .. speech_start + SpeechDetection.window_samples * 4], 0.006);
+
+    var whole_file_energy: f64 = 0;
+    for (samples) |sample| whole_file_energy += @as(f64, sample) * @as(f64, sample);
+    const whole_file_rms = @sqrt(whole_file_energy / @as(f64, @floatFromInt(samples.len)));
+    try std.testing.expect(whole_file_rms < SpeechDetection.minimum_window_rms);
+    try std.testing.expect(containsSpeech(samples));
 }
