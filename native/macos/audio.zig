@@ -40,6 +40,7 @@ const c = struct {
     pub const off_t = posix.off_t;
     pub const struct_stat = posix.struct_stat;
     pub const struct_timespec = posix.struct_timespec;
+    pub const CLOCK_MONOTONIC = posix.CLOCK_MONOTONIC;
     pub const CLOCK_REALTIME = posix.CLOCK_REALTIME;
     pub const EINTR = posix.EINTR;
     pub const EEXIST = posix.EEXIST;
@@ -256,6 +257,7 @@ pub const maximum_frames: u64 = sample_rate * 600;
 pub const maximum_storage_bytes: u64 = maximum_frames * @sizeOf(f32);
 const ring_capacity = sample_rate * 4;
 const meter_period_ms = 100;
+pub const callback_liveness_timeout_ms: u64 = 2_000;
 const path_capacity = 4096;
 const callback_frames = 4096;
 
@@ -264,7 +266,11 @@ const callback_frames = 4096;
 /// copy them and enqueue host work; it must not call AudioSession methods.
 pub const EventSink = struct {
     context: *anyopaque,
-    emit: *const fn (context: *anyopaque, event: []const u8, payload_json: []const u8) void,
+    /// False means the lifecycle consumer rejected or lost the event. Active
+    /// capture then fails closed on the audio worker instead of trusting core
+    /// cleanup that can no longer be requested.
+    emit: *const fn (context: *anyopaque, event: []const u8, payload_json: []const u8) bool,
+    abort: *const fn (context: *anyopaque, session_id: u64) void,
 };
 
 /// Accepted operations invoke `complete` exactly once on a private helper
@@ -276,7 +282,7 @@ pub const AsyncCompletion = struct {
 
 const State = enum(u8) { idle, recording, limit_reached, failed };
 const Backend = enum(u8) { none, platform, core_audio };
-const Failure = enum(u8) { none, conversion, overflow, route, interruption, storage };
+const Failure = enum(u8) { none, conversion, overflow, route, interruption, storage, callback_liveness, event_delivery };
 
 const RouteSnapshot = struct {
     device: c.AudioDeviceID,
@@ -331,6 +337,7 @@ pub const AudioSession = struct {
     async_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(State.idle)),
     backend: Backend = .none,
+    backend_ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     accepting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backend_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -338,6 +345,7 @@ pub const AudioSession = struct {
     conversion_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     frames: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     first_audio_at_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    last_callback_at_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     last_dropped: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     session_id: u64 = 0,
@@ -591,10 +599,12 @@ pub const AudioSession = struct {
         self.limited = false;
         self.frames.store(0, .release);
         self.first_audio_at_ms.store(0, .release);
+        self.last_callback_at_ms.store(livenessNowMs(), .release);
         self.last_dropped.store(0, .release);
         self.failure.store(@intFromEnum(Failure.none), .release);
         self.conversion_failed.store(false, .release);
         self.backend_failed.store(false, .release);
+        self.backend_ready.store(false, .release);
         self.active_route_generation.store(0, .release);
         self.forced_route_failure.store(false, .release);
         self.stop_requested.store(false, .release);
@@ -625,6 +635,7 @@ pub const AudioSession = struct {
             self.backend = .core_audio;
             try self.startCoreAudio();
         }
+        self.backend_ready.store(true, .release);
         return .{ .session_id = session_id, .started_at_ms = self.started_at_ms };
     }
 
@@ -684,9 +695,19 @@ pub const AudioSession = struct {
         var samples: [callback_frames]f32 = undefined;
         var converted: [callback_frames]f32 = undefined;
         while (true) {
+            if (self.currentState() == .limit_reached or self.currentState() == .failed) return;
             const ring = &(self.ring orelse return);
+            if (!self.backend_ready.load(.acquire)) {
+                if (self.stop_requested.load(.acquire)) return;
+                _ = c.usleep(2000);
+                continue;
+            }
             if (self.coreAudioRouteIsStale()) return self.failWorker(.route);
             if (self.backend_failed.load(.acquire)) return self.failWorker(.interruption);
+            const last_callback = self.last_callback_at_ms.load(.acquire);
+            const now = livenessNowMs();
+            if (!self.stop_requested.load(.acquire) and self.backend != .none and last_callback != 0 and now > last_callback and now - last_callback >= callback_liveness_timeout_ms)
+                return self.failWorker(.callback_liveness);
             if (ring.dropped() != 0) {
                 self.last_dropped.store(ring.dropped(), .release);
                 return self.failWorker(.overflow);
@@ -698,7 +719,9 @@ pub const AudioSession = struct {
                     self.convertCoreAudio(samples[0..count], &converted) catch return self.failWorker(.conversion)
                 else
                     samples[0..count];
-                self.writeFrames(output) catch return self.failWorker(.storage);
+                self.writeFrames(output) catch |err| return self.failWorker(if (err == error.EventDeliveryFailed) .event_delivery else .storage);
+                if (self.currentState() == .failed) return;
+                if (self.currentState() == .limit_reached) return;
                 continue;
             }
             if (self.stop_requested.load(.acquire)) break;
@@ -735,18 +758,18 @@ pub const AudioSession = struct {
         if (now -| self.last_meter_at_ms >= meter_period_ms) {
             self.last_meter_at_ms = now;
             const level: u8 = if (rms >= 0.08 or peak >= 0.35) 3 else if (rms >= 0.03 or peak >= 0.16) 2 else if (rms >= 0.008 or peak >= 0.05) 1 else 0;
-            self.emit("audio_meter", .{ .sessionId = self.session_id, .capturedFrames = total, .elapsedMilliseconds = now -| self.started_at_ms, .level = level, .rmsMilli = @as(u32, @intFromFloat(@round(rms * 1000))), .peakMilli = @as(u32, @intFromFloat(@round(peak * 1000))) });
+            if (!self.emit("audio_meter", .{ .sessionId = self.session_id, .capturedFrames = total, .elapsedMilliseconds = now -| self.started_at_ms, .level = level, .rmsMilli = @as(u32, @intFromFloat(@round(rms * 1000))), .peakMilli = @as(u32, @intFromFloat(@round(peak * 1000))) })) return error.EventDeliveryFailed;
         }
         if (!self.warned and total >= warning_frames) {
             self.warned = true;
-            self.emit("duration_warning", .{ .sessionId = self.session_id, .capturedFrames = total });
+            if (!self.emit("duration_warning", .{ .sessionId = self.session_id, .capturedFrames = total })) return error.EventDeliveryFailed;
         }
         if (!self.limited and total >= maximum_frames) {
             self.limited = true;
             self.accepting.store(false, .release);
             self.stopBackend();
             self.state.store(@intFromEnum(State.limit_reached), .release);
-            self.emit("duration_limit", .{ .sessionId = self.session_id, .capturedFrames = maximum_frames });
+            if (!self.emit("duration_limit", .{ .sessionId = self.session_id, .capturedFrames = maximum_frames })) return error.EventDeliveryFailed;
         }
     }
 
@@ -758,7 +781,8 @@ pub const AudioSession = struct {
         self.closeFile();
         self.removeCurrent();
         self.state.store(@intFromEnum(State.failed), .release);
-        self.emit("audio_interrupted", .{ .sessionId = self.session_id, .reason = failureMessage(failure) });
+        _ = self.emit("audio_interrupted", .{ .sessionId = self.session_id, .reason = failureMessage(failure) });
+        self.sink.abort(self.sink.context, self.session_id);
     }
 
     fn coreAudioRouteIsStale(self: *AudioSession) bool {
@@ -774,10 +798,10 @@ pub const AudioSession = struct {
         return false;
     }
 
-    fn emit(self: *AudioSession, event: []const u8, payload: anytype) void {
-        const json = std.json.Stringify.valueAlloc(self.allocator, payload, .{}) catch return;
+    fn emit(self: *AudioSession, event: []const u8, payload: anytype) bool {
+        const json = std.json.Stringify.valueAlloc(self.allocator, payload, .{}) catch return false;
         defer self.allocator.free(json);
-        self.sink.emit(self.sink.context, event, json);
+        return self.sink.emit(self.sink.context, event, json);
     }
 
     fn prepareCoreAudio(self: *AudioSession) !void {
@@ -866,6 +890,7 @@ pub const AudioSession = struct {
             self.ring = null;
         }
         self.backend = .none;
+        self.backend_ready.store(false, .release);
     }
 
     fn disposeBackend(self: *AudioSession) void {
@@ -877,6 +902,7 @@ pub const AudioSession = struct {
             self.ring = null;
         }
         self.backend = .none;
+        self.backend_ready.store(false, .release);
     }
 
     fn disposeCoreAudio(self: *AudioSession) void {
@@ -1116,6 +1142,7 @@ fn stopTask(task: *StopTask) void {
 fn platformCapturePush(context: ?*anyopaque, generation: u64, event: native_sdk.AudioCaptureEvent) native_sdk.AudioCapturePushResult {
     const self: *AudioSession = @ptrCast(@alignCast(context orelse return .closed));
     if (generation != self.session_id or !self.accepting.load(.acquire)) return .closed;
+    self.last_callback_at_ms.store(livenessNowMs(), .release);
     switch (event.kind) {
         .started => return .accepted,
         .failed => {
@@ -1151,6 +1178,7 @@ fn coreAudioCallback(context: ?*anyopaque, flags: [*c]c.AudioUnitRenderActionFla
     _ = ignored;
     const self: *AudioSession = @ptrCast(@alignCast(context orelse return c.noErr));
     if (!self.accepting.load(.acquire)) return c.noErr;
+    self.last_callback_at_ms.store(livenessNowMs(), .release);
     if (frames > self.capture_buffer.len) {
         if (self.ring) |*ring| _ = ring.dropped_frames.fetchAdd(frames, .monotonic);
         return c.noErr;
@@ -1259,6 +1287,12 @@ fn nowMs() u64 {
     return @as(u64, @intCast(time.tv_sec)) * 1000 + @as(u64, @intCast(time.tv_nsec)) / 1_000_000;
 }
 
+fn livenessNowMs() u64 {
+    var time: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &time) != 0) return 0;
+    return @as(u64, @intCast(time.tv_sec)) * 1000 + @as(u64, @intCast(time.tv_nsec)) / 1_000_000;
+}
+
 fn ensureDirectory(path: []const u8) !void {
     if (path.len + 1 > path_capacity) return error.NameTooLong;
     var terminated: [path_capacity]u8 = @splat(0);
@@ -1300,6 +1334,8 @@ fn failureMessage(failure: Failure) []const u8 {
         .route => "The microphone route changed during recording.",
         .interruption => "Microphone capture was interrupted.",
         .storage => "Temporary audio storage failed.",
+        .callback_liveness => "Microphone callbacks stopped during recording.",
+        .event_delivery => "Friday lost the recording lifecycle channel.",
         .none => "Audio capture failed.",
     };
 }
@@ -1364,19 +1400,27 @@ const TestCoreAudio = struct {
 };
 
 const TestEventLog = struct {
+    accepted: bool = true,
+    abort_count: usize = 0,
     count: usize = 0,
     event_len: usize = 0,
     payload_len: usize = 0,
     event: [64]u8 = undefined,
     payload: [512]u8 = undefined,
 
-    fn emit(context: *anyopaque, event: []const u8, payload: []const u8) void {
+    fn emit(context: *anyopaque, event: []const u8, payload: []const u8) bool {
         const self: *TestEventLog = @ptrCast(@alignCast(context));
         self.count += 1;
         self.event_len = @min(event.len, self.event.len);
         self.payload_len = @min(payload.len, self.payload.len);
         @memcpy(self.event[0..self.event_len], event[0..self.event_len]);
         @memcpy(self.payload[0..self.payload_len], payload[0..self.payload_len]);
+        return self.accepted;
+    }
+
+    fn abort(context: *anyopaque, _: u64) void {
+        const self: *TestEventLog = @ptrCast(@alignCast(context));
+        self.abort_count += 1;
     }
 };
 
@@ -1387,7 +1431,7 @@ fn testRoute(device: c.AudioDeviceID, rate: f64, stream_hash: u64) RouteSnapshot
 fn initTestCoreAudioSession(fake: *TestCoreAudio, log: *TestEventLog) !AudioSession {
     return .{
         .allocator = std.testing.allocator,
-        .sink = .{ .context = log, .emit = TestEventLog.emit },
+        .sink = .{ .context = log, .emit = TestEventLog.emit, .abort = TestEventLog.abort },
         .audio_dir = try std.testing.allocator.dupeZ(u8, "/tmp"),
         .core_audio_ops = TestCoreAudio.ops(),
         .core_audio_test_context = fake,
@@ -1429,6 +1473,7 @@ test "active route loss fails the generation and removes partial audio" {
 
     try session.startCoreAudio();
     session.backend = .core_audio;
+    session.backend_ready.store(true, .release);
     session.ring = try Spsc.init(std.testing.allocator, 16);
     session.state.store(@intFromEnum(State.recording), .release);
     session.accepting.store(true, .release);
@@ -1457,6 +1502,158 @@ test "active route loss fails the generation and removes partial audio" {
     try std.testing.expectEqual(@as(usize, 1), log.count);
     try std.testing.expectEqualStrings("audio_interrupted", log.event[0..log.event_len]);
     try std.testing.expect(std.mem.indexOf(u8, log.payload[0..log.payload_len], "\"sessionId\":91") != null);
+}
+
+test "callback liveness loss stops capture and removes partial audio within worker deadline" {
+    const path: [:0]const u8 = "/tmp/friday-coreaudio-callback-stall-test.f32";
+    _ = c.unlink(path.ptr);
+    defer _ = c.unlink(path.ptr);
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.startCoreAudio();
+    session.backend = .core_audio;
+    session.backend_ready.store(true, .release);
+    session.ring = try Spsc.init(std.testing.allocator, 16);
+    session.state.store(@intFromEnum(State.recording), .release);
+    session.accepting.store(true, .release);
+    session.session_id = 92;
+    session.last_callback_at_ms.store(livenessNowMs() -| (callback_liveness_timeout_ms + 1), .release);
+    session.fd = c.open(path.ptr, c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
+    try std.testing.expect(session.fd >= 0);
+    @memcpy(session.current_path[0..path.len], path[0..path.len]);
+    session.current_path[path.len] = 0;
+    session.current_path_len = path.len;
+
+    const started = nowMs();
+    session.worker = try std.Thread.spawn(.{}, AudioSession.workerMain, .{&session});
+    session.joinWorker();
+
+    try std.testing.expect(nowMs() -| started < 250);
+    try std.testing.expectEqual(State.failed, session.currentState());
+    try std.testing.expectEqual(Failure.callback_liveness, @as(Failure, @enumFromInt(session.failure.load(.acquire))));
+    try std.testing.expectEqual(@as(c_int, -1), session.fd);
+    try std.testing.expectEqual(@as(c_int, -1), c.access(path.ptr, c.F_OK));
+    try std.testing.expect(session.retry_path == null);
+    try std.testing.expectEqual(@as(usize, 1), fake.stops);
+    try std.testing.expectEqualStrings("audio_interrupted", log.event[0..log.event_len]);
+    try std.testing.expectEqual(@as(usize, 1), log.abort_count);
+}
+
+test "sleep invalidation cleans active capture without a core held or locked transition" {
+    const path: [:0]const u8 = "/tmp/friday-coreaudio-sleep-test.f32";
+    _ = c.unlink(path.ptr);
+    defer _ = c.unlink(path.ptr);
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.startCoreAudio();
+    session.backend = .core_audio;
+    session.backend_ready.store(true, .release);
+    session.ring = try Spsc.init(std.testing.allocator, 16);
+    session.state.store(@intFromEnum(State.recording), .release);
+    session.accepting.store(true, .release);
+    session.session_id = 93;
+    session.last_callback_at_ms.store(livenessNowMs(), .release);
+    session.fd = c.open(path.ptr, c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
+    try std.testing.expect(session.fd >= 0);
+    @memcpy(session.current_path[0..path.len], path[0..path.len]);
+    session.current_path[path.len] = 0;
+    session.current_path_len = path.len;
+    session.invalidateCoreAudioRoute(true);
+
+    const started = nowMs();
+    session.worker = try std.Thread.spawn(.{}, AudioSession.workerMain, .{&session});
+    session.joinWorker();
+
+    try std.testing.expect(nowMs() -| started < 250);
+    try std.testing.expectEqual(State.failed, session.currentState());
+    try std.testing.expectEqual(@as(c_int, -1), c.access(path.ptr, c.F_OK));
+    try std.testing.expect(session.retry_path == null);
+    try std.testing.expectEqual(@as(usize, 1), fake.stops);
+    try std.testing.expectEqual(@as(usize, 1), log.abort_count);
+}
+
+test "rejected lifecycle event fails capture closed and removes partial audio" {
+    const path: [:0]const u8 = "/tmp/friday-coreaudio-event-rejection-test.f32";
+    _ = c.unlink(path.ptr);
+    defer _ = c.unlink(path.ptr);
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{ .accepted = false };
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.startCoreAudio();
+    session.backend = .core_audio;
+    session.backend_ready.store(true, .release);
+    session.ring = try Spsc.init(std.testing.allocator, 16);
+    session.state.store(@intFromEnum(State.recording), .release);
+    session.accepting.store(true, .release);
+    session.session_id = 94;
+    session.started_at_ms = nowMs();
+    session.last_callback_at_ms.store(livenessNowMs(), .release);
+    session.fd = c.open(path.ptr, c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
+    try std.testing.expect(session.fd >= 0);
+    @memcpy(session.current_path[0..path.len], path[0..path.len]);
+    session.current_path[path.len] = 0;
+    session.current_path_len = path.len;
+    try std.testing.expectError(error.EventDeliveryFailed, session.writeFrames(&.{0.25}));
+    session.failWorker(.event_delivery);
+
+    try std.testing.expectEqual(State.failed, session.currentState());
+    try std.testing.expectEqual(Failure.event_delivery, @as(Failure, @enumFromInt(session.failure.load(.acquire))));
+    try std.testing.expectEqual(@as(c_int, -1), c.access(path.ptr, c.F_OK));
+    try std.testing.expect(session.retry_path == null);
+    try std.testing.expectEqual(@as(usize, 1), fake.stops);
+    try std.testing.expectEqual(@as(usize, 1), log.abort_count);
+}
+
+test "duration limit stops the backend and exits before stop handoff" {
+    const path: [:0]const u8 = "/tmp/friday-coreaudio-duration-limit-test.f32";
+    _ = c.unlink(path.ptr);
+    defer _ = c.unlink(path.ptr);
+    var fake = TestCoreAudio{};
+    var log = TestEventLog{};
+    var session = try initTestCoreAudioSession(&fake, &log);
+    defer deinitTestCoreAudioSession(&session);
+
+    try session.startCoreAudio();
+    session.backend = .core_audio;
+    session.backend_ready.store(true, .release);
+    session.ring = try Spsc.init(std.testing.allocator, 16);
+    session.state.store(@intFromEnum(State.recording), .release);
+    session.accepting.store(true, .release);
+    session.session_id = 95;
+    session.started_at_ms = nowMs() -| 600_000;
+    session.last_callback_at_ms.store(livenessNowMs(), .release);
+    session.frames.store(maximum_frames - 1, .release);
+    session.fd = c.open(path.ptr, c.O_CREAT | c.O_TRUNC | c.O_WRONLY | c.O_CLOEXEC | noFollow(), @as(c_uint, 0o600));
+    try std.testing.expect(session.fd >= 0);
+    @memcpy(session.current_path[0..path.len], path[0..path.len]);
+    session.current_path[path.len] = 0;
+    session.current_path_len = path.len;
+    try session.writeFrames(&.{0.25});
+    var attempts: usize = 0;
+    while (session.currentState() != .limit_reached and attempts < 250) : (attempts += 1) _ = c.usleep(1000);
+    try std.testing.expect(attempts < 250);
+    try std.testing.expect(!session.accepting.load(.acquire));
+    try std.testing.expect(!fake.running);
+    try std.testing.expectEqual(@as(usize, 1), fake.stops);
+
+    session.worker = try std.Thread.spawn(.{}, AudioSession.workerMain, .{&session});
+    const handoff_started = nowMs();
+    const result = session.stopLocked(95);
+    try std.testing.expect(nowMs() -| handoff_started < 250);
+    try std.testing.expect(result.ok);
+    try std.testing.expectEqual(maximum_frames, result.frames);
+    try std.testing.expectEqual(State.idle, session.currentState());
+    try std.testing.expect(session.retryAudioPath() != null);
+    session.discardRetryAudio();
+    try std.testing.expectEqual(@as(c_int, -1), c.access(path.ptr, c.F_OK));
 }
 
 test "device bind failure disposes the stale unit and fails closed" {
@@ -1536,10 +1733,16 @@ const TestCompletion = struct {
     }
 };
 
-fn ignoreEvent(context: *anyopaque, event: []const u8, payload: []const u8) void {
+fn ignoreEvent(context: *anyopaque, event: []const u8, payload: []const u8) bool {
     _ = context;
     _ = event;
     _ = payload;
+    return true;
+}
+
+fn ignoreAbort(context: *anyopaque, session_id: u64) void {
+    _ = context;
+    _ = session_id;
 }
 
 test "PlatformServices capture drains canonical Float32 and retains retry audio" {
@@ -1550,7 +1753,7 @@ test "PlatformServices capture drains canonical Float32 and retains retry audio"
         _ = c.rmdir(root.ptr);
     }
     var sink_context: u8 = 0;
-    var session = try AudioSession.init(std.testing.allocator, root, .{ .context = &sink_context, .emit = ignoreEvent });
+    var session = try AudioSession.init(std.testing.allocator, root, .{ .context = &sink_context, .emit = ignoreEvent, .abort = ignoreAbort });
     defer session.deinit();
     var capture = TestCapture{};
     const services = native_sdk.platform.PlatformServices{

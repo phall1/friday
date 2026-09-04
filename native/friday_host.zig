@@ -19,6 +19,10 @@ const result_capacity = 64 * 1024;
 const event_channel_key: u64 = 7001;
 const source_capacity = 8;
 const sample_capacity = 64;
+const lifecycle_poll_us: c_uint = 10_000;
+const lifecycle_handoff_timeout_ms: u64 = 1_000;
+
+extern "c" fn usleep(useconds: c_uint) c_int;
 
 const SpinMutex = struct {
     inner: std.atomic.Mutex = .unlocked,
@@ -121,6 +125,7 @@ const Transcript = struct {
 };
 
 const SessionGeneration = struct { used: bool = false, session: u64 = 0, generation: u64 = 0 };
+const LifecycleIdentity = struct { session: u64, generation: u64 };
 
 const Samples = struct {
     values: [sample_capacity]u64 = @splat(0),
@@ -167,6 +172,12 @@ pub const FridayHost = struct {
     event_post_failures: u64 = 0,
     microphone_permission_probe_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     microphone_permission_probe_finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    lifecycle_thread: ?std.Thread = null,
+    lifecycle_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    lifecycle_abort_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    lifecycle_active: bool = false,
+    lifecycle_deadline_ms: u64 = 0,
+    retired_lifecycle_generation: u64 = 0,
 
     generation: u64 = 0,
     current_audio_session: u64 = 0,
@@ -217,7 +228,7 @@ pub const FridayHost = struct {
         errdefer self.delivery.deinit();
         self.recognizer = try nemo_mod.NemoRecognizer.init(allocator);
         errdefer self.recognizer.deinit();
-        self.audio = try audio_mod.AudioSession.init(allocator, app_data_dir, .{ .context = self, .emit = audioEvent });
+        self.audio = try audio_mod.AudioSession.init(allocator, app_data_dir, .{ .context = self, .emit = audioEvent, .abort = audioAbort });
         errdefer self.audio.deinit();
         self.overlay = try overlay_mod.Overlay.init(allocator, .{ .context = self, .emit = overlayEvent });
         errdefer self.overlay.deinit();
@@ -226,6 +237,12 @@ pub const FridayHost = struct {
         self.models = try models_mod.ModelRepository.init(allocator, app_data_dir, .{ .context = self, .probe = probeRecognizer }, .{ .context = self, .emit = modelProgress });
         errdefer self.models.deinit();
         try self.installTerminationObserver();
+        self.lifecycle_thread = try std.Thread.spawn(.{}, lifecycleMain, .{self});
+        errdefer {
+            self.lifecycle_stop.store(true, .release);
+            self.lifecycle_thread.?.join();
+            self.lifecycle_thread = null;
+        }
 
         if (self.models.activeModelPath()) |path| {
             self.recognizer.activateModel(path, self.models.beginOperation(), .{ .context = self, .complete = startupActivation }) catch {};
@@ -234,6 +251,9 @@ pub const FridayHost = struct {
     }
 
     pub fn destroy(self: *FridayHost) void {
+        self.lifecycle_stop.store(true, .release);
+        if (self.lifecycle_thread) |thread| thread.join();
+        self.lifecycle_thread = null;
         self.mutex.lock();
         self.closing = true;
         self.event_handle = null;
@@ -362,8 +382,9 @@ pub const FridayHost = struct {
         self.request_mutex.lock();
         const length = self.syncRequest(name, payload, &self.scratch);
         const ok = length > 0 and json.objectOk(self.scratch[0..length]);
-        self.enqueue(key, ok, if (length > 0) self.scratch[0..length] else "{\"ok\":false,\"message\":\"FridayHost response failed.\"}");
+        const queued = self.enqueueResult(key, ok, if (length > 0) self.scratch[0..length] else "{\"ok\":false,\"message\":\"FridayHost response failed.\"}");
         self.request_mutex.unlock();
+        if (!queued) self.requestCurrentLifecycleAbort();
     }
 
     fn subscribe(self: *FridayHost, key: u64) void {
@@ -498,6 +519,7 @@ pub const FridayHost = struct {
         };
         pointer.* = source;
         self.addSource(pointer);
+        self.activateLifecycle(self.generation, self.generation);
         self.setPreferredSourceFrame(pointer.source_screen_frame);
         var writer = std.Io.Writer.fixed(output);
         writer.print("{{\"ok\":true,\"generation\":{d},\"token\":\"", .{self.generation}) catch return 0;
@@ -511,9 +533,17 @@ pub const FridayHost = struct {
     fn discardSource(self: *FridayHost, payload: []const u8, output: []u8) usize {
         const token = json.decodeBase64Alloc(self.allocator, payload) catch null;
         defer if (token) |bytes| self.allocator.free(bytes);
+        var discarded_generation: u64 = 0;
         if (token != null and token.?.len > 0) {
-            if (self.findSource(token.?)) |index| self.removeSource(index);
-        } else self.removeSourcesForGeneration(self.generation);
+            if (self.findSource(token.?)) |index| {
+                discarded_generation = self.sources[index].?.generation;
+                self.removeSource(index);
+            }
+        } else {
+            discarded_generation = self.generation;
+            self.removeSourcesForGeneration(discarded_generation);
+        }
+        self.completeLifecycleGeneration(discarded_generation);
         return copyResult(output, "{\"ok\":true}");
     }
 
@@ -544,6 +574,7 @@ pub const FridayHost = struct {
         defer if (source) |value| self.destroySource(value);
         if (source == null or transcript == null or transcript.?.len == 0 or source.?.generation != generation) {
             self.audio.discardRetryAudio();
+            self.completeLifecycle(session, generation);
             var writer = std.Io.Writer.fixed(output);
             writer.print("{{\"ok\":false,\"sessionId\":{d},\"generation\":{d},\"message\":\"The final transcript or exact source is stale.\"}}", .{ session, generation }) catch return 0;
             return writer.buffered().len;
@@ -562,6 +593,7 @@ pub const FridayHost = struct {
         }
         writer.writeByte('}') catch return 0;
         self.audio.discardRetryAudio();
+        self.completeLifecycle(session, generation);
         return writer.buffered().len;
     }
 
@@ -674,37 +706,37 @@ pub const FridayHost = struct {
             .audio_start => {
                 operation.session = json.unsignedField(payload, "session");
                 if (operation.session == 0) operation.session = operation.generation;
-                self.current_audio_session = operation.session;
-                self.current_audio_generation = operation.generation;
+                if (operation.session == 0 or operation.generation == 0) return self.finishUnavailable(operation, "capture_identity_missing", "Capture requires a nonzero session and generation.", false);
+                self.activateLifecycle(operation.session, operation.generation);
                 self.setAudioGeneration(operation.session, operation.generation);
                 self.audio.startSession(operation.session, audioCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
             .audio_stop => {
-                operation.session = json.unsignedField(payload, "session");
-                if (operation.session == 0) operation.session = self.current_audio_session;
-                if (json.unsignedField(payload, "generation") == 0) operation.generation = self.current_audio_generation;
+                const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
+                operation.session = identity.session;
+                operation.generation = identity.generation;
                 self.last_stop_requested_at_ms = system.wallMs();
                 self.audio.stopSession(operation.session, audioCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
             .transcribe_capture => {
-                operation.session = json.unsignedField(payload, "session");
-                if (operation.session == 0) operation.session = self.current_audio_session;
-                if (json.unsignedField(payload, "generation") == 0) operation.generation = self.current_audio_generation;
+                const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
+                operation.session = identity.session;
+                operation.generation = identity.generation;
                 const path = self.audio.retryAudioPath() orelse return self.finishUnavailable(operation, "audio_unavailable", "Captured audio is unavailable.", false);
                 if (self.models.activeModelPath() == null) return self.finishUnavailable(operation, "model_unavailable", "The active model is unavailable.", true);
                 self.recognizer.transcribeAudio(path, operation.session, operation.generation, transcribeCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
             },
             .audio_finish => {
-                operation.session = json.unsignedField(payload, "session");
-                if (operation.session == 0) operation.session = self.current_audio_session;
-                if (json.unsignedField(payload, "generation") == 0) operation.generation = self.current_audio_generation;
+                const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
+                operation.session = identity.session;
+                operation.generation = identity.generation;
                 if (!self.transitionOperation(operation, .stopping)) return self.finishOperation(operation, false, "");
                 self.audio.stopSession(operation.session, finishCompletion(operation)) catch self.finishError(operation, "capture_failed", "Capture failed.");
             },
             .audio_retry => {
-                operation.session = json.unsignedField(payload, "session");
-                if (operation.session == 0) operation.session = self.current_audio_session;
-                if (json.unsignedField(payload, "generation") == 0) operation.generation = self.current_audio_generation;
+                const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
+                operation.session = identity.session;
+                operation.generation = identity.generation;
                 const path = self.audio.retryAudioPath() orelse return self.finishUnavailable(operation, "retry_unavailable", "Retry audio is unavailable.", false);
                 self.recognizer.transcribeAudio(path, operation.session, operation.generation, transcribeCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
             },
@@ -908,16 +940,27 @@ pub const FridayHost = struct {
             return;
         }
         operation.callback_retired = true;
-        const should_deliver = operation.pending and !operation.cancelled and !self.closing;
+        const lifecycle_generation = operation.generation;
+        const lifecycle_operation = isLifecycleOperation(operation.kind);
+        const should_deliver = operation.pending and !operation.cancelled and !self.closing and
+            (!lifecycle_operation or lifecycle_generation > self.retired_lifecycle_generation);
         if (operation.pending) {
             operation.pending = false;
             if (self.pending_count > 0) self.pending_count -= 1;
         }
         if (should_deliver) operation.completion_queued = self.enqueueOperationLocked(operation, ok, bytes);
+        const delivery_failed = should_deliver and !operation.completion_queued and lifecycle_generation != 0;
+        const stop_handoff_completed = operation.kind == .audio_stop and operation.completion_queued;
+        const lifecycle_session = operation.session;
         const services = if (operation.completion_queued) self.services else null;
         self.releaseOperationIfRetiredLocked(operation);
         self.mutex.unlock();
-        if (services) |live| live.wake() catch {};
+        var wake_failed = false;
+        if (services) |live| live.wake() catch {
+            wake_failed = true;
+        };
+        if (stop_handoff_completed) self.clearLifecycleDeadline(lifecycle_session, lifecycle_generation);
+        if (delivery_failed or wake_failed) self.requestLifecycleAbort(lifecycle_generation);
     }
 
     fn finishError(self: *FridayHost, operation: *Operation, code: []const u8, message: []const u8) void {
@@ -955,7 +998,8 @@ pub const FridayHost = struct {
     fn operationPending(self: *FridayHost, operation: *Operation) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return operation.used and operation.pending and !self.closing;
+        return operation.used and operation.pending and !self.closing and
+            (!isLifecycleOperation(operation.kind) or operation.generation > self.retired_lifecycle_generation);
     }
 
     fn transitionOperation(self: *FridayHost, operation: *Operation, stage: AsyncStage) bool {
@@ -993,9 +1037,12 @@ pub const FridayHost = struct {
         if (cleanup.activation) self.recognizer.cancelActivation(ticket.model_epoch);
         if (cleanup.model) self.models.cancel(ticket.model_epoch);
         if (cleanup.session_state) {
+            self.request_mutex.lock();
             self.removeSourcesForGeneration(ticket.generation);
             if (self.takeTranscript(ticket.session, ticket.generation)) |text| self.allocator.free(text);
             self.clearAudioGeneration(ticket.session);
+            self.completeLifecycle(ticket.session, ticket.generation);
+            self.request_mutex.unlock();
         }
         self.retireCancellation(ticket, cleanup.callback_suppressed);
     }
@@ -1042,11 +1089,16 @@ pub const FridayHost = struct {
     }
 
     fn enqueue(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) void {
+        _ = self.enqueueResult(key, ok, bytes);
+    }
+
+    fn enqueueResult(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) bool {
         self.mutex.lock();
-        _ = self.enqueueLocked(key, ok, bytes);
+        const queued = self.enqueueLocked(key, ok, bytes);
         const services = self.services;
         self.mutex.unlock();
-        if (services) |live| live.wake() catch {};
+        if (queued) if (services) |live| live.wake() catch self.requestCurrentLifecycleAbort();
+        return queued;
     }
 
     fn enqueueLocked(self: *FridayHost, key: u64, ok: bool, bytes: []const u8) bool {
@@ -1127,7 +1179,10 @@ pub const FridayHost = struct {
                 return;
             };
             pointer.* = source;
+            self.request_mutex.lock();
+            defer self.request_mutex.unlock();
             self.addSource(pointer);
+            self.activateLifecycle(self.generation, self.generation);
             self.setPreferredSourceFrame(pointer.source_screen_frame);
             var output: [2048]u8 = undefined;
             var writer = std.Io.Writer.fixed(&output);
@@ -1137,16 +1192,20 @@ pub const FridayHost = struct {
             json.writeBase64(&writer, pointer.bundle_id) catch return;
             writer.writeByte('|') catch return;
             json.writeBase64(&writer, pointer.app_name) catch return;
-            self.emit(writer.buffered());
+            if (!self.emit(writer.buffered())) self.requestLifecycleAbort(self.generation);
         } else if (std.mem.eql(u8, event, "hotkey_up")) {
+            const generation = self.currentLifecycleGeneration();
+            if (generation == 0) return;
             var output: [128]u8 = undefined;
-            const wire = std.fmt.bufPrint(&output, "hotkey_up|{d}|{d}", .{ self.generation, at_ms }) catch return;
-            self.emit(wire);
+            const wire = std.fmt.bufPrint(&output, "hotkey_up|{d}|{d}", .{ generation, at_ms }) catch return;
+            if (!self.emit(wire)) self.requestLifecycleAbort(generation);
         } else {
+            const generation = self.currentLifecycleGeneration();
+            if (generation == 0) return;
             const reason = valueString(payload_value.object.get("reason")) orelse "invalidated";
             var output: [256]u8 = undefined;
-            const wire = std.fmt.bufPrint(&output, "hotkey_cancel|{d}|{d}|{s}", .{ self.generation, at_ms, reason }) catch return;
-            self.emit(wire);
+            const wire = std.fmt.bufPrint(&output, "hotkey_cancel|{d}|{d}|{s}", .{ generation, at_ms, reason }) catch return;
+            if (!self.emit(wire)) self.requestLifecycleAbort(generation);
         }
     }
 
@@ -1162,10 +1221,11 @@ pub const FridayHost = struct {
         return .closed;
     }
 
-    fn audioEvent(context: *anyopaque, event: []const u8, payload: []const u8) void {
+    fn audioEvent(context: *anyopaque, event: []const u8, payload: []const u8) bool {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         const session = json.unsignedValue(payload, "sessionId") orelse 0;
         const generation = self.generationForSession(session);
+        if (session == 0 or generation == 0 or !self.lifecycleMatches(session, generation)) return false;
         if (std.mem.eql(u8, event, "audio_meter")) {
             const elapsed = json.unsignedValue(payload, "elapsedMilliseconds") orelse 0;
             const level = json.unsignedValue(payload, "level") orelse 0;
@@ -1174,29 +1234,41 @@ pub const FridayHost = struct {
             const frames = json.unsignedValue(payload, "capturedFrames") orelse 0;
             self.overlay.updateMeter(@intCast(@min(rms * 5 + peak, 1000)), elapsed);
             var output: [256]u8 = undefined;
-            const wire = std.fmt.bufPrint(&output, "audio_meter|{d}|{d}|{d}|{d}|{d}", .{ generation, session, elapsed, level, frames }) catch return;
-            self.emit(wire);
-            return;
+            const wire = std.fmt.bufPrint(&output, "audio_meter|{d}|{d}|{d}|{d}|{d}", .{ generation, session, elapsed, level, frames }) catch return false;
+            const accepted = self.emit(wire);
+            if (!accepted) self.requestLifecycleAbort(generation);
+            return accepted;
         }
+        if (std.mem.eql(u8, event, "duration_limit")) self.setLifecycleDeadline(session, generation, system.monotonicMs() +| lifecycle_handoff_timeout_ms);
         var output: [4096]u8 = undefined;
         var writer = std.Io.Writer.fixed(&output);
-        writer.print("{s}|{d}|{d}|", .{ event, generation, session }) catch return;
-        json.writeBase64(&writer, payload) catch return;
-        self.emit(writer.buffered());
+        writer.print("{s}|{d}|{d}|", .{ event, generation, session }) catch return false;
+        json.writeBase64(&writer, payload) catch return false;
+        const accepted = self.emit(writer.buffered());
+        if (!accepted or std.mem.eql(u8, event, "audio_interrupted")) self.requestLifecycleAbort(generation);
+        return accepted;
+    }
+
+    fn audioAbort(context: *anyopaque, session: u64) void {
+        const self: *FridayHost = @ptrCast(@alignCast(context));
+        const generation = self.generationForSession(session);
+        if (generation != 0 and self.lifecycleMatches(session, generation)) self.requestLifecycleAbort(generation);
     }
 
     fn modelProgress(context: *anyopaque, operation: u64, state: []const u8, downloaded: u64, total: u64) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
         var output: [256]u8 = undefined;
         const wire = std.fmt.bufPrint(&output, "model_progress|{d}|{s}|{d}|{d}", .{ operation, state, downloaded, total }) catch return;
-        self.emit(wire);
+        _ = self.emit(wire);
     }
 
     fn overlayEvent(context: *anyopaque, action: []const u8) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
+        const generation = self.currentLifecycleGeneration();
+        if (generation == 0) return;
         var output: [256]u8 = undefined;
-        const wire = std.fmt.bufPrint(&output, "{s}|{d}", .{ action, self.generation }) catch return;
-        self.emit(wire);
+        const wire = std.fmt.bufPrint(&output, "{s}|{d}", .{ action, generation }) catch return;
+        if (!self.emit(wire)) self.requestLifecycleAbort(generation);
     }
 
     fn emitPermissions(self: *FridayHost) void {
@@ -1207,7 +1279,7 @@ pub const FridayHost = struct {
         writer.print("permissions|{d}|", .{self.generation}) catch return;
 
         json.writeBase64(&writer, permissions[0..length]) catch return;
-        self.emit(writer.buffered());
+        _ = self.emit(writer.buffered());
     }
     fn setPreferredSourceFrame(self: *FridayHost, frame: anytype) void {
         const preferred: ?overlay_mod.ScreenFrame = if (frame) |value|
@@ -1217,18 +1289,129 @@ pub const FridayHost = struct {
         self.overlay.setPreferredScreenFrame(preferred);
     }
 
-    fn emit(self: *FridayHost, bytes: []const u8) void {
+    fn emit(self: *FridayHost, bytes: []const u8) bool {
         self.mutex.lock();
         const handle = if (!self.closing) self.event_handle else null;
         self.mutex.unlock();
-        if (handle) |live| switch (live.post(bytes)) {
-            .accepted => {},
+        const outcome = if (handle) |live| live.post(bytes) else native_sdk.ChannelHandle.PostResult.closed;
+        return switch (outcome) {
+            .accepted => true,
             .dropped_full, .dropped_oversized, .closed => {
                 self.mutex.lock();
                 self.event_post_failures += 1;
+                self.event_handle = null;
                 self.mutex.unlock();
+                return false;
             },
         };
+    }
+
+    fn activateLifecycle(self: *FridayHost, session: u64, generation: u64) void {
+        if (session == 0 or generation == 0) return;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.closing or generation <= self.retired_lifecycle_generation) return;
+        self.current_audio_session = session;
+        self.current_audio_generation = generation;
+        self.lifecycle_deadline_ms = 0;
+        self.lifecycle_active = true;
+    }
+
+    fn resolveLifecycleIdentity(self: *FridayHost, supplied_session: u64, supplied_generation: u64) LifecycleIdentity {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return .{
+            .session = if (supplied_session != 0) supplied_session else self.current_audio_session,
+            .generation = if (supplied_generation != 0) supplied_generation else self.current_audio_generation,
+        };
+    }
+
+    fn lifecycleMatches(self: *FridayHost, session: u64, generation: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.lifecycle_active and generation != 0 and self.current_audio_session == session and self.current_audio_generation == generation;
+    }
+
+    fn setLifecycleDeadline(self: *FridayHost, session: u64, generation: u64, deadline_ms: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.lifecycle_active and self.current_audio_session == session and self.current_audio_generation == generation)
+            self.lifecycle_deadline_ms = deadline_ms;
+    }
+
+    fn clearLifecycleDeadline(self: *FridayHost, session: u64, generation: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.lifecycle_active and self.current_audio_session == session and self.current_audio_generation == generation)
+            self.lifecycle_deadline_ms = 0;
+    }
+
+    fn requestLifecycleAbort(self: *FridayHost, generation: u64) void {
+        if (generation == 0) return;
+        var observed = self.lifecycle_abort_generation.load(.acquire);
+        while (generation > observed) {
+            observed = self.lifecycle_abort_generation.cmpxchgWeak(observed, generation, .acq_rel, .acquire) orelse return;
+        }
+    }
+
+    fn requestCurrentLifecycleAbort(self: *FridayHost) void {
+        self.mutex.lock();
+        const generation = if (self.lifecycle_active) self.current_audio_generation else 0;
+        self.mutex.unlock();
+        self.requestLifecycleAbort(generation);
+    }
+
+    fn currentLifecycleGeneration(self: *FridayHost) u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return if (self.lifecycle_active) self.current_audio_generation else 0;
+    }
+
+    fn failClosedLifecycle(self: *FridayHost, session: u64, generation: u64) void {
+        if (session == 0 or generation == 0) return;
+        self.mutex.lock();
+        if (!self.lifecycle_active or self.current_audio_session != session or self.current_audio_generation != generation) {
+            self.mutex.unlock();
+            return;
+        }
+        self.lifecycle_active = false;
+        self.lifecycle_deadline_ms = 0;
+        self.current_audio_session = 0;
+        self.current_audio_generation = 0;
+        self.retired_lifecycle_generation = @max(self.retired_lifecycle_generation, generation);
+        self.mutex.unlock();
+
+        // The watchdog is the single teardown owner. Producers only request
+        // revocation, so audio callbacks never join their own worker and no
+        // lossy event is needed to finish native cleanup.
+        self.audio.cancelSession(session);
+        self.recognizer.cancelGeneration(generation);
+        self.request_mutex.lock();
+        self.removeSourcesForGeneration(generation);
+        if (self.takeTranscript(session, generation)) |text| self.allocator.free(text);
+        self.clearAudioGeneration(session);
+        self.audio.discardRetryAudio();
+        self.request_mutex.unlock();
+        self.overlay.hide();
+    }
+
+    fn completeLifecycle(self: *FridayHost, session: u64, generation: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.lifecycle_active or self.current_audio_session != session or self.current_audio_generation != generation) return;
+        self.lifecycle_active = false;
+        self.lifecycle_deadline_ms = 0;
+        self.current_audio_session = 0;
+        self.current_audio_generation = 0;
+        self.retired_lifecycle_generation = @max(self.retired_lifecycle_generation, generation);
+    }
+
+    fn completeLifecycleGeneration(self: *FridayHost, generation: u64) void {
+        if (generation == 0) return;
+        self.mutex.lock();
+        const session = if (self.lifecycle_active and self.current_audio_generation == generation) self.current_audio_session else 0;
+        self.mutex.unlock();
+        if (session != 0) self.completeLifecycle(session, generation);
     }
 
     fn addSource(self: *FridayHost, source: *delivery_mod.SourceTarget) void {
@@ -1290,7 +1473,9 @@ pub const FridayHost = struct {
     }
 
     fn setAudioGeneration(self: *FridayHost, session: u64, generation: u64) void {
-        self.clearAudioGeneration(session);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearAudioGenerationLocked(session);
         for (&self.audio_generations) |*entry| if (!entry.used) {
             entry.* = .{ .used = true, .session = session, .generation = generation };
             return;
@@ -1298,12 +1483,20 @@ pub const FridayHost = struct {
     }
 
     fn clearAudioGeneration(self: *FridayHost, session: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearAudioGenerationLocked(session);
+    }
+
+    fn clearAudioGenerationLocked(self: *FridayHost, session: u64) void {
         for (&self.audio_generations) |*entry| {
             if (entry.used and entry.session == session) entry.* = .{};
         }
     }
 
     fn generationForSession(self: *FridayHost, session: u64) u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         for (self.audio_generations) |entry| if (entry.used and entry.session == session) return entry.generation;
         return 0;
     }
@@ -1326,7 +1519,11 @@ pub const FridayHost = struct {
             const silence = json.boolValue(bytes, "silence") orelse false;
             const text = json.stringAlloc(self.allocator, bytes, "text") catch null;
             defer if (text) |value| self.allocator.free(value);
-            if (!silence and text != null and text.?.len > 0) self.storeTranscript(operation.session, operation.generation, text.?);
+            if (!silence and text != null and text.?.len > 0) {
+                self.request_mutex.lock();
+                self.storeTranscript(operation.session, operation.generation, text.?);
+                self.request_mutex.unlock();
+            }
             self.audio.discardRetryAudio();
         }
     }
@@ -1538,6 +1735,41 @@ pub const FridayHost = struct {
     }
 };
 
+const LifecycleSnapshot = struct {
+    active: bool,
+    session: u64,
+    generation: u64,
+    deadline_ms: u64,
+    channel_live: bool,
+};
+
+fn lifecycleMustAbort(snapshot: LifecycleSnapshot, requested_generation: u64, now_ms: u64) bool {
+    if (!snapshot.active or snapshot.session == 0 or snapshot.generation == 0) return false;
+    return requested_generation == snapshot.generation or
+        !snapshot.channel_live or
+        (snapshot.deadline_ms != 0 and now_ms >= snapshot.deadline_ms);
+}
+
+fn lifecycleMain(self: *FridayHost) void {
+    while (!self.lifecycle_stop.load(.acquire)) {
+        const requested_generation = self.lifecycle_abort_generation.swap(0, .acq_rel);
+        self.mutex.lock();
+        const handle = if (!self.closing and self.lifecycle_active) self.event_handle else null;
+        var snapshot = LifecycleSnapshot{
+            .active = !self.closing and self.lifecycle_active,
+            .session = self.current_audio_session,
+            .generation = self.current_audio_generation,
+            .deadline_ms = self.lifecycle_deadline_ms,
+            .channel_live = false,
+        };
+        self.mutex.unlock();
+        snapshot.channel_live = if (handle) |live| live.live() else false;
+        if (lifecycleMustAbort(snapshot, requested_generation, system.monotonicMs()))
+            self.failClosedLifecycle(snapshot.session, snapshot.generation);
+        _ = usleep(lifecycle_poll_us);
+    }
+}
+
 /// App-extension lifecycle consumed by the stock Native SDK TypeScript runner.
 pub const Host = FridayHost;
 
@@ -1587,6 +1819,13 @@ fn asyncKind(name: []const u8) ?AsyncKind {
     };
     inline for (commands) |entry| if (std.mem.eql(u8, name, entry[0])) return entry[1];
     return null;
+}
+
+fn isLifecycleOperation(kind: AsyncKind) bool {
+    return switch (kind) {
+        .audio_start, .audio_stop, .audio_finish, .audio_retry, .transcribe_capture, .debug_fixture_delivery => true,
+        else => false,
+    };
 }
 
 fn cancellationCleanup(kind: AsyncKind, stage: AsyncStage, callback_retired: bool) CancellationCleanup {
@@ -1671,8 +1910,20 @@ fn operationTestHost() FridayHost {
     host.pending_count = 0;
     host.closing = false;
     host.services = null;
+    host.channels = null;
+    host.event_handle = null;
     host.completions = @splat(.{});
     host.operations = @splat(.{});
+    host.audio_generations = @splat(.{});
+    host.current_audio_session = 0;
+    host.current_audio_generation = 0;
+    host.lifecycle_thread = null;
+    host.lifecycle_stop = std.atomic.Value(bool).init(false);
+    host.lifecycle_abort_generation = std.atomic.Value(u64).init(0);
+    host.lifecycle_active = false;
+    host.lifecycle_deadline_ms = 0;
+    host.retired_lifecycle_generation = 0;
+    host.event_post_failures = 0;
     host.microphone_permission_probe_active = std.atomic.Value(bool).init(false);
     host.microphone_permission_probe_finished = std.atomic.Value(bool).init(false);
     return host;
@@ -1803,13 +2054,67 @@ test "cancel complete and reallocate stress keeps retirement ownership stable" {
 test "operation completion is consumed once and closing suppresses late delivery" {
     var host = operationTestHost();
     const operation = host.beginOperation(77, .audio_start).?;
+    operation.generation = 1;
     host.finishOperation(operation, true, "done");
     try std.testing.expectEqual(@as(usize, 1), host.completion_count);
 
     const late = host.beginOperation(78, .audio_start).?;
+    late.generation = 2;
     host.closing = true;
     host.finishOperation(late, false, "late");
     try std.testing.expectEqual(@as(usize, 1), host.completion_count);
+}
+
+test "lifecycle lease fails closed on channel loss explicit abort and expired handoff" {
+    const live = LifecycleSnapshot{ .active = true, .session = 31, .generation = 32, .deadline_ms = 0, .channel_live = true };
+    try std.testing.expect(!lifecycleMustAbort(live, 0, 100));
+    try std.testing.expect(!lifecycleMustAbort(live, 31, 100));
+    try std.testing.expect(lifecycleMustAbort(live, 32, 100));
+
+    var closed = live;
+    closed.channel_live = false;
+    try std.testing.expect(lifecycleMustAbort(closed, 0, 100));
+
+    var deadline = live;
+    deadline.deadline_ms = 500;
+    try std.testing.expect(!lifecycleMustAbort(deadline, 0, 499));
+    try std.testing.expect(lifecycleMustAbort(deadline, 0, 500));
+
+    var generation_zero = live;
+    generation_zero.generation = 0;
+    try std.testing.expect(!lifecycleMustAbort(generation_zero, 0, 1_000));
+}
+
+test "lifecycle completion queue rejection requests generation cleanup" {
+    var host = operationTestHost();
+    host.lifecycle_active = true;
+    host.current_audio_session = 44;
+    host.current_audio_generation = 45;
+    host.completion_count = host.completions.len;
+    const operation = host.beginOperation(90, .audio_start).?;
+    operation.session = 44;
+    operation.generation = 45;
+
+    host.finishOperation(operation, true, "started");
+
+    try std.testing.expectEqual(@as(u64, 45), host.lifecycle_abort_generation.load(.acquire));
+    host.requestLifecycleAbort(44);
+    try std.testing.expectEqual(@as(u64, 45), host.lifecycle_abort_generation.load(.acquire));
+    try std.testing.expect(!operation.used);
+    try std.testing.expectEqual(@as(usize, 0), host.pending_count);
+}
+
+test "audio terminal events reject generation zero and stale identities" {
+    var host = operationTestHost();
+    try std.testing.expect(!FridayHost.audioEvent(&host, "audio_interrupted", "{\"sessionId\":0}"));
+
+    host.audio_generations[0] = .{ .used = true, .session = 70, .generation = 71 };
+    host.lifecycle_active = true;
+    host.current_audio_session = 80;
+    host.current_audio_generation = 81;
+    try std.testing.expect(!FridayHost.audioEvent(&host, "duration_limit", "{\"sessionId\":70}"));
+    try std.testing.expectEqual(@as(u64, 0), host.lifecycle_abort_generation.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 0), host.lifecycle_deadline_ms);
 }
 
 test "microphone permission probe closes capture and schedules a refresh" {
