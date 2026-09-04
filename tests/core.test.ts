@@ -43,7 +43,11 @@ test("short modifier tap seeds lock and second tap locks without long-hold seedi
   const firstDown = update(model, hostEvent("hotkey_down|1|1000|dG9rZW4=|1||"));
   model = modelOf(firstDown);
   assert.equal(model.workflow.kind, "starting");
-  assert.equal(commandOf(firstDown)?.op, "batch");
+  const firstCommands = (commandOf(firstDown) as unknown as { cmds: { op: string; name?: string; payload?: Uint8Array }[] }).cmds;
+  const immediateStart = firstCommands.find((command) => command.name === "friday.audio.start");
+  assert.equal(immediateStart?.op, "request");
+  assert.equal(new TextDecoder().decode(immediateStart?.payload), "session=1;generation=1");
+  assert.equal(firstCommands.some((command) => command.name === "friday.source.capture"), false);
   model = dispatch(model, hostEvent("hotkey_up|1|1100"));
   assert.equal(model.workflow.kind, "ready");
   assert.equal(model.lastQuickReleaseAtMs, 1100);
@@ -87,17 +91,105 @@ test("release after the hold timer cancels the in-flight audio start", () => {
   assert.equal(model.workflow.kind, "starting");
   const released = update(model, hostEvent("hotkey_up|1|1400"));
   model = modelOf(released);
+  assert.equal(model.workflow.kind === "starting" && model.workflow.releasePending, true);
+  assert.equal(commandOf(released)?.op, "cancel");
+  const started = update(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":1,"generation":1}') });
+  model = modelOf(started);
+  assert.equal(model.workflow.kind === "stopping" && model.workflow.disposition, "transcribe");
+  const stop = commandOf(started) as unknown as { op: string; name: string; payload: Uint8Array };
+  assert.equal(stop.name, "friday.audio.stop");
+  assert.equal(new TextDecoder().decode(stop.payload), "session=1;generation=1");
+});
+
+test("release before provisional start completion cancels capture and stale callbacks", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|31|1000|c291cmNlLTMx|1||"));
+  const released = update(model, hostEvent("hotkey_up|31|1100"));
+  model = modelOf(released);
   assert.equal(model.workflow.kind, "ready");
-  const batch = commandOf(released) as unknown as { op: string; cmds: { op: string; key?: string; name?: string }[] };
-  assert.equal(batch.op, "batch");
-  const cancels = batch.cmds.filter((cmd) => cmd.op === "cancel").map((cmd) => cmd.key);
-  assert.equal(cancels.includes("hold-start"), true);
-  assert.equal(cancels.includes("audio-session"), true);
-  const discards = batch.cmds.filter((cmd) => cmd.op === "host_bytes").map((cmd) => cmd.name);
-  assert.equal(discards.includes("friday.audio.discard"), true);
-  // A late audio_started for the cancelled request cannot resurrect it.
-  const late = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":1,"generation":1}') });
-  assert.equal(late.workflow.kind, "ready");
+  const commands = (commandOf(released) as unknown as { cmds: { op: string; key?: string; name?: string }[] }).cmds;
+  assert.equal(commands.some((command) => command.op === "cancel" && command.key === "audio-session"), true);
+  assert.equal(commands.some((command) => command.name === "friday.audio.discard"), true);
+  assert.equal(commands.some((command) => command.name === "friday.source.discard"), true);
+  const staleStart = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":31,"generation":31}') });
+  assert.deepEqual(staleStart, model);
+  const staleFailure = dispatch(model, { kind: "audio_start_failed", error: bytes('{"sessionId":31,"generation":31,"message":"late"}') });
+  assert.deepEqual(staleFailure, model);
+});
+
+test("started short tap drains then authoritatively deletes retry audio", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|41|2000|c291cmNlLTQx|1||"));
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":41,"generation":41}') });
+  assert.equal(model.workflow.kind === "starting" && model.workflow.audioStarted, true);
+  const released = update(model, hostEvent("hotkey_up|41|2100"));
+  model = modelOf(released);
+  assert.equal(model.workflow.kind === "stopping" && model.workflow.disposition, "discard");
+  assert.equal((commandOf(released) as unknown as { cmds: { name?: string }[] }).cmds.some((command) => command.name === "friday.audio.stop"), true);
+  const stopped = update(model, { kind: "audio_stopped", body: bytes('{"ok":true,"sessionId":41,"generation":41,"capturedFrames":1760,"audioDurationMs":110}') });
+  model = modelOf(stopped);
+  assert.equal(model.workflow.kind, "ready");
+  assert.equal(model.capturedFrames, 1760);
+  const terminal = (commandOf(stopped) as unknown as { cmds: { name?: string; payload?: Uint8Array }[] }).cmds;
+  assert.equal(terminal.some((command) => command.name === "friday.audio.discard"), true);
+  const sourceDiscard = terminal.find((command) => command.name === "friday.source.discard");
+  assert.equal(new TextDecoder().decode(sourceDiscard?.payload), "c291cmNlLTQx");
+  assert.equal(terminal.some((command) => command.name === "friday.overlay.hide"), true);
+});
+
+test("double tap locks even while the first provisional discard is draining", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|51|3000|Zmlyc3Q=|1||"));
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":51,"generation":51}') });
+  model = dispatch(model, hostEvent("hotkey_up|51|3100"));
+  assert.equal(model.workflow.kind === "stopping" && model.workflow.disposition, "discard");
+  const second = update(model, hostEvent("hotkey_down|52|3200|c2Vjb25k|1||"));
+  model = modelOf(second);
+  assert.equal(model.workflow.kind === "starting" && model.workflow.lockCandidate, true);
+  const commands = (commandOf(second) as unknown as { cmds: { op: string; key?: string; name?: string }[] }).cmds;
+  assert.equal(commands.some((command) => command.op === "cancel" && command.key === "audio-session"), true);
+  assert.equal(commands.some((command) => command.name === "friday.audio.start"), true);
+  model = dispatch(model, hostEvent("hotkey_up|52|3250"));
+  assert.equal(model.workflow.kind, "starting");
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":52,"generation":52}') });
+  assert.equal(model.workflow.kind === "recording" && model.workflow.control, "locked");
+});
+
+test("provisional capture keeps leading frames and drained stop supplies final frame count", () => {
+  let model = readyModel();
+  const down = update(model, hostEvent("hotkey_down|61|4000|c291cmNlLTYx|1||"));
+  model = modelOf(down);
+  assert.equal((commandOf(down) as unknown as { cmds: { name?: string }[] }).cmds[0].name, "friday.audio.start");
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":61,"generation":61}') });
+  model = dispatch(model, hostEvent("audio_meter|61|61|100|1|1600"));
+  assert.equal(model.capturedFrames, 1600);
+  const committed = update(model, { kind: "hold_elapsed", at: 4300 });
+  model = modelOf(committed);
+  assert.equal(model.workflow.kind, "recording");
+  assert.equal(model.capturedFrames, 1600);
+  assert.equal(commandOf(committed), null);
+  model = modelOf(update(model, hostEvent("hotkey_up|61|4400")));
+  const stopped = update(model, { kind: "audio_stopped", body: bytes('{"ok":true,"sessionId":61,"generation":61,"capturedFrames":6464,"audioDurationMs":404}') });
+  model = modelOf(stopped);
+  assert.equal(model.workflow.kind, "transcribing");
+  assert.equal(model.capturedFrames, 6464);
+});
+
+test("stale generation callbacks cannot mutate provisional or stopping sessions", () => {
+  let model = readyModel();
+  model = dispatch(model, hostEvent("hotkey_down|71|5000|c291cmNlLTcx|1||"));
+  const staleStart = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":70,"generation":70}') });
+  assert.deepEqual(staleStart, model);
+  const staleStartFailure = dispatch(model, { kind: "audio_start_failed", error: bytes('{"sessionId":70,"generation":70,"message":"stale"}') });
+  assert.deepEqual(staleStartFailure, model);
+  model = dispatch(model, { kind: "audio_started", body: bytes('{"ok":true,"sessionId":71,"generation":71}') });
+  model = dispatch(model, { kind: "hold_elapsed", at: 5300 });
+  model = modelOf(update(model, hostEvent("hotkey_up|71|5400")));
+  assert.equal(model.workflow.kind, "stopping");
+  const staleStop = dispatch(model, { kind: "audio_stopped", body: bytes('{"ok":true,"sessionId":70,"generation":70,"capturedFrames":999}') });
+  assert.deepEqual(staleStop, model);
+  const staleStopFailure = dispatch(model, { kind: "audio_stop_failed", error: bytes('{"sessionId":70,"generation":70,"message":"stale"}') });
+  assert.deepEqual(staleStopFailure, model);
 });
 
 test("new hotkey cancels transcribing generation and stale results are ignored", () => {

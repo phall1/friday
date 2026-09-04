@@ -37,7 +37,7 @@ export type DictationWorkflow =
   | { readonly kind: "booting" }
   | { readonly kind: "not_ready" }
   | { readonly kind: "ready"; readonly modelKey: number }
-  | { readonly kind: "starting"; readonly lockCandidate: boolean }
+  | { readonly kind: "starting"; readonly lockCandidate: boolean; readonly committed: boolean; readonly audioStarted: boolean; readonly releasePending: boolean }
   | { readonly kind: "recording"; readonly control: RecordingControl; readonly warnedDurationLimit: boolean }
   | { readonly kind: "stopping"; readonly disposition: StopDisposition }
   | { readonly kind: "transcribing"; readonly retryAudioAvailable: boolean; readonly disposition: StopDisposition }
@@ -518,6 +518,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   if (appState !== null) return appState;
   const modelState = updateModelState(model, msg);
   if (modelState !== null) return modelState;
+  if (msg.kind === "audio_started" && model.workflow.kind === "starting" && model.workflow.releasePending) {
+    const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
+    const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
+    if (session !== model.sessionId || (generation !== 0 && generation !== model.generation)) return model;
+    return [{ ...model, durationLimitReached: false, capturedFrames: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })];
+  }
   if (msg.kind === "source_capture_failed" || msg.kind === "audio_start_failed" || msg.kind === "audio_stop_failed" || msg.kind === "transcription_failed" || msg.kind === "delivery_finished" || msg.kind === "delivery_failed") {
     const terminalState = updateWorkflowState(model, msg);
     if (terminalState !== null && terminalState !== model) return [terminalState, Cmd.host("friday.overlay.hide", asciiBytes(""))];
@@ -597,7 +603,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.request("friday.hotkey.probe", msg.value, { key: "automation-hotkey-probe", ok: "automation_hotkey_probe_finished", err: "automation_hotkey_probe_failed" })];
     case "automation_hotkey_probe_now": {
       if (model.workflow.kind !== "ready") return model;
-      return [{ ...model, workflow: { kind: "starting", lockCandidate: true }, sessionId: 0 / 1, generation: 0 / 1, sessionSourceToken: asciiBytes("") }, Cmd.batch([
+      return [{ ...model, workflow: { kind: "starting", lockCandidate: true, committed: true, audioStarted: false, releasePending: false }, sessionId: 0 / 1, generation: 0 / 1, sessionSourceToken: asciiBytes("") }, Cmd.batch([
         Cmd.host("friday.performance.mark_hotkey", asciiBytes("")),
         Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" }),
       ])];
@@ -787,7 +793,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "start_recording": {
       if (!model.platformSupported) return model;
       if (model.workflow.kind !== "ready") return model;
-      return [{ ...model, durationLimitReached: false, workflow: { kind: "starting", lockCandidate: false }, sessionId: 0 / 1, generation: 0 / 1, pressedAtMs: 0 / 1 }, Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" })];
+      return [{ ...model, durationLimitReached: false, workflow: { kind: "starting", lockCandidate: false, committed: true, audioStarted: false, releasePending: false }, sessionId: 0 / 1, generation: 0 / 1, pressedAtMs: 0 / 1 }, Cmd.request("friday.source.capture", asciiBytes(""), { key: "source-capture", ok: "source_captured", err: "source_capture_failed" })];
     }
     case "source_captured": {
       if (model.workflow.kind !== "starting" || model.generation !== 0) return model;
@@ -795,12 +801,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (generation === 0) return model;
       const current = model.workflow;
       const safeGeneration = generation / 1;
-      return [{ ...model, workflow: current, sessionId: safeGeneration, generation: safeGeneration }, Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" })];
+      return [{ ...model, workflow: current, sessionId: safeGeneration, generation: safeGeneration }, Cmd.request("friday.audio.start", utf8Bytes(`session=${safeGeneration};generation=${safeGeneration}`), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" })];
     }
     case "stop_recording": {
       if (model.workflow.kind !== "recording") return model;
       const current = model.workflow;
-      return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" }, meterLevel: "quiet" }, Cmd.request("friday.audio.stop", asciiBytes(""), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })];
+      return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" }, meterLevel: "quiet" }, Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })];
     }
     case "cancel_active": {
       if (!isBusy(model) && model.workflow.kind !== "failed") return model;
@@ -808,9 +814,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [{ ...model, durationLimitReached: false, workflow: readiness(model), meterLevel: "quiet", elapsedMilliseconds: 0 / 1 }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.source.discard", source), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
     }
     case "hold_elapsed": {
-      if (model.workflow.kind !== "starting" || model.workflow.lockCandidate) return model;
-      const current = model.workflow;
-      return [model, Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" })];
+      if (model.workflow.kind !== "starting" || model.workflow.lockCandidate || model.workflow.committed) return model;
+      const threshold = Math.max(300, model.minimumHoldMs);
+      if (msg.at < model.pressedAtMs + threshold) return model;
+      if (model.workflow.audioStarted)
+        return { ...model, workflow: { kind: "recording", control: "held", warnedDurationLimit: false } };
+      return { ...model, workflow: { ...model.workflow, committed: true } };
     }
     case "audio_stopped": {
       if (model.workflow.kind !== "stopping") return model;
@@ -818,7 +827,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
       if (session !== model.sessionId || generation !== model.generation) return model;
       const disposition = model.workflow.disposition;
-      return [{ ...model, durationLimitReached: disposition === "duration_limit", workflow: { kind: "transcribing", retryAudioAvailable: true, disposition } }, Cmd.batch([
+      const capturedFrames = jsonInteger(msg.body, asciiBytes("\"capturedFrames\":"));
+      if (disposition === "discard") return [{ ...model, capturedFrames: capturedFrames / 1, durationLimitReached: false, sessionSourceToken: asciiBytes(""), elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([
+        Cmd.host("friday.audio.discard", asciiBytes("")),
+        Cmd.host("friday.source.discard", model.sessionSourceToken),
+        Cmd.host("friday.overlay.hide", asciiBytes("")),
+      ])];
+      return [{ ...model, capturedFrames: capturedFrames / 1, durationLimitReached: disposition === "duration_limit", workflow: { kind: "transcribing", retryAudioAvailable: true, disposition } }, Cmd.batch([
         Cmd.delay("transcription-start", 250, "begin_transcription"),
         Cmd.host("friday.overlay.transcribing", asciiBytes("")),
       ])];
@@ -873,7 +888,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           byteEquals(state, asciiBytes("failed")) ? "failed" : model.modelDownloadState;
         return { ...model, modelDownloadState: downloadState, modelDownloadedBytes: downloaded / 1, modelTotalBytes: total / 1, modelDownloadedBytesLabel: groupedDigits(msg.bytes.slice(stateEnd + 1, downloadedEnd)), modelTotalBytesLabel: groupedDigits(msg.bytes.slice(downloadedEnd + 1, msg.bytes.length)) };
       }
-      if (eventMatches(msg.bytes, asciiBytes("audio_meter|"), model) && model.workflow.kind === "recording") {
+      if (eventMatches(msg.bytes, asciiBytes("audio_meter|"), model) &&
+          (model.workflow.kind === "recording" || (model.workflow.kind === "starting" && model.workflow.audioStarted))) {
         const generationEnd = findPipe(msg.bytes, 12);
         const sessionEnd = findPipe(msg.bytes, generationEnd + 1);
         const elapsedEnd = findPipe(msg.bytes, sessionEnd + 1);
@@ -894,32 +910,35 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (!model.onboardingComplete && model.hotkeyConfirmed)
           return [{ ...model, hotkeyPracticed: true }, Cmd.host("friday.source.discard", token)];
         if (model.workflow.kind === "transcribing" || model.workflow.kind === "delivering" || model.workflow.kind === "stopping") {
-          const old = model.workflow;
           const session = generation;
-          const workflow: DictationWorkflow = { kind: "starting", lockCandidate: false };
+          const delta = at >= model.lastQuickReleaseAtMs ? at - model.lastQuickReleaseAtMs : model.doubleTapWindowMs + 1;
+          const lockCandidate = model.workflow.kind === "stopping" && model.workflow.disposition === "discard" && model.doubleTapEnabled && model.lastQuickReleaseAtMs > 0 && delta <= model.doubleTapWindowMs;
+          const workflow: DictationWorkflow = { kind: "starting", lockCandidate, committed: lockCandidate, audioStarted: false, releasePending: false };
           return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
             Cmd.cancel("audio-session"), Cmd.cancel("delivery"),
             Cmd.host("friday.audio.discard", asciiBytes("")),
             Cmd.host("friday.source.discard", model.sessionSourceToken),
-            Cmd.delay("hold-start", 300, "hold_elapsed"),
-            model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("held")) : Cmd.none,
+            Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${generation}`), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" }),
+            lockCandidate ? Cmd.none : Cmd.delay("hold-start", Math.max(300, model.minimumHoldMs), "hold_elapsed"),
+            model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes(lockCandidate ? "locked" : "held")) : Cmd.none,
           ])];
         }
         if (model.workflow.kind === "recording" && model.workflow.control === "locked") {
           const current = model.workflow;
-          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.batch([Cmd.host("friday.source.discard", token), Cmd.request("friday.audio.stop", asciiBytes(""), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })])];
+          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.batch([Cmd.host("friday.source.discard", token), Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })])];
         }
         if (model.workflow.kind !== "ready") return model;
         const session = generation;
         const delta = at >= model.lastQuickReleaseAtMs ? at - model.lastQuickReleaseAtMs : model.doubleTapWindowMs + 1;
         const lockCandidate = model.doubleTapEnabled && model.lastQuickReleaseAtMs > 0 && delta <= model.doubleTapWindowMs;
-        const workflow: DictationWorkflow = { kind: "starting", lockCandidate };
+        const workflow: DictationWorkflow = { kind: "starting", lockCandidate, committed: lockCandidate, audioStarted: false, releasePending: false };
         if (lockCandidate) return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
-          Cmd.request("friday.audio.start", asciiBytes(""), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" }),
+          Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${generation}`), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" }),
           model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("locked")) : Cmd.none,
         ])];
         return [{ ...model, workflow, sessionId: session / 1, generation: generation / 1, pressedAtMs: at / 1, sessionSourceToken: token }, Cmd.batch([
-          Cmd.delay("hold-start", 300, "hold_elapsed"),
+          Cmd.request("friday.audio.start", utf8Bytes(`session=${session};generation=${generation}`), { key: "audio-session", ok: "audio_started", err: "audio_start_failed" }),
+          Cmd.delay("hold-start", Math.max(300, model.minimumHoldMs), "hold_elapsed"),
           model.overlayEnabled ? Cmd.host("friday.overlay.show", asciiBytes("held")) : Cmd.none,
         ])];
       }
@@ -931,7 +950,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           if (generation !== model.generation || at < model.pressedAtMs) return model;
           if (model.workflow.control === "locked") return model;
           const current = model.workflow;
-          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.request("friday.audio.stop", asciiBytes(""), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })];
+          return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })];
         }
         if (model.workflow.kind === "starting") {
           if (generation !== model.generation || at < model.pressedAtMs) return model;
@@ -941,10 +960,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           // in-flight audio start and orphaned a live capture.
           if (model.workflow.lockCandidate) return model;
           const duration = at - model.pressedAtMs;
-          const quick = duration < model.minimumHoldMs && duration <= model.doubleTapWindowMs ? at / 1 : 0 / 1;
-          // hold_elapsed may already have sent friday.audio.start, so the
-          // abort must cancel that in-flight request and discard any capture
-          // it managed to begin — not just the hold timer.
+          const threshold = Math.max(300, model.minimumHoldMs);
+          if (duration >= threshold) {
+            if (model.workflow.audioStarted)
+              return [{ ...model, workflow: { kind: "stopping", disposition: "transcribe" } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })])];
+            return [{ ...model, workflow: { ...model.workflow, committed: true, releasePending: true } }, Cmd.cancel("hold-start")];
+          }
+          const quick = duration <= model.doubleTapWindowMs ? at / 1 : 0 / 1;
+          if (model.workflow.audioStarted)
+            return [{ ...model, hasImmediateResult: false, immediateResultMessage: asciiBytes(""), lastQuickReleaseAtMs: quick, workflow: { kind: "stopping", disposition: "discard" } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`), { key: "audio-session", ok: "audio_stopped", err: "audio_stop_failed" })])];
+          // Cancelling an in-flight start invokes the host's generation-scoped
+          // cleanup. The explicit discards cover a completion already queued.
           return [{ ...model, hasImmediateResult: false, sessionSourceToken: asciiBytes(""), immediateResultMessage: asciiBytes(""), lastQuickReleaseAtMs: quick, workflow: { kind: "ready", modelKey: model.selectedModelKey } }, Cmd.batch([Cmd.cancel("hold-start"), Cmd.cancel("audio-session"), Cmd.host("friday.audio.discard", asciiBytes("")), Cmd.host("friday.source.discard", model.sessionSourceToken), Cmd.host("friday.overlay.hide", asciiBytes(""))])];
         }
         return model;
@@ -958,7 +984,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (eventMatches(msg.bytes, asciiBytes("duration_limit|"), model) &&
           model.workflow.kind === "recording")
         return [{ ...model, workflow: { kind: "stopping", disposition: "duration_limit" }, durationLimitReached: true },
-                Cmd.request("friday.audio.stop", asciiBytes(""),
+                Cmd.request("friday.audio.stop", utf8Bytes(`session=${model.sessionId};generation=${model.generation}`),
                             { key: "audio-session", ok: "audio_stopped",
                               err: "audio_stop_failed" })];
       if (eventMatches(msg.bytes, asciiBytes("audio_interrupted|"), model) &&

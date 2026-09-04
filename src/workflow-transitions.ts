@@ -11,13 +11,29 @@ export function updateWorkflowState(model: Model, msg: Msg): Model | null {
       if (model.workflow.kind !== "starting") return model;
       const session = jsonInteger(msg.body, asciiBytes("\"sessionId\":"));
       if (session !== model.sessionId) return model;
-      return { ...model, durationLimitReached: false, capturedFrames: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet", workflow: { kind: "recording", control: model.workflow.lockCandidate ? "locked" : "held", warnedDurationLimit: false } };
+      const generation = jsonInteger(msg.body, asciiBytes("\"generation\":"));
+      if (generation !== 0 && generation !== model.generation) return model;
+      const current = model.workflow;
+      const started = { ...model, durationLimitReached: false, capturedFrames: 0 / 1, elapsedMilliseconds: 0 / 1, meterLevel: "quiet" as const };
+      if (!current.committed) return { ...started, workflow: { ...current, audioStarted: true } };
+      if (current.releasePending) return model;
+      return { ...started, workflow: { kind: "recording", control: current.lockCandidate ? "locked" : "held", warnedDurationLimit: false } };
     }
     case "audio_start_failed":
       if (model.workflow.kind !== "starting") return model;
+      {
+        const session = jsonInteger(msg.error, asciiBytes("\"sessionId\":"));
+        const generation = jsonInteger(msg.error, asciiBytes("\"generation\":"));
+        if ((session !== 0 && session !== model.sessionId) || (generation !== 0 && generation !== model.generation)) return model;
+      }
       return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.error };
     case "audio_stop_failed":
       if (model.workflow.kind !== "stopping") return model;
+      {
+        const session = jsonInteger(msg.error, asciiBytes("\"sessionId\":"));
+        const generation = jsonInteger(msg.error, asciiBytes("\"generation\":"));
+        if ((session !== 0 && session !== model.sessionId) || (generation !== 0 && generation !== model.generation)) return model;
+      }
       return { ...model, workflow: { kind: "failed", stage: "capture", retryAudioAvailable: false }, workflowMessage: msg.error };
     case "transcription_failed": {
       if (model.workflow.kind !== "transcribing") return model;
