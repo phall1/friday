@@ -309,7 +309,7 @@ pub const GlobalInputMonitor = struct {
         }
         const key = c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventKeycode);
         if (event_type == c.kCGEventKeyDown and key == self.key_code and flags == self.required_flags and c.CGEventGetIntegerValueField(event, c.kCGKeyboardEventAutorepeat) == 0) self.emitDown(event);
-        if (event_type == c.kCGEventKeyUp and key == self.key_code and self.accepted_down) self.emitUp(event);
+        if (event_type == c.kCGEventKeyUp and key == self.key_code) self.emitUp(event);
     }
     fn queueCapturedCandidate(self: *GlobalInputMonitor, candidate: Candidate, completion: AsyncCompletion) void {
         self.capture_length = writeCandidate(&self.capture_bytes, candidate) catch 0;
@@ -323,8 +323,6 @@ pub const GlobalInputMonitor = struct {
     }
 
     fn emitDown(self: *GlobalInputMonitor, event: c.CGEventRef) void {
-        if (self.accepted_down) return;
-        self.accepted_down = true; self.probe_down += 1;
         var queued: QueuedEvent = .{ .kind = .down, .at_ms = @as(f64, @floatFromInt(c.CGEventGetTimestamp(event))) / 1_000_000.0 };
         makeUuid(&queued.token);
         const workspace = objc.send0(objc.Id, objc.class("NSWorkspace"), objc.selector("sharedWorkspace"));
@@ -335,24 +333,43 @@ pub const GlobalInputMonitor = struct {
             queued.app_len = objc.copyUtf8Into(objc.send0(objc.Id, app, objc.selector("localizedName")), &queued.app_name).len;
         }
         if (queued.app_len == 0) { @memcpy(queued.app_name[0..11], "Application"); queued.app_len = 11; }
-        self.enqueue(queued);
+        _ = self.tryEnqueueDown(queued);
     }
     fn emitUp(self: *GlobalInputMonitor, event: c.CGEventRef) void {
-        if (!self.accepted_down) return;
-        self.accepted_down = false; self.probe_up += 1;
-        self.enqueue(.{ .kind = .up, .at_ms = @as(f64, @floatFromInt(c.CGEventGetTimestamp(event))) / 1_000_000.0 });
+        self.enqueueTerminal(.{ .kind = .up, .at_ms = @as(f64, @floatFromInt(c.CGEventGetTimestamp(event))) / 1_000_000.0 });
     }
     fn invalidateActive(self: *GlobalInputMonitor, reason: []const u8) void {
-        if (!self.accepted_down) return;
-        self.accepted_down = false; self.chord_down = false;
-        self.enqueue(.{ .kind = .cancel, .at_ms = wallMilliseconds(), .reason = reason });
+        self.chord_down = false;
+        self.enqueueTerminal(.{ .kind = .cancel, .at_ms = wallMilliseconds(), .reason = reason });
     }
-    fn enqueue(self: *GlobalInputMonitor, event: QueuedEvent) void {
+    fn tryEnqueueDown(self: *GlobalInputMonitor, event: QueuedEvent) bool {
         self.mutex.lock(); defer self.mutex.unlock();
-        if (self.event_count == self.events.len) return;
+        if (self.accepted_down or self.event_count > self.events.len - 2) return false;
+        self.pushEventLocked(event);
+        self.accepted_down = true;
+        self.probe_down += 1;
+        self.scheduleDrainLocked();
+        return true;
+    }
+    fn enqueueTerminal(self: *GlobalInputMonitor, event: QueuedEvent) void {
+        self.mutex.lock(); defer self.mutex.unlock();
+        if (!self.accepted_down) return;
+
+        // Accepting a down reserves this slot. Keep the native accepted state
+        // set until its terminal event is durably present in the queue, so a
+        // concurrent key-up/invalidation cannot lose or duplicate it.
+        std.debug.assert(self.event_count < self.events.len);
+        self.pushEventLocked(event);
+        self.accepted_down = false;
+        if (event.kind == .up) self.probe_up += 1;
+        self.scheduleDrainLocked();
+    }
+    fn pushEventLocked(self: *GlobalInputMonitor, event: QueuedEvent) void {
         self.events[self.event_tail] = event;
         self.event_tail = (self.event_tail + 1) % self.events.len;
         self.event_count += 1;
+    }
+    fn scheduleDrainLocked(self: *GlobalInputMonitor) void {
         if (!self.drain_scheduled) { self.drain_scheduled = true; c.dispatch_async_f(c.dispatch_get_main_queue(), self, drainEvents); }
     }
     fn drainEvents(context: ?*anyopaque) callconv(.c) void {
@@ -507,4 +524,94 @@ test "single ordinary modifier remains invalid" {
 test "Fn synthetic key-down waits for modifier release" {
     try std.testing.expect(isFnSyntheticKey(179));
     try std.testing.expect(!isFnSyntheticKey(96));
+}
+
+const TestSink = struct {
+    downs: usize = 0,
+    terminals: usize = 0,
+    fn emit(context: *anyopaque, event: []const u8) void {
+        const self: *TestSink = @ptrCast(@alignCast(context));
+        if (std.mem.indexOf(u8, event, "\"event\":\"hotkey_down\"") != null) self.downs += 1;
+        if (std.mem.indexOf(u8, event, "\"event\":\"hotkey_up\"") != null or std.mem.indexOf(u8, event, "\"event\":\"hotkey_cancel\"") != null) self.terminals += 1;
+    }
+};
+
+fn initTestMonitor(sink: *TestSink) GlobalInputMonitor {
+    return GlobalInputMonitor.init(std.testing.allocator, .{ .context = sink, .emit = TestSink.emit }) catch unreachable;
+}
+fn fillTestQueue(monitor: *GlobalInputMonitor, count: usize) void {
+    for (0..count) |_| monitor.pushEventLocked(.{ .kind = .cancel, .at_ms = 0, .reason = "filler" });
+}
+fn discardTestEvent(monitor: *GlobalInputMonitor) void {
+    monitor.event_head = (monitor.event_head + 1) % monitor.events.len;
+    monitor.event_count -= 1;
+}
+
+test "accepted down reserves terminal capacity under saturation" {
+    var sink: TestSink = .{};
+    var monitor = initTestMonitor(&sink);
+    monitor.drain_scheduled = true;
+    fillTestQueue(&monitor, monitor.events.len - 2);
+
+    try std.testing.expect(monitor.tryEnqueueDown(.{ .kind = .down, .at_ms = 1 }));
+    try std.testing.expect(monitor.accepted_down);
+    try std.testing.expectEqual(monitor.events.len - 1, monitor.event_count);
+
+    monitor.chord_down = true;
+    monitor.invalidateActive("sleep");
+    try std.testing.expect(!monitor.accepted_down);
+    try std.testing.expect(!monitor.chord_down);
+    try std.testing.expectEqual(monitor.events.len, monitor.event_count);
+    try std.testing.expectEqual(EventKind.down, monitor.events[monitor.events.len - 2].kind);
+    try std.testing.expectEqual(EventKind.cancel, monitor.events[monitor.events.len - 1].kind);
+    try std.testing.expectEqual(@as(usize, 1), monitor.probe_down);
+    try std.testing.expectEqual(@as(usize, 0), monitor.probe_up);
+
+    monitor.enqueueTerminal(.{ .kind = .up, .at_ms = 3 });
+    try std.testing.expectEqual(monitor.events.len, monitor.event_count);
+}
+
+test "saturated queue rejects unpaired downs and resumes by whole pair" {
+    var sink: TestSink = .{};
+    var monitor = initTestMonitor(&sink);
+    monitor.drain_scheduled = true;
+
+    for (0..monitor.events.len / 2) |index| {
+        try std.testing.expect(monitor.tryEnqueueDown(.{ .kind = .down, .at_ms = @floatFromInt(index) }));
+        if (index % 2 == 0) {
+            monitor.enqueueTerminal(.{ .kind = .up, .at_ms = @floatFromInt(index) });
+        } else {
+            monitor.enqueueTerminal(.{ .kind = .cancel, .at_ms = @floatFromInt(index), .reason = "test" });
+        }
+    }
+
+    try std.testing.expectEqual(monitor.events.len, monitor.event_count);
+    try std.testing.expect(!monitor.accepted_down);
+    try std.testing.expect(!monitor.tryEnqueueDown(.{ .kind = .down, .at_ms = 100 }));
+    try std.testing.expectEqual(@as(usize, 8), monitor.probe_down);
+
+    discardTestEvent(&monitor);
+    try std.testing.expect(!monitor.tryEnqueueDown(.{ .kind = .down, .at_ms = 101 }));
+    discardTestEvent(&monitor);
+    try std.testing.expect(monitor.tryEnqueueDown(.{ .kind = .down, .at_ms = 102 }));
+    try std.testing.expect(monitor.accepted_down);
+    monitor.enqueueTerminal(.{ .kind = .cancel, .at_ms = 103, .reason = "saturated" });
+    try std.testing.expect(!monitor.accepted_down);
+    try std.testing.expectEqual(monitor.events.len, monitor.event_count);
+
+    var down_count: usize = 0;
+    var terminal_count: usize = 0;
+    var index = monitor.event_head;
+    for (0..monitor.event_count) |_| {
+        switch (monitor.events[index].kind) {
+            .down => down_count += 1,
+            .up, .cancel => terminal_count += 1,
+        }
+        index = (index + 1) % monitor.events.len;
+    }
+    try std.testing.expectEqual(down_count, terminal_count);
+
+    GlobalInputMonitor.drainEvents(&monitor);
+    try std.testing.expectEqual(@as(usize, 8), sink.downs);
+    try std.testing.expectEqual(sink.downs, sink.terminals);
 }
