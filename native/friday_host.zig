@@ -59,6 +59,7 @@ pub const FridayHost = struct {
     lifecycle_thread: ?std.Thread = null,
     lifecycle_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     lifecycle_abort_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    next_activation_epoch: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
     lifecycle_active: bool = false,
     lifecycle_deadline_ms: u64 = 0,
     retired_lifecycle_generation: u64 = 0,
@@ -114,8 +115,8 @@ pub const FridayHost = struct {
             self.lifecycle_thread = null;
         }
 
-        if (self.models.activeModelPath()) |path| {
-            self.recognizer.activateModel(path, self.models.beginOperation(), .{ .context = self, .complete = startupActivation }) catch {};
+        if (self.models.snapshot().active_path) |path| {
+            self.recognizer.activateModel(path, self.nextActivationEpoch(), .{ .context = self, .complete = startupActivation }) catch {};
         }
         return self;
     }
@@ -313,7 +314,7 @@ pub const FridayHost = struct {
             return copyResult(output, "{\"ok\":true}");
         }
         if (std.mem.eql(u8, name, "friday.model.remove")) {
-            const old_active = self.models.activeModelKey();
+            const old_active = self.models.snapshot().active_key;
             const model_key = json.unsignedField(payload, "modelKey");
             const length = self.models.remove(model_key, json.boolField(payload, "delete"), output) catch 0;
             if (model_key == old_active and length > 0 and json.objectOk(output[0..length])) self.recognizer.unload(.{ .context = self, .complete = startupActivation }) catch {};
@@ -535,7 +536,7 @@ pub const FridayHost = struct {
                 const identity = self.resolveLifecycleIdentity(json.unsignedField(payload, "session"), json.unsignedField(payload, "generation"));
                 operation.session = identity.session;
                 operation.generation = identity.generation;
-                if (self.models.activeModelPath() == null) return self.finishUnavailable(operation, "model_unavailable", "The active model is unavailable.", true);
+                if (self.models.snapshot().active_path == null) return self.finishUnavailable(operation, "model_unavailable", "The active model is unavailable.", true);
                 self.audio.submitRetry(.{ .context = operation, .submit = submitRetryTranscription }) catch |failure| switch (failure) {
                     error.RetryUnavailable => self.finishUnavailable(operation, "audio_unavailable", "Captured audio is unavailable.", false),
                     else => self.finishError(operation, "transcription_failed", "Local transcription could not start."),
@@ -564,21 +565,21 @@ pub const FridayHost = struct {
                 self.recognizer.transcribeAudio(decoded, operation.session, operation.generation, genericCompletion(operation)) catch self.finishError(operation, "transcription_failed", "Local transcription could not start.");
             },
             .nemo_unload => self.recognizer.unload(genericCompletion(operation)) catch self.finishError(operation, "unload_failed", "The recognizer could not unload."),
-            .model_download => self.models.downloadDefault(operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_resume => self.models.resumePending(operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_resolve_hf => self.models.resolveHF(payload, operation.key, self.assignModelEpoch(operation), modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
-            .model_download_hf => self.models.downloadResolvedHF(payload, operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_download => self.submitModel(operation, .{ .download_default = .{ .request_key = operation.key } }, modelCompletion(operation)),
+            .model_resume => self.submitModel(operation, .{ .resume_pending = .{ .request_key = operation.key } }, modelCompletion(operation)),
+            .model_resolve_hf => self.submitModel(operation, .{ .resolve_hf = .{ .identifier = payload, .request_key = operation.key } }, modelGenericCompletion(operation)),
+            .model_download_hf => self.submitModel(operation, .{ .download_resolved_hf = .{ .identifier = payload, .request_key = operation.key } }, modelCompletion(operation)),
             .model_add_local => {
                 const path = json.decodeBase64Alloc(self.allocator, json.field(payload, "path")) catch return self.finishError(operation, "invalid_path", "The local model path is invalid.");
                 defer self.allocator.free(path);
-                self.models.addLocal(path, json.unsignedField(payload, "modelKey"), operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
+                self.submitModel(operation, .{ .add_local = .{ .path = path, .key = json.unsignedField(payload, "modelKey"), .request_key = operation.key } }, modelCompletion(operation));
             },
             .model_add_hf => {
                 const identifier = json.decodeBase64Alloc(self.allocator, json.field(payload, "id")) catch return self.finishError(operation, "invalid_identifier", "The Hugging Face identifier is invalid.");
                 defer self.allocator.free(identifier);
-                self.models.resolveHF(identifier, operation.key, self.assignModelEpoch(operation), modelGenericCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start.");
+                self.submitModel(operation, .{ .resolve_hf = .{ .identifier = identifier, .request_key = operation.key } }, modelGenericCompletion(operation));
             },
-            .model_select => self.models.select(json.unsignedField(payload, "modelKey"), operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The model operation could not start."),
+            .model_select => self.submitModel(operation, .{ .select = .{ .key = json.unsignedField(payload, "modelKey"), .request_key = operation.key } }, modelCompletion(operation)),
             .model_pick_local => self.pickLocalModel(operation),
             .debug_fixture_delivery => self.startFixture(operation, payload),
             .debug_performance => self.startPerformance(operation, payload),
@@ -669,11 +670,11 @@ pub const FridayHost = struct {
         operation.path_len = path.len;
         self.generation += 1;
         operation.generation = self.generation;
-        self.models.addLocal(operation.path[0..operation.path_len], 1000 + self.generation, operation.key, self.assignModelEpoch(operation), modelCompletion(operation)) catch self.finishError(operation, "model_operation_failed", "The local model could not be added.");
+        _ = self.models.submit(.{ .add_local = .{ .path = operation.path[0..operation.path_len], .key = 1000 + self.generation, .request_key = operation.key } }, modelCompletion(operation)) catch return self.finishError(operation, "model_operation_failed", "The local model could not be added.");
     }
 
     fn startFixture(self: *FridayHost, operation: *Operation, payload: []const u8) void {
-        const model_path = self.models.activeModelPath() orelse return self.finishError(operation, "fixture_prerequisite_missing", "The automation fixture and an active model are required.");
+        const model_path = self.models.snapshot().active_path orelse return self.finishError(operation, "fixture_prerequisite_missing", "The automation fixture and an active model are required.");
         if (payload.len == 0 or payload.len > operation.path.len) return self.finishError(operation, "fixture_prerequisite_missing", "The automation fixture and an active model are required.");
         @memcpy(operation.path[0..payload.len], payload);
         operation.path_len = payload.len;
@@ -686,7 +687,7 @@ pub const FridayHost = struct {
             return self.finishError(operation, "out_of_memory", "Friday could not retain the source application.");
         };
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(model_path, self.assignModelEpoch(operation), fixtureCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
+        self.recognizer.activateModel(model_path, self.assignActivationEpoch(operation), fixtureCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
     }
 
     fn startPerformance(self: *FridayHost, operation: *Operation, payload: []const u8) void {
@@ -694,7 +695,7 @@ pub const FridayHost = struct {
         const count_text = parts.next() orelse "";
         const fixture = parts.next() orelse "";
         const output = parts.next() orelse "";
-        if (parts.next() != null or fixture.len == 0 or output.len == 0 or fixture.len > operation.path.len or output.len > operation.output_path.len or self.models.activeModelPath() == null) return self.finishError(operation, "performance_prerequisite_missing", "Use <iterations>|<raw-f32-path>|<output-json-path> with 5–50 iterations and an active model.");
+        if (parts.next() != null or fixture.len == 0 or output.len == 0 or fixture.len > operation.path.len or output.len > operation.output_path.len or self.models.snapshot().active_path == null) return self.finishError(operation, "performance_prerequisite_missing", "Use <iterations>|<raw-f32-path>|<output-json-path> with 5–50 iterations and an active model.");
         operation.iterations = std.fmt.parseUnsigned(usize, count_text, 10) catch 0;
         if (operation.iterations < 5 or operation.iterations > 50) return self.finishError(operation, "performance_prerequisite_missing", "Use <iterations>|<raw-f32-path>|<output-json-path> with 5–50 iterations and an active model.");
         @memcpy(operation.path[0..fixture.len], fixture);
@@ -704,7 +705,7 @@ pub const FridayHost = struct {
         self.generation += 1;
         operation.generation = self.generation;
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(self.models.activeModelPath().?, self.assignModelEpoch(operation), performanceCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
+        self.recognizer.activateModel(self.models.snapshot().active_path.?, self.assignActivationEpoch(operation), performanceCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The active model could not be loaded.");
     }
 
     fn runPerformanceSample(self: *FridayHost, operation: *Operation) void {
@@ -783,8 +784,16 @@ pub const FridayHost = struct {
         return self.operation_registry.transition(operation, stage);
     }
 
-    fn assignModelEpoch(self: *FridayHost, operation: *Operation) u64 {
-        const epoch = self.models.beginOperation();
+    fn submitModel(self: *FridayHost, operation: *Operation, intent: models_mod.Intent, completion: models_mod.AsyncCompletion) void {
+        _ = self.models.submit(intent, completion) catch return self.finishError(operation, "model_operation_failed", "The model operation could not start.");
+    }
+
+    fn nextActivationEpoch(self: *FridayHost) u64 {
+        return self.next_activation_epoch.fetchAdd(1, .monotonic);
+    }
+
+    fn assignActivationEpoch(self: *FridayHost, operation: *Operation) u64 {
+        const epoch = self.nextActivationEpoch();
         operation.model_epoch = epoch;
         return epoch;
     }
@@ -1118,7 +1127,7 @@ pub const FridayHost = struct {
 
     fn startupActivation(context: *anyopaque, ok: bool, _: []const u8) void {
         const self: *FridayHost = @ptrCast(@alignCast(context));
-        self.models.markRuntimeReady(self.models.activeModelKey(), ok);
+        self.models.markRuntimeReady(self.models.snapshot().active_key, ok);
     }
 
     fn inputCompletion(operation: *Operation) input_mod.AsyncCompletion {
@@ -1143,14 +1152,19 @@ pub const FridayHost = struct {
         return .{ .context = operation, .complete = performanceCallback };
     }
     fn modelCompletion(operation: *Operation) models_mod.AsyncCompletion {
-        return .{ .context = operation, .complete = modelCallback };
+        return .{ .context = operation, .admit = modelAdmitted, .complete = modelCallback };
     }
     fn modelGenericCompletion(operation: *Operation) models_mod.AsyncCompletion {
-        return .{ .context = operation, .complete = genericCallback };
+        return .{ .context = operation, .admit = modelAdmitted, .complete = genericCallback };
     }
 
     fn operationHost(operation: *Operation) *FridayHost {
         return @ptrCast(@alignCast(operation.context));
+    }
+
+    fn modelAdmitted(context: *anyopaque, ticket: models_mod.Ticket) void {
+        const operation: *Operation = @ptrCast(@alignCast(context));
+        operation.model_epoch = ticket;
     }
 
     fn submitRetryTranscription(context: *anyopaque, path: []const u8) !void {
@@ -1197,7 +1211,7 @@ pub const FridayHost = struct {
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (operation.stage == .stopping) {
             if (!ok) return self.finishOperation(operation, false, bytes);
-            _ = self.models.activeModelPath() orelse {
+            _ = self.models.snapshot().active_path orelse {
                 self.artifacts.clearAudio(operation.session);
                 var output: [4096]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&output);
@@ -1233,10 +1247,10 @@ pub const FridayHost = struct {
         const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
         if (!ok) return self.finishOperation(operation, false, bytes);
-        const path = self.models.activeModelPath() orelse return self.finishOperation(operation, true, bytes);
+        const path = self.models.snapshot().active_path orelse return self.finishOperation(operation, true, bytes);
         if (!self.saveOperationResult(operation, bytes)) return self.finishError(operation, "out_of_memory", "The model result could not be retained.");
         if (!self.transitionOperation(operation, .activating)) return self.finishOperation(operation, false, "");
-        self.recognizer.activateModel(path, operation.model_epoch, modelActivationCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The selected model could not be loaded.");
+        self.recognizer.activateModel(path, self.assignActivationEpoch(operation), modelActivationCompletion(operation)) catch self.finishError(operation, "model_probe_failed", "The selected model could not be loaded.");
     }
 
     fn modelActivationCompletion(operation: *Operation) nemo_mod.AsyncCompletion {
@@ -1247,7 +1261,7 @@ pub const FridayHost = struct {
         const operation: *Operation = @ptrCast(@alignCast(context));
         const self = operationHost(operation);
         if (!self.operationPending(operation)) return self.finishOperation(operation, ok, bytes);
-        self.models.markRuntimeReady(self.models.activeModelKey(), ok);
+        self.models.markRuntimeReady(self.models.snapshot().active_key, ok);
         if (!ok) return self.finishOperation(operation, false, bytes);
         self.finishOperation(operation, true, operation.saved orelse bytes);
     }
@@ -1361,6 +1375,7 @@ pub fn testExtension() !void {
     try artifacts_mod.testContracts();
     try diagnostics_mod.testContracts();
     try audio_mod.testContracts();
+    try models_mod.ModelRepository.testContracts();
     const live = LifecycleSnapshot{ .active = true, .session = 31, .generation = 32, .deadline_ms = 0, .channel_live = true };
     try std.testing.expect(!lifecycleMustAbort(live, 0, 100));
     try std.testing.expect(!lifecycleMustAbort(live, 31, 100));
