@@ -4,7 +4,29 @@ Friday is an Apple Silicon menu-bar dictation app for macOS 14 and later. It rec
 
 See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday-release-checklist.md), [PRODUCT coverage matrix](docs/friday-behavior-coverage.md), [privacy-safe ASR quality benchmark](docs/asr-quality-benchmark.md), and [technical specification](specs/friday/TECH.md).
 
-## Install and run
+## Install from source
+
+One command on an Apple Silicon Mac with Xcode Command Line Tools:
+
+```sh
+git clone <your-fork-url> && cd friday
+npm run install:app          # or: FRIDAY_PM=bun npm run install:app
+```
+
+That script checks the toolchain (Zig 0.16.0, Node 24+ or Bun, an Apple Development signing identity — hardened runtime requires one), builds arm64-only, packages, code-signs, verifies, and installs `Friday.app` into `/Applications` (or `~/Applications` if `/Applications` isn't writable). Re-running it safely replaces the installed copy.
+
+Package manager is pick-your-poison: npm is the default (reproducible via `package-lock.json`); `FRIDAY_PM=bun` is much faster and applies the same patch set.
+
+Requirements and manual equivalent:
+
+```sh
+npm ci --ignore-scripts && npx patch-package --error-on-fail
+npm run build
+FRIDAY_SIGN_IDENTITY="<identity hash>" npm run package
+open zig-out/package/Friday.app
+```
+
+## Platform and permissions
 
 A public release must be the arm64-only, Developer ID-signed, notarized, and stapled `Friday-0.1.0-arm64.dmg`. Open the DMG, move Friday to Applications, then launch Friday. The current repository can produce a team-signed arm64 development package, but public release remains blocked until Developer ID and notary credentials are supplied and the external checks in the release checklist pass.
 
@@ -121,17 +143,16 @@ Both harnesses refuse to race a running Friday process, preserve and restore app
 
 ## Architecture
 
-- `src/core.ts` — Native SDK entry adapter: Model/Msg contract, effect routing, dictation workflow, and exported view bindings. It compiles to native code; no JavaScript runtime ships.
-- `src/state.ts` — default and durable state projections plus readiness invariants.
-- `src/protocol.ts` — bounded byte/wire decoding for host responses and events.
-- `src/model-transitions.ts` and `src/app-transitions.ts` — pure domain transitions, separate from Native SDK effects.
+- `src/core.ts` — Native SDK entry adapter and effect wiring. It compiles to native code; no JavaScript runtime ships.
+- `src/domain.ts`, `src/domain-transitions.ts`, and `src/presentation.ts` — stable vocabulary, pure workflow transitions, and view/status/theme projection.
+- `src/state.ts` and `src/protocol.ts` — durable state projections and bounded wire decoding.
 - `src/automation.ts` — deterministic visual-test fixtures, isolated from production transitions.
 - `src/app.native` — Native markup for unsupported/setup/settings/model/permission/diagnostic/result surfaces.
-- `native/friday_host.zig` — direct pure-Zig Native SDK host, session owner, command dispatcher, and exactly-once completion registry.
+- `native/friday_host.zig` — pure-Zig Native SDK coordinator; `native/host/` owns asynchronous operations, generation-scoped artifacts, and privacy-safe diagnostics.
 - `native/macos/system.zig` and `json.zig` — platform-service adapter plus typed wire JSON/base64.
 - `native/macos/input.zig` — CGEvent/TCC global shortcut capture, validation, press/release, and sleep/wake handling.
-- `native/macos/audio.zig` and `ring.zig` — capture/conversion, allocation-free Zig SPSC, bounded storage, drain, and route/failure cleanup.
-- `native/macos/models.zig` — `std.http`/files/hash/JSON verified default/local/Hugging Face models, resume, atomic publication, and bounded deletion.
+- `native/macos/audio.zig` coordinates capture through private CoreAudio lifecycle, route authority, canonical storage, and allocation-free bounded-ring modules.
+- `native/macos/models.zig` serializes model intents and cancellation; private policy, metadata-source, and durable-publication modules own trust and persistence.
 - `native/macos/nemo.zig` — one serialized in-process NeMo C-ABI recognizer.
 - `native/macos/delivery.zig` — exact-source AX and Native SDK clipboard delivery with truthful fallback.
 - `native/macos/overlay.zig` — nonactivating recording/transcribing capsule.
