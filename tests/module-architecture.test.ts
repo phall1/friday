@@ -43,6 +43,36 @@ test("TypeScript module dependencies are acyclic and point away from core", () =
   }
 });
 
+test("native ownership modules point away from root adapters", () => {
+  const modules = [
+    "native/host/operation_registry.zig",
+    "native/host/session_artifacts.zig",
+    "native/host/diagnostics.zig",
+    "native/macos/audio_ffi.zig",
+    "native/macos/audio_route.zig",
+    "native/macos/canonical_audio_store.zig",
+    "native/macos/core_audio_backend.zig",
+    "native/macos/model_policy.zig",
+    "native/macos/model_publication.zig",
+    "native/macos/model_source.zig",
+  ];
+  for (const relative of modules) {
+    const source = readFileSync(join(root, relative), "utf8");
+    assert.doesNotMatch(source, /@import\("(?:\.\.\/)*friday_host\.zig"\)/, `${relative} imports FridayHost`);
+    assert.doesNotMatch(source, /@import\("(?:audio|models)\.zig"\)/, `${relative} imports its root coordinator`);
+  }
+
+  const models = readFileSync(join(root, "native/macos/models.zig"), "utf8");
+  assert.match(models, /pub fn submit\(/);
+  assert.match(models, /pub fn snapshot\(/);
+  assert.doesNotMatch(models, /pub fn beginOperation\(/);
+  assert.doesNotMatch(models, /pub fn (?:downloadDefault|resumePending|resolveHF|downloadResolvedHF|addLocal|select)\(/);
+
+  const backend = readFileSync(join(root, "native/macos/core_audio_backend.zig"), "utf8");
+  assert.doesNotMatch(backend, /\*AudioSession/);
+  assert.match(backend, /pub const Sink = struct/);
+});
+
 test("domain routing owns semantic terminal and platform effects", () => {
   const model = defaultModel();
   const unsupported = reduceDomain(model, { kind: "platform_failed", error: new Uint8Array() });
