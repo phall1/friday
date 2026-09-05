@@ -6,23 +6,25 @@ See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday
 
 ## Install from source
 
-One command on an Apple Silicon Mac with Xcode Command Line Tools:
+One command on an Apple Silicon Mac with Xcode Command Line Tools and [mise](https://mise.jdx.dev/):
 
 ```sh
 git clone <your-fork-url> && cd friday
-npm run install:app          # or: FRIDAY_PM=bun npm run install:app
+mise install
+mise run install-app
 ```
 
-That script checks the toolchain (Zig 0.16.0, Node 24+ or Bun, an Apple Development signing identity — hardened runtime requires one), builds arm64-only, packages, code-signs, verifies, and installs `Friday.app` into `/Applications` (or `~/Applications` if `/Applications` isn't writable). Re-running it safely replaces the installed copy.
+`mise.toml` pins Node 24.20.0, Zig 0.16.0, and Bun 1.3.14. The install task checks the toolchain and Apple Development signing identity, builds arm64-only, packages, code-signs, verifies, and installs `Friday.app` into `/Applications` (or `~/Applications` if `/Applications` isn't writable). Re-running it safely replaces the installed copy.
 
-Package manager is pick-your-poison: npm is the default (reproducible via `package-lock.json`); `FRIDAY_PM=bun` is much faster and applies the same patch set.
+Package manager is pick-your-poison: npm is the default (reproducible via `package-lock.json`); `FRIDAY_PM=bun mise run install-app` uses the pinned Bun and applies the same patch set.
 
 Requirements and manual equivalent:
 
 ```sh
-npm ci --ignore-scripts && npx patch-package --error-on-fail
-npm run build
-FRIDAY_SIGN_IDENTITY="<identity hash>" npm run package
+mise exec -- npm ci --ignore-scripts
+mise exec -- npx patch-package --error-on-fail
+mise exec -- npm run build
+FRIDAY_SIGN_IDENTITY="<identity hash>" mise exec -- npm run package
 open zig-out/package/Friday.app
 ```
 

@@ -1,0 +1,10 @@
+min_version = "2026.9.1"
+
+[tools]
+node = "24.20.0"
+zig = "0.16.0"
+bun = "1.3.14"
+
+[tasks.install-app]
+description = "Build, sign, and install Friday.app"
+run = "./scripts/install-from-source.sh"
