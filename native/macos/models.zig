@@ -338,7 +338,6 @@ const State = struct {
     head: ?*Command = null,
     tail: ?*Command = null,
     stopping: bool = false,
-    test_paused: bool = false,
     thread: ?std.Thread = null,
     next_operation_epoch: u64 = 1,
     cancelled_epochs: CancelledEpochs = .{},
@@ -406,7 +405,7 @@ const State = struct {
         const io = self.threaded_io.io();
         while (true) {
             self.mutex.lockUncancelable(io);
-            while ((self.head == null or self.test_paused) and !self.stopping) self.condition.waitUncancelable(io, &self.mutex);
+            while (self.head == null and !self.stopping) self.condition.waitUncancelable(io, &self.mutex);
             if (self.head == null and self.stopping) {
                 self.mutex.unlock(io);
                 return;
@@ -428,14 +427,6 @@ const State = struct {
             .resolve_hf, .download_resolved_hf => |operation| self.allocator.free(operation.identifier),
             else => {},
         }
-    }
-
-    fn setTestPaused(self: *State, paused: bool) void {
-        const io = self.threaded_io.io();
-        self.mutex.lockUncancelable(io);
-        self.test_paused = paused;
-        if (!paused) self.condition.signal(io);
-        self.mutex.unlock(io);
     }
 
     fn execute(self: *State, payload: @FieldType(Command, "payload")) void {
@@ -1760,20 +1751,58 @@ const CompletionCounter = struct {
     }
 };
 
+const BlockingCompletion = struct {
+    io: Io,
+    mutex: Io.Mutex = .init,
+    condition: Io.Condition = .init,
+    entered: bool = false,
+    released: bool = false,
+    count: usize = 0,
+
+    fn complete(context: *anyopaque, _: bool, _: []const u8) void {
+        const self: *BlockingCompletion = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        self.count += 1;
+        self.entered = true;
+        self.condition.signal(self.io);
+        while (!self.released) self.condition.waitUncancelable(self.io, &self.mutex);
+        self.mutex.unlock(self.io);
+    }
+
+    fn waitUntilEntered(self: *BlockingCompletion) void {
+        self.mutex.lockUncancelable(self.io);
+        while (!self.entered) self.condition.waitUncancelable(self.io, &self.mutex);
+        self.mutex.unlock(self.io);
+    }
+
+    fn release(self: *BlockingCompletion) void {
+        self.mutex.lockUncancelable(self.io);
+        self.released = true;
+        self.condition.signal(self.io);
+        self.mutex.unlock(self.io);
+    }
+};
+
 fn cancellationCycleContracts(repository: *ModelRepository) !bool {
     const io = repository.state.threaded_io.io();
     for (0..32) |index| {
         const request_key: u64 = @intCast(700 + index % 3);
-        repository.state.setTestPaused(true);
+        var blocker = BlockingCompletion{ .io = io };
+        _ = try repository.submit(
+            .{ .select = .{ .key = 999_999, .request_key = request_key } },
+            .{ .context = &blocker, .complete = BlockingCompletion.complete },
+        );
+        blocker.waitUntilEntered();
+
         var cancelled_completion = CompletionCounter{ .io = io };
         const cancelled_ticket = try repository.submit(
             .{ .select = .{ .key = 999_999, .request_key = request_key } },
             .{ .context = &cancelled_completion, .admit = CompletionCounter.admit, .complete = CompletionCounter.complete },
         );
         repository.cancel(cancelled_ticket);
-        repository.state.setTestPaused(false);
+        blocker.release();
         cancelled_completion.wait();
-        if (cancelled_completion.ticket != cancelled_ticket or cancelled_completion.count != 1 or
+        if (blocker.count != 1 or cancelled_completion.ticket != cancelled_ticket or cancelled_completion.count != 1 or
             std.mem.indexOf(u8, cancelled_completion.bytes[0..cancelled_completion.length], "\"code\":\"cancelled\"") == null)
             return false;
 
