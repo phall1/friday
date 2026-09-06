@@ -135,7 +135,7 @@ launch_scene settings-light
 sleep 0.4
 "$CLI" automate tray-action 11 >/dev/null
 "$CLI" automate assert 'role=text name="transcribing"' 'Transcribing locally with the active Parakeet model.' >/dev/null
-"$CLI" automate assert 'role=text name="ready"' >/dev/null
+"$CLI" automate assert 'role=text name="Ready when you are\."' >/dev/null
 if compgen -G "$RUN_TMP/Friday/Audio/*" >/dev/null; then
   echo "Packaged E2E failed: completed microphone flow left temporary audio behind." >&2
   exit 1
@@ -146,11 +146,13 @@ fi
 # TCC. A separate-process helper remains a required release check when the
 # controlling GUI session grants that helper event-post authority.
 launch_scene settings-light
+diagnostics_id="$(widget_id button 'Diagnostics')"
+"$CLI" automate widget-action main-canvas "$diagnostics_id" toggle >/dev/null
 probe_id="$(widget_id button 'Run Automation Hotkey Probe')"
 "$CLI" automate widget-action main-canvas "$probe_id" press >/dev/null
 "$CLI" automate assert 'role=text name="recording"' 'Locked recording' >/dev/null
 "$CLI" automate tray-action 12 >/dev/null
-"$CLI" automate assert 'role=text name="ready"' >/dev/null
+"$CLI" automate assert 'role=text name="Ready when you are\."' >/dev/null
 if [[ "${FRIDAY_REQUIRE_EXTERNAL_HOTKEY:-0}" == "1" ]]; then
   "$WORK/cg-post" modifier-hold 56 command,shift 650 &
   helper_pid=$!
@@ -158,7 +160,7 @@ if [[ "${FRIDAY_REQUIRE_EXTERNAL_HOTKEY:-0}" == "1" ]]; then
   "$CLI" automate assert 'role=text name="recording"' >/dev/null
   wait "$helper_pid"
   "$CLI" automate assert 'role=text name="transcribing"' >/dev/null
-  "$CLI" automate assert 'role=text name="ready"' >/dev/null
+  "$CLI" automate assert 'role=text name="Ready when you are\."' >/dev/null
 else
   echo "External CGEvent helper check not required in this run; set FRIDAY_REQUIRE_EXTERNAL_HOTKEY=1 in a trusted GUI session." >&2
 fi
@@ -166,7 +168,7 @@ fi
 # Cancel/stale-generation recovery uses the same packaged command channel.
 launch_scene transcribing-dark
 "$CLI" automate tray-action 12 >/dev/null
-"$CLI" automate assert 'role=text name="ready"' >/dev/null
+"$CLI" automate assert 'role=text name="Ready when you are\."' >/dev/null
 
 # Packaged hermetic negative probes: integrity/SHA/manifest/HF rejection,
 # resumable relaunch state, exact duration/drop bounds, route cleanup, and
@@ -187,7 +189,7 @@ if [[ -z "$(pbpaste)" ]]; then echo "Fixture ASR did not leave a clipboard fallb
 
 # An installed verified model remains ready with network endpoints disabled.
 launch_scene model-light HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY='*'
-"$CLI" automate assert 'role=text name="ready"' 'role=text name="● active"' 'Hugging Face · managed by Friday' 'Parakeet TDT 0.6B v3' >/dev/null
+"$CLI" automate assert 'role=text name="Ready when you are\."' 'role=text name="● active"' 'Hugging Face · managed by Friday' 'Parakeet TDT 0.6B v3' >/dev/null
 
 # SMAppService cycle must restore its exact prior registration state.
 launch_scene settings-light FRIDAY_AUTOMATION_LOGIN=cycle
@@ -197,7 +199,7 @@ launch_scene settings-light FRIDAY_AUTOMATION_LOGIN=cycle
 "$CLI" automate tray-action 20 >/dev/null
 diag_id="$(widget_id button Diagnostics)"
 "$CLI" automate widget-action main-canvas "$diag_id" toggle >/dev/null
-"$CLI" automate assert 'role=text name="Safe export"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
+"$CLI" automate assert 'role=text name="Safe diagnostics"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
 "$CLI" automate assert --absent "$WORK/fixture.f32" 'Friday local dictation works' >/dev/null
 
 # Cleanup runs against an isolated downloads directory and cannot touch Models.

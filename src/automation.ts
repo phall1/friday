@@ -24,6 +24,10 @@ export function automationScene(model: Model, value: Uint8Array): Model {
     hotkeyCandidateValid: false,
     modelsLoaded: true,
     microphonePermission: true,
+    microphoneName: utf8Bytes("System default microphone"),
+    microphoneDetail: utf8Bytes("Available · 48000 Hz · 1 channel"),
+    loginStatus: "enabled",
+    launchAtLogin: true,
     accessibilityPermission: true,
     inputMonitoringPermission: true,
     hotkeyConfirmed: true,
@@ -144,6 +148,7 @@ export function automationScene(model: Model, value: Uint8Array): Model {
   };
   if (contains(value, asciiBytes("overlay-preview"))) return { ...base, automationOverlayPreview: true, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };
   if (contains(value, asciiBytes("accessibility"))) return { ...base, page: "permissions", accessibilityPermission: false };
+  if (contains(value, asciiBytes("settings-result"))) return { ...base, hasImmediateResult: true, immediateResultKind: "clipboard", immediateResultMessage: utf8Bytes("Copied to clipboard. Paste your words with Command + V.") };
   if (contains(value, asciiBytes("model"))) return { ...base, page: "models" };
   if (contains(value, asciiBytes("error"))) return { ...base, workflow: { kind: "failed", stage: "transcription", retryAudioAvailable: true }, workflowMessage: utf8Bytes("Local transcription stopped before a final result.") };
   if (contains(value, asciiBytes("recording"))) return { ...base, workflow: { kind: "recording", control: "locked", warnedDurationLimit: false }, elapsedMilliseconds: 43000 / 1, meterLevel: "high" };

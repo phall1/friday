@@ -32,8 +32,8 @@ A missing Microphone permission blocks recording. Missing Input Monitoring disab
 The initial convenience is **Command + Shift**. **Control + Option** is also available. The two presets apply immediately. To choose Fn/Globe, an F-key, or another key combination:
 
 1. Open Friday → **Controls**.
-2. Choose **Change Shortcut…**.
-3. Press and release **Fn/Globe** by itself, an F-key, or another key combination.
+2. Choose **Change Shortcut…**. A focused editor opens with both presets and custom capture; Escape or Cancel closes it without replacing the active shortcut.
+3. Choose a preset, or press and release **Fn/Globe** by itself, an F-key, or another key combination.
 4. Review the displayed candidate and any warning.
 5. Choose **Use This Shortcut** only when enabled. Until then, your existing shortcut remains active.
 
@@ -48,6 +48,11 @@ Friday rejects ordinary unmodified typing and warns about known macOS-reserved, 
 - A normal long hold never seeds a later lock.
 
 Friday allows one active session. Cancel invalidates it immediately, and late results from that generation are ignored.
+
+Controls keeps the microphone, current shortcut, double-tap timing, automatic
+paste, capsule visibility, and Launch at Login together in the default window.
+Timing choices are disabled when double-tap locking is off. Check Microphone
+inspects the system input format without recording; it is not a live level test.
 
 ## Recording, transcription, and delivery
 

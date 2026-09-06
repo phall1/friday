@@ -152,6 +152,16 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   if (domain !== null) {
     if (domain.effect === "show_unsupported") return [domain.model, Cmd.batch([Cmd.showWindow("main"), Cmd.setDockPresence(true)])];
     if (domain.effect === "hide_overlay") return [domain.model, Cmd.host("friday.overlay.hide", asciiBytes(""))];
+    // Persistence deliberately scrubs ambient facts. Every preference save
+    // rechecks permissions; use that completion to refill the other cleared
+    // readouts too, including when hotkey setup wins the launch-time race.
+    if (msg.kind === "permissions_loaded" && !model.automationSceneActive && model.platformSupported &&
+        (model.loginStatus === "checking" || byteEquals(model.microphoneDetail, utf8Bytes("Checking input format…")))) {
+      return [domain.model, Cmd.batch([
+        Cmd.request("friday.login.status", asciiBytes(""), { key: "login-status", ok: "login_status_loaded", err: "login_status_failed" }),
+        Cmd.request("friday.audio.input_status", asciiBytes(""), { key: "microphone-status", ok: "microphone_loaded", err: "microphone_failed" }),
+      ])];
+    }
     return domain.model;
   }
   switch (msg.kind) {
@@ -257,9 +267,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.hotkeyCandidateValid || model.hotkeyCandidateConfig.length === 0) return model;
       return [model, Cmd.request("friday.hotkey.configure", model.hotkeyCandidateConfig, { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
     case "choose_command_shift":
-      return [{ ...model, hotkeyChoice: "command_shift", hotkeyCandidateConfig: asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Command + Shift"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+      return [{ ...model, hotkeyCaptureActive: false, hotkeyChoice: "command_shift", hotkeyCandidateConfig: asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Command + Shift"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.batch([Cmd.cancel("hotkey-capture"), Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })])];
     case "choose_control_option":
-      return [{ ...model, hotkeyChoice: "control_option", hotkeyCandidateConfig: asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Control + Option"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })];
+      return [{ ...model, hotkeyCaptureActive: false, hotkeyChoice: "control_option", hotkeyCandidateConfig: asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Control + Option"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.batch([Cmd.cancel("hotkey-capture"), Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })])];
     case "set_double_tap_fast":
       return [durableModel({ ...model, doubleTapWindowMs: 250 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
     case "set_double_tap_balanced":

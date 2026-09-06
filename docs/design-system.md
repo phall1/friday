@@ -1,72 +1,85 @@
-# Friday Design System — Arc
+# Friday design system
 
-Elite, restrained, instrument-grade. Less, but better.
+Friday is a small, dependable dictation utility. Its interface should feel
+welcoming, legible, and immediately useful.
 
 ## Principles
 
-- One primary action per screen. Everything else is subordinate.
-- Whitespace is structure. Cards breathe; rows do not compete.
-- Monospace is telemetry only: time, shortcuts, revisions, byte counts.
-- Color is semantic: system surfaces by default, red for live/destructive only.
-- No gradients, glows, holograms, or decorative chrome.
+1. **The daily loop comes first.** Ready → record → transcribe → delivered.
+2. **Density is a usability constraint.** Normal Controls fits at 640×480. Do
+   not turn a few preferences into a long form through repeated headings and
+   padding. Exceptional recovery content may scroll.
+3. **One status, one next action.** Do not repeat the workflow in the header,
+   hero, and microphone row. A stopped microphone does not have a live meter.
+4. **Reveal complexity at the point of use.** Shortcut editing has its own
+   dialog. Low-frequency settings do not belong in the menu-bar quick actions.
+5. **Color carries meaning, text carries certainty.** Never communicate a
+   permission, recording state, or failure solely through color.
 
-## Layout
+## Tokens
 
-- Window: 640×480, fixed by harness.
-- Outer content: `padding="20" gap="12"`.
-- Header command bar: `padding="12" gap="8" cross="center"`.
-- Sections are flat full-bleed groups: medium title row, one hairline
-  `separator`, then a `padding="16" gap="12"` body. The Geist pack does not
-  tint surfaces (`surface` == page), so elevation comes from the hairline,
-  spacing, and type — never a tinted card. `surface` + `border-color` are
-  still declared on section containers as intent; the engine paints the
-  hairline where it applies.
-- Floating dialogs only (unsupported gate, capsule preview): `surface`
-  card, `radius="xl"` (the pack's 12 px floating surface), centered with
-  `width` + spacers.
-- Inner notice panels (capture/candidate/limited-mode): `surface_subtle`
-  (the pack's resting wash), `border-color`, `radius="md"`, `padding="12"`.
-- Separators only between groups, never between rows inside a section body.
+The Native SDK Geist register supplies control metrics, typography, surfaces,
+contrast, and focus treatment. `projectThemeState` owns Friday's copper accent:
 
-## Typography
+| Role | Light | Dark | Use |
+| --- | --- | --- | --- |
+| `accent` | `#a1693e` | `#a1693e` | Friday wordmark, primary action, selected controls |
+| `accent_text` | SDK contrast-selected | SDK contrast-selected | Text on accent controls |
+| `surface_subtle` | SDK neutral wash | SDK neutral wash | Window field, inset notices |
+| `surface` | SDK white | SDK black | Content groups and header |
+| `text` / `text_muted` | SDK | SDK | Primary / supporting text |
+| `success` | SDK green | SDK green | Ready and granted indicators |
+| `warning` | SDK amber | SDK amber | Recovery and invalid candidates |
+| `destructive` | SDK red | SDK red | Live recording and deletion |
 
-- Title: `<span weight="medium">`, default size.
-- Body: default.
-- Meta: `foreground="text_muted" wrap="true"`.
-- Telemetry: `<span mono="true">` for elapsed, shortcut labels, `rev …`, byte counts, step labels.
-- Never mono for prose, headings, or buttons.
+Colors in markup are token references. System appearance is followed live;
+high contrast suppresses the custom accent through the SDK. Native title bars
+follow macOS even when test fixtures force canvas appearance.
+The copper is 4.56:1 against white and 4.61:1 against black. A shared accent
+also remains legible while transient appearance facts rehydrate after saving
+preferences; no cached OS appearance is needed to choose its color.
 
-## Components
+## Layout and typography
 
-- Navigation: one `toggle-group` (Controls / Models / Access / Diagnostics).
-- Status instrument: one surface card with waveform, state name (medium), detail (muted, wrap), shortcut telemetry, and a single primary action.
-- Sections: `Local models`, `Input`, `Trigger`, `Behavior`, `Output`, `Permissions`, `Safe export` — each one card.
-- Buttons: `size="sm"`. Primary only for the single forward action. Destructive only for delete/cancel. Ghost for dismiss/secondary.
-- Progress: bounded, labeled, followed by byte telemetry.
-- Switches carry their own labels; no duplicate explanatory rows.
+- Window: 640×480 default. Main content: 12 px padding, 8 px group gap.
+- Header: 12 px padding; wordmark at 1.4× body, bold; four compact text tabs.
+- Status area: 12 px padding; 28 px semantic icon; 1.4× medium headline;
+  small wrapped description. Primary action sits beside it.
+- Settings groups: 12 px padding, 8 px row gaps, `lg` radius. Separate
+  input/shortcut/lock from output/window/login preferences.
+- Completed-session messages replace the status description; Copy/Dismiss sit
+  in the footer. Do not add a second result card that forces Controls to scroll.
+- Body: default proportional type. Supporting copy: `size="sm"`, muted.
+- Monospace: time, revision, byte telemetry; never ordinary prose.
+- Controls: `size="sm"` consistently. Primary for progression, outline for
+  configuration, ghost for low-emphasis actions, destructive for deletion.
+- Icons: SDK vector vocabulary, 20 px in settings, 14 px in the privacy footer.
+  Icons supplement accessible labels; controls retain text names.
+- Shortcut dialog: 20 px padding, 12 px gap. Candidate warnings wrap. Presets
+  remain one-action choices; custom candidates require confirmation.
+  Use an explicit heading inside the column: the SDK's surface `text` title
+  paints over content without reserving a row. Autofocus the first preset so
+  Escape has a focused descendant from which to resolve the modal boundary.
+  Warning prose uses primary text ink for contrast in both appearances.
 
-## Color and theme
+## Menu bar
 
-- Pack: `geist`. Color scheme follows system via `appearanceOverride`.
-- No hardcoded colors in markup. Dark and light both use theme tokens.
-- Recording/live and destructive actions use semantic system red. Nothing else is red.
-- High contrast and Reduce Motion are respected by the platform and native capsule.
+Keep the native menu and system keyboard behavior. The mark retains its
+identity: red while live, dim while working, `!` only for a failure. The status
+row uses one short label with no wide secondary explanation. Full state detail
+remains in the tooltip and main window. Launch at Login lives in Controls.
 
-## Native capsule
+## Capsule and icon
 
-- Nonactivating panel, 232×36, system vibrant material, 0.5 pt separator border (1.5 pt in high contrast).
-- Five-bar waveform: system red while held/locked, orange on failure, secondary label otherwise.
-- Monospaced digit timer, Stop/Hide/Cancel hit targets ≥ 24 px.
-- Fade only when motion is allowed. No live-reader announcements for meter updates.
-- Geometry and contracts are frozen by `overlay.zig` probe tests; visual changes stay inside those bounds.
+The nonactivating, movable native capsule remains 232×36, with system material,
+meter, timer, and independent Stop/Hide/Cancel actions. It respects contrast,
+transparency, and Reduce Motion. The canonical app/menu icons remain hash-pinned
+by `scripts/verify-icon.sh`.
 
-## Icon
+## Evidence
 
-- Hash-pinned (`scripts/verify-icon.sh`). Any redraw ships with updated hashes, 1024×1024 PNG + SVG, and reviewed goldens. Deferred.
-
-## Accessibility
-
-- Every scene keeps its REQUIRED strings verbatim.
-- Long copy always `wrap="true"`; truncation (`…`) is a failure.
-- Tab/Shift+Tab always lands on a focused control.
-- All actions have accessible names; icon-only native buttons keep tooltips and key equivalents.
+See [UX stories and acceptance](../specs/friday/UX.md). UI automation must assert
+in-viewport bounds for everyday controls in addition to accessible names and
+keyboard focus. A golden that hides Launch at Login below the fold is not an
+acceptable baseline. README screenshots are actual app-renderer captures of
+deterministic scenes, not drawings of a proposed UI.

@@ -1,4 +1,4 @@
-<column background="background" grow="1">
+<column background="surface_subtle" grow="1">
   <if test="{showUnsupported}">
     <column grow="1" cross="center">
       <spacer grow="1"/>
@@ -48,11 +48,11 @@
           </row>
           <separator/>
           <scroll grow="1">
-            <column padding="20" gap="12">
+            <column padding="12" gap="10">
               <if test="{onboardingStep == 0}">
                 <column background="surface" border-color="border" radius="lg">
                   <column padding="16" gap="6">
-                    <text><span weight="medium">Your voice stays here.</span></text>
+                    <text size="heading"><span weight="medium">Your voice stays here.</span></text>
                     <text foreground="text_muted" wrap="true">Hold one shortcut, speak, and put the final words back where you started.</text>
                   </column>
                   <separator/>
@@ -68,12 +68,12 @@
 
               <if test="{onboardingStep == 1}">
                 <column background="surface" border-color="border" radius="lg">
-                  <column padding="16" gap="6">
-                    <text><span weight="medium">Three permissions. Three jobs.</span></text>
+                  <column padding="12" gap="6">
+                    <text><span weight="medium" scale="1.4">Three permissions. Three jobs.</span></text>
                     <text foreground="text_muted" wrap="true">Friday reports what macOS allows, not what it requested.</text>
                   </column>
                   <separator/>
-                  <column padding="16" gap="12">
+                  <column padding="12" gap="10">
                     <row gap="12" cross="center"><if test="{microphonePermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Microphone</span></text><text foreground="text_muted">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button size="sm" on-press="request_microphone">Allow Microphone</button></if></row>
                     <row gap="12" cross="center"><if test="{accessibilityPermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Accessibility</span></text><text foreground="text_muted">Return final text to the exact source app.</text></column><if test="{not accessibilityPermission}"><button size="sm" on-press="request_accessibility">Open Accessibility</button></if></row>
                     <row gap="12" cross="center"><if test="{inputMonitoringPermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Input Monitoring</span></text><text foreground="text_muted" wrap="true">Hear the shortcut while another app is focused.</text></column><if test="{not inputMonitoringPermission}"><button size="sm" on-press="request_input_monitoring">Open Input Monitoring</button></if></row>
@@ -87,7 +87,7 @@
               <if test="{onboardingStep == 2}">
                 <column background="surface" border-color="border" radius="lg">
                   <column padding="16" gap="6">
-                    <text><span weight="medium">One gesture between thought and text.</span></text>
+                    <text><span weight="medium" scale="1.4">One gesture between thought and text.</span></text>
                     <text foreground="text_muted" wrap="true">Choose a preset, or press and release Fn/Globe by itself. Ordinary typing and known system shortcuts are rejected.</text>
                   </column>
                   <separator/>
@@ -108,7 +108,7 @@
               <if test="{onboardingStep == 3}">
                 <column background="surface" border-color="border" radius="lg">
                   <column padding="16" gap="6">
-                    <text><span weight="medium">Run the model here.</span></text>
+                    <text><span weight="medium" scale="1.4">Run the model here.</span></text>
                     <text foreground="text_muted" wrap="true">Parakeet turns speech into final text on this Mac. The verified download is about 714 MB.</text>
                   </column>
                   <separator/>
@@ -132,81 +132,68 @@
       </if>
       <else>
         <column grow="1">
-          <row padding="12" gap="10" cross="center">
-            <text><span weight="medium">Friday</span></text>
-            <text foreground="text_muted"><span mono="true">{workflowName}</span></text>
+          <row padding="12" gap="10" cross="center" background="surface">
+            <text foreground="accent"><span weight="bold" scale="1.4">Friday</span></text>
             <spacer grow="1"/>
             <toggle-group gap="4" label="Friday sections"><toggle-button size="sm" selected="{showSettings}" on-toggle="show_settings">Controls</toggle-button><toggle-button size="sm" selected="{showModels}" on-toggle="show_models">Models</toggle-button><toggle-button size="sm" selected="{showPermissions}" on-toggle="show_permissions">Access</toggle-button><toggle-button size="sm" selected="{showDiagnostics}" on-toggle="show_diagnostics">Diagnostics</toggle-button></toggle-group>
           </row>
           <separator/>
           <scroll grow="1">
-            <column padding="20" gap="12">
+            <column padding="12" gap="8">
               <column background="surface" border-color="border" radius="lg">
-                <row padding="16" gap="12" cross="center">
-                  <text><span mono="true">{waveformGlyph}</span></text>
-                  <column grow="1" gap="2"><text><span weight="medium">{workflowName}</span></text><text foreground="text_muted" wrap="true">{workflowDetail}</text></column>
-                  <column gap="8" cross="center">
-                    <if test="{isReady}"><text><span mono="true">{hotkeyLabel}</span></text></if>
+                <row padding="12" gap="12" cross="center">
+                  <if test="{isReady}"><icon name="check-circle" width="28" height="28" foreground="success"/></if>
+                  <else><if test="{isRecording}"><text foreground="destructive"><span mono="true">{waveformGlyph}</span></text></if><else><if test="{isBusy}"><icon name="clock" width="28" height="28" foreground="accent"/></if><else><icon name="alert" width="28" height="28" foreground="warning"/></else></else></else>
+                  <column grow="1" gap="4"><if test="{isReady}"><text><span weight="medium" scale="1.4">Ready when you are.</span></text></if><else><text><span weight="medium" scale="1.4">{workflowName}</span></text></else><text size="sm" foreground="text_muted" wrap="true">{workflowDetail}</text></column>
+                  <column gap="6" cross="center">
                     <if test="{isRecording}"><text><span mono="true">{elapsedLabel}</span></text></if>
                     <row gap="8">
-                      <if test="{isReady}"><button size="sm" variant="primary" on-press="start_recording">Start Recording</button></if>
+                      <if test="{isReady}"><button size="sm" icon="play" variant="primary" on-press="start_recording">Start Recording</button></if>
                       <if test="{isRecording}"><button size="sm" variant="primary" on-press="stop_recording">Stop Recording</button></if>
-                      <if test="{isBusy}"><button size="sm" variant="destructive" on-press="cancel_active">Cancel</button></if>
+                      <if test="{isBusy}"><button size="sm" variant="ghost" on-press="cancel_active">Cancel</button></if>
+                      <if test="{not isReady and not isBusy and not isFailed}"><if test="{not microphonePermission}"><button size="sm" variant="primary" on-press="request_microphone">Allow Microphone</button></if><else><if test="{not modelReady}"><button size="sm" variant="primary" on-press="show_models">Set Up Model</button></if><else><button size="sm" variant="primary" on-press="show_permissions">Review Access</button></else></else></if>
                     </row>
                   </column>
                 </row>
-                <if test="{isRecording}"><column padding="16" gap="8"><progress value="{elapsedMilliseconds / 600000}" label="Recording duration"/></column></if>
+                <if test="{isRecording}"><progress value="{elapsedMilliseconds / 600000}" label="Recording duration"/></if>
               </column>
               <if test="{isFailed}"><column padding="16" gap="8" background="surface" border-color="border" radius="lg"><text><span mono="true">attention required</span></text><text><span weight="medium">Model: {failureModelName}</span></text><text wrap="true">{failureDetail}</text><row gap="8"><if test="{canRetry}"><button size="sm" variant="primary" on-press="retry_transcription">Retry Transcription</button></if><if test="{hasImmediateResult and immediateResultKind == 'shown'}"><button size="sm" on-press="copy_immediate_result">Copy Final Text</button></if><button size="sm" on-press="copy_diagnostics_fresh">Copy Diagnostics</button><button size="sm" on-press="show_models">Change Model</button><button size="sm" variant="ghost" on-press="dismiss_failure">Dismiss</button></row></column></if>
               <if test="{showSettings}">
-                <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Input</span></text></row>
+                <column padding="12" gap="8" background="surface" radius="lg">
+                  <row gap="12" cross="center"><icon name="volume" foreground="text_muted" width="20" height="20"/><column grow="1" gap="2"><text><span weight="medium">{microphoneDisplayName}</span></text><text size="sm" foreground="text_muted" wrap="true">{microphoneDetail}</text></column><button size="sm" variant="ghost" on-press="refresh_microphone">Check Microphone</button></row>
                   <separator/>
-                  <column padding="16" gap="8">
-                    <row gap="12" cross="center"><text><span mono="true">{waveformGlyph}</span></text><column grow="1" gap="2"><text wrap="true">{microphoneDisplayName}</text><text foreground="text_muted">{microphoneDetail}</text></column><button size="sm" on-press="refresh_microphone">Check Microphone</button></row>
-                    <text foreground="text_muted" wrap="true">Default microphone captures dictation. Checking input format verifies the device without recording.</text>
-                  </column>
-                </column>
-                <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Trigger</span></text><spacer grow="1"/><text foreground="text_muted"><span mono="true">{hotkeyLabel}</span></text></row>
+                  <row gap="12" cross="center"><icon name="settings" foreground="accent" width="20" height="20"/><column grow="1" gap="2"><text><span weight="medium">{hotkeyLabel}</span></text><if test="{inputMonitoringPermission}"><text size="sm" foreground="text_muted">Hold to talk · release to finish</text></if><else><text size="sm" foreground="warning">Shortcut access needed</text></else></column><if test="{inputMonitoringPermission}"><button size="sm" variant="outline" on-press="start_hotkey_capture" disabled="{hotkeyCaptureActive}">Change Shortcut…</button></if><else><button size="sm" variant="outline" on-press="request_input_monitoring">Enable Shortcut…</button></else></row>
                   <separator/>
-                  <column padding="16" gap="12">
-                    <text foreground="text_muted" wrap="true">Hold to talk · double-tap to lock</text>
-                    <toggle-group gap="8" label="Shortcut presets"><toggle-button size="sm" selected="{hotkeyChoice == 'command_shift'}" on-toggle="choose_command_shift">Command + Shift</toggle-button><toggle-button size="sm" selected="{hotkeyChoice == 'control_option'}" on-toggle="choose_control_option">Control + Option</toggle-button></toggle-group>
-                    <button size="sm" on-press="start_hotkey_capture" disabled="{hotkeyCaptureActive}">Change Shortcut…</button>
-                    <if test="{hotkeyCaptureActive}"><column padding="12" gap="6" background="surface_subtle" border-color="border" radius="md"><text><span weight="medium">Press your shortcut now</span></text><text foreground="text_muted" grow="1" wrap="true">Fn/Globe, an F-key, or any key combination.</text><button size="sm" variant="ghost" on-press="cancel_hotkey_capture">Cancel</button></column></if>
-                    <if test="{hasHotkeyCandidate}"><column padding="12" gap="8" background="surface_subtle" border-color="border" radius="md"><text>You pressed: <span mono="true">{hotkeyCandidateDisplay}</span></text><if test="{hasHotkeyWarning}"><text wrap="true">{hotkeyCandidateWarning}</text></if><row gap="8"><button size="sm" variant="primary" on-press="confirm_hotkey_candidate" disabled="{not hotkeyCandidateValid}">Use This Shortcut</button><button size="sm" variant="ghost" on-press="cancel_hotkey_capture">Try Something Else</button></row></column></if>
-                  </column>
+                  <row gap="8" cross="center"><switch size="sm" checked="{doubleTapEnabled}" on-toggle="toggle_double_tap">Double-tap to lock recording</switch><spacer grow="1"/><toggle-group gap="4" label="Double-tap timing"><toggle-button size="sm" disabled="{not doubleTapEnabled}" selected="{doubleTapWindowMs == 250}" on-toggle="set_double_tap_fast">250 ms</toggle-button><toggle-button size="sm" disabled="{not doubleTapEnabled}" selected="{doubleTapWindowMs == 300}" on-toggle="set_double_tap_balanced">300 ms</toggle-button><toggle-button size="sm" disabled="{not doubleTapEnabled}" selected="{doubleTapWindowMs == 400}" on-toggle="set_double_tap_deliberate">400 ms</toggle-button></toggle-group></row>
                 </column>
-                <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Behavior</span></text></row>
-                  <separator/>
-                  <column padding="16" gap="12">
-                    <row cross="center"><switch size="sm" checked="{doubleTapEnabled}" on-toggle="toggle_double_tap">Double-tap to lock recording</switch><spacer grow="1"/><toggle-group gap="6" label="Double-tap timing"><toggle-button size="sm" selected="{doubleTapWindowMs == 250}" on-toggle="set_double_tap_fast">250 ms</toggle-button><toggle-button size="sm" selected="{doubleTapWindowMs == 300}" on-toggle="set_double_tap_balanced">300 ms</toggle-button><toggle-button size="sm" selected="{doubleTapWindowMs == 400}" on-toggle="set_double_tap_deliberate">400 ms</toggle-button></toggle-group></row>
-                  </column>
+                <column padding="12" gap="8" background="surface" radius="lg">
+                  <row gap="8" cross="center"><switch size="sm" checked="{pasteAutomatically}" on-toggle="toggle_paste">Paste automatically</switch><spacer grow="1"/><text size="sm" foreground="text_muted">Into the app where you started</text></row>
+                  <row gap="8" cross="center"><switch size="sm" checked="{overlayEnabled}" on-toggle="toggle_overlay">Show capsule</switch><spacer grow="1"/><text size="sm" foreground="text_muted">Floating controls while you talk</text></row>
+                  <row gap="8" cross="center"><switch size="sm" checked="{launchAtLogin}" disabled="{loginStatus == 'checking'}" on-toggle="toggle_launch_at_login">Launch at Login</switch><spacer grow="1"/><text size="sm" foreground="text_muted" wrap="true">{loginStatusText}</text></row>
                 </column>
-                <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Output</span></text></row>
-                  <separator/>
-                  <column padding="16" gap="12">
-                    <row gap="12" cross="center"><text foreground="text_muted" grow="1" wrap="true">Final text lands where you were typing</text><switch size="sm" checked="{pasteAutomatically}" on-toggle="toggle_paste">Paste automatically</switch></row>
-                    <row gap="12" cross="center"><text foreground="text_muted" grow="1" wrap="true">Floating transport while you talk</text><switch size="sm" checked="{overlayEnabled}" on-toggle="toggle_overlay">Show capsule</switch></row>
-                    <row gap="12" cross="center"><text foreground="text_muted" grow="1"><span mono="true">{loginStatusText}</span></text><switch size="sm" checked="{launchAtLogin}" disabled="{loginStatus == 'checking'}" on-toggle="toggle_launch_at_login">Launch at Login</switch></row>
-                    <text foreground="text_muted" wrap="true">Audio never leaves this Mac. Network runs only for model downloads you start.</text>
-                    <if test="{hasImmediateResult}"><column padding="12" gap="8" background="surface_subtle" border-color="border" radius="md"><text><span weight="medium">Latest result</span></text><text wrap="true">{immediateResultMessage}</text><row gap="8"><if test="{immediateResultKind == 'shown'}"><button size="sm" on-press="copy_immediate_result">Copy Final Text</button></if><button size="sm" variant="ghost" on-press="dismiss_result">Dismiss</button></row></column></if>
-                    <if test="{automationSceneActive}"><button size="sm" variant="ghost" on-press="automation_hotkey_probe_now">Run Automation Hotkey Probe</button></if>
-                  </column>
-                </column>
+                <row cross="center" gap="6"><icon name="check-circle" foreground="success" width="14" height="14"/><text size="sm" foreground="text_muted">On-device speech · No transcript history</text><spacer grow="1"/><if test="{hasImmediateResult}"><if test="{immediateResultKind == 'shown'}"><button size="sm" on-press="copy_immediate_result">Copy Final Text</button></if><button size="sm" variant="ghost" on-press="dismiss_result">Dismiss</button></if></row>
+                <if test="{hotkeyCaptureActive or hasHotkeyCandidate or hasHotkeyWarning}">
+                  <dialog label="Your dictation shortcut" on-dismiss="cancel_hotkey_capture">
+                    <column padding="20" gap="12">
+                      <text><span weight="medium" scale="1.4">Your dictation shortcut</span></text>
+                      <text foreground="text_muted" wrap="true">Your current shortcut stays active until you choose a replacement.</text>
+                      <toggle-group gap="8" label="Shortcut presets"><toggle-button size="sm" autofocus="true" selected="{hotkeyChoice == 'command_shift'}" on-toggle="choose_command_shift">Command + Shift</toggle-button><toggle-button size="sm" selected="{hotkeyChoice == 'control_option'}" on-toggle="choose_control_option">Control + Option</toggle-button></toggle-group>
+                      <if test="{hotkeyCaptureActive}"><text><span weight="medium">Press your shortcut now</span></text><text foreground="text_muted" wrap="true">Press and release Fn/Globe, an F-key, or a key combination.</text><row><spacer grow="1"/><button size="sm" variant="ghost" on-press="cancel_hotkey_capture">Cancel</button></row></if>
+                      <if test="{hasHotkeyCandidate}"><text>You pressed: <span mono="true">{hotkeyCandidateDisplay}</span></text><if test="{hasHotkeyWarning}"><text wrap="true">{hotkeyCandidateWarning}</text></if><row gap="8"><button size="sm" variant="ghost" on-press="cancel_hotkey_capture">Try Something Else</button><spacer grow="1"/><button size="sm" variant="primary" on-press="confirm_hotkey_candidate" disabled="{not hotkeyCandidateValid}">Use This Shortcut</button></row></if>
+                      <if test="{not hotkeyCaptureActive and not hasHotkeyCandidate}"><text wrap="true">{hotkeyCandidateWarning}</text><row gap="8"><button size="sm" variant="ghost" on-press="cancel_hotkey_capture">Cancel</button><spacer grow="1"/><button size="sm" on-press="request_input_monitoring">Open Input Monitoring</button><button size="sm" variant="primary" on-press="start_hotkey_capture">Try Again</button></row></if>
+                    </column>
+                  </dialog>
+                </if>
               </if>
 
               <if test="{showPermissions}">
                 <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Permissions</span></text><spacer grow="1"/><text foreground="text_muted">Live macOS state</text></row>
+                  <row padding="12"><text><span weight="medium" scale="1.4">Permissions</span></text><spacer grow="1"/><text size="sm" foreground="text_muted">Checked live with macOS</text></row>
                   <separator/>
                   <column padding="16" gap="12">
-                    <row gap="12" cross="center"><if test="{microphonePermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Microphone</span></text><text foreground="text_muted">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button size="sm" on-press="request_microphone">Recover Microphone Access</button></if></row>
-                    <row gap="12" cross="center"><if test="{accessibilityPermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Accessibility</span></text><text foreground="text_muted">{permissionAccessibilityState}</text></column><if test="{not accessibilityPermission}"><button size="sm" on-press="request_accessibility">Recover Paste Access</button></if></row>
-                    <row gap="12" cross="center"><if test="{inputMonitoringPermission}"><text><span mono="true">●</span></text></if><else><text foreground="text_muted"><span mono="true">○</span></text></else><column grow="1" gap="2"><text><span weight="medium">Input Monitoring</span></text><text foreground="text_muted">{permissionInputState}</text></column><if test="{not inputMonitoringPermission}"><button size="sm" on-press="request_input_monitoring">Recover Shortcut Access</button></if></row>
+                    <row gap="12" cross="center"><if test="{microphonePermission}"><icon name="check-circle" foreground="success" width="20" height="20"/></if><else><icon name="alert" foreground="warning" width="20" height="20"/></else><column grow="1" gap="2"><text><span weight="medium">Microphone</span></text><text size="sm" foreground="text_muted" wrap="true">{permissionMicrophoneState}</text></column><if test="{not microphonePermission}"><button size="sm" on-press="request_microphone">Recover Microphone Access</button></if></row>
+                    <row gap="12" cross="center"><if test="{accessibilityPermission}"><icon name="check-circle" foreground="success" width="20" height="20"/></if><else><icon name="alert" foreground="warning" width="20" height="20"/></else><column grow="1" gap="2"><text><span weight="medium">Accessibility</span></text><text size="sm" foreground="text_muted" wrap="true">{permissionAccessibilityState}</text></column><if test="{not accessibilityPermission}"><button size="sm" on-press="request_accessibility">Recover Paste Access</button></if></row>
+                    <row gap="12" cross="center"><if test="{inputMonitoringPermission}"><icon name="check-circle" foreground="success" width="20" height="20"/></if><else><icon name="alert" foreground="warning" width="20" height="20"/></else><column grow="1" gap="2"><text><span weight="medium">Input Monitoring</span></text><text size="sm" foreground="text_muted" wrap="true">{permissionInputState}</text></column><if test="{not inputMonitoringPermission}"><button size="sm" on-press="request_input_monitoring">Recover Shortcut Access</button></if></row>
                     <text foreground="text_muted" wrap="true">Without Microphone, recording is blocked. Without Input Monitoring, use manual Start. Without Accessibility, final text is copied.</text>
                   </column>
                 </column>
@@ -214,10 +201,10 @@
 
               <if test="{showModels}">
                 <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Local models</span></text><spacer grow="1"/><button size="sm" on-press="choose_local_model">Add Local Model…</button></row>
+                  <row padding="12"><text><span weight="medium" scale="1.4">Local models</span></text><spacer grow="1"/><button size="sm" icon="plus" on-press="choose_local_model">Add Local Model…</button></row>
                   <separator/>
                   <column padding="16" gap="8">
-                    <text foreground="text_muted" wrap="true">Only exact artifacts from Friday’s reviewed production allowlist can be opened by the local GGUF runtime.</text>
+                    <text size="sm" foreground="text_muted" wrap="true">Speech recognition runs on this Mac. Only models on Friday’s reviewed production allowlist can be installed.</text>
                     <if test="{isBusy}"><text wrap="true">Finish or cancel dictation before changing models.</text></if>
                   </column>
                 </column>
@@ -242,7 +229,7 @@
                       <if test="{not defaultModelInstalled}"><row gap="12" cross="center"><text foreground="text_muted"><span mono="true">○</span></text><column grow="1" gap="2"><text><span weight="medium">Parakeet TDT 0.6B v3</span></text><text foreground="text_muted">25 languages · CC-BY-4.0 · 714 MB</text></column><column gap="8"><if test="{modelDownloadState == 'idle'}"><button size="sm" variant="primary" on-press="retry_model_download">Download Verified Model</button></if><if test="{modelDownloadActive}"><button size="sm" on-press="cancel_model_download">Cancel Download</button></if><if test="{modelDownloadPaused}"><button size="sm" variant="primary" on-press="retry_model_download">Resume Download</button></if><if test="{modelDownloadFailed}"><button size="sm" variant="primary" on-press="retry_model_download">Retry Download</button></if></column></row><if test="{modelTotalBytes > 0}"><column gap="6"><progress value="{modelDownloadedBytes / modelTotalBytes}" label="Model download progress"/><text foreground="text_muted"><span mono="true">{modelDownloadedBytesLabel} / {modelTotalBytesLabel} bytes</span></text></column></if></if>
                       <row gap="12" cross="center"><column grow="1" gap="2"><text><span weight="medium">Parakeet CTC 1.1B</span></text><text foreground="text_muted">English · CC-BY-4.0 · 1.18 GB</text></column><button size="sm" on-press="choose_parakeet_ctc" disabled="{modelDownloadActive or isBusy}">Use Parakeet CTC repository</button></row>
                       <text foreground="text_muted" wrap="true">The larger English model is offered for metadata inspection. It remains unavailable for installation until Friday ships an exact reviewed artifact on the production allowlist.</text>
-                      <text><span weight="medium">Add from Hugging Face</span></text>
+                      <text><span weight="medium">Inspect a Hugging Face repository</span></text>
                       <text-field size="sm" text="{hfDraft}" on-input="hf_draft_edit" placeholder="owner/repository" label="Hugging Face model identifier"/>
                       <switch size="sm" checked="{hfSourceConfirmed}" on-toggle="toggle_hf_source_confirmation">Allow Friday to contact Hugging Face and resolve public metadata</switch>
                       <row><text foreground="text_muted" grow="1" wrap="true">Repository metadata never grants parser access.</text><button size="sm" on-press="add_hugging_face_model" disabled="{not hfSourceConfirmed or modelDownloadActive or isBusy}">Inspect Candidate Metadata</button></row>
@@ -258,12 +245,13 @@
 
               <if test="{showDiagnostics}">
                 <column background="surface" border-color="border" radius="lg">
-                  <row padding="12"><text><span weight="medium">Safe export</span></text></row>
+                  <row padding="12"><text><span weight="medium" scale="1.4">Safe diagnostics</span></text></row>
                   <separator/>
                   <column padding="16" gap="12">
                     <text foreground="text_muted" wrap="true">Never audio, transcript, clipboard, document name, or raw path.</text>
                     <code source="{diagnostics}" language="json" wrap="true"/>
                     <row gap="8"><button size="sm" on-press="refresh_diagnostics">Refresh</button><button size="sm" on-press="copy_diagnostics">Copy Diagnostics</button><button size="sm" variant="primary" on-press="export_diagnostics">Export and Reveal</button><if test="{hasDiagnosticsExport}"><button size="sm" variant="ghost" on-press="reveal_diagnostics">Reveal Last Export</button></if></row>
+                    <if test="{automationSceneActive}"><button size="sm" variant="ghost" on-press="automation_hotkey_probe_now">Run Automation Hotkey Probe</button></if>
                   </column>
                 </column>
               </if>

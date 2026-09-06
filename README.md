@@ -1,163 +1,132 @@
 # Friday
 
-Friday is an Apple Silicon menu-bar dictation app for macOS 14 and later. It records the microphone, transcribes locally with a compatible Parakeet GGUF model, and returns only the final text to the app where dictation began. It has no cloud-ASR path and stores no transcript history.
+### Think it. Say it. Keep going.
 
-See the [user guide](docs/friday-user-guide.md), [release checklist](docs/friday-release-checklist.md), [PRODUCT coverage matrix](docs/friday-behavior-coverage.md), [privacy-safe ASR quality benchmark](docs/asr-quality-benchmark.md), and [technical specification](specs/friday/TECH.md).
+Private dictation for the app you're already using. Hold a shortcut, speak,
+and release. Friday transcribes on your Mac and returns the final words to
+where you started.
 
-## Install from source
+<p align="center">
+  <img src="docs/images/friday-controls.png" alt="Friday in dark mode: a copper-accented ready state, Start Recording, and microphone, shortcut, lock timing, paste, capsule, and login controls visible together." width="640">
+</p>
 
-One command on an Apple Silicon Mac with Xcode Command Line Tools and [mise](https://mise.jdx.dev/):
+<p align="center"><sub>Actual Friday renderer capture · deterministic ready-state fixture · dark appearance</sub></p>
+
+**Apple Silicon · macOS 14+ · Local speech recognition · No transcript history**
+
+## Made for the moment
+
+- **Speak into your workflow.** Friday returns final text to the app where
+  dictation began. If it can't safely paste there, it copies instead and tells you.
+- **One shortcut, two ways to talk.** Hold to dictate, or double-tap to lock
+  recording for a longer thought. Fn/Globe and custom combinations are supported.
+- **Quietly available.** Friday lives in the menu bar. A small, movable capsule
+  shows recording time and controls without taking focus from your work.
+- **Your Mac does the listening.** Parakeet speech recognition runs locally.
+  After model setup, dictation works offline. No cloud ASR, telemetry, or history.
+- **A small app should fit.** Everyday controls share one compact window.
+  Shortcut editing has its own focused dialog; access and model management have
+  clear destinations.
+
+## Get started
+
+Friday currently installs from source with a local Apple signing identity.
+You'll need an Apple Silicon Mac, macOS 14+, Xcode Command Line Tools,
+[mise](https://mise.jdx.dev/), and an Apple Development signing identity in Keychain.
 
 ```sh
-git clone <your-fork-url> && cd friday
+git clone https://github.com/phall1/friday.git
+cd friday
 mise install
 mise run install-app
 ```
 
-`mise.toml` pins Node 24.20.0, Zig 0.16.0, and Bun 1.3.14. The install task checks the toolchain and Apple Development signing identity, builds arm64-only, packages, code-signs, verifies, and installs `Friday.app` into `/Applications` (or `~/Applications` if `/Applications` isn't writable). Re-running it safely replaces the installed copy.
+The task builds arm64-only, signs and verifies the app, then installs it in
+`/Applications` (or `~/Applications` if needed). Re-running safely replaces the
+installed copy. Node, Zig, and Bun are pinned in `mise.toml`; npm is the default
+package manager. Use `FRIDAY_PM=bun mise run install-app` for Bun.
 
-Package manager is pick-your-poison: npm is the default (reproducible via `package-lock.json`); `FRIDAY_PM=bun mise run install-app` uses the pinned Bun and applies the same patch set.
+A public signed and notarized download is not available yet. Distribution
+requirements are tracked in the [release checklist](docs/friday-release-checklist.md).
 
-Requirements and manual equivalent:
+### First launch
+
+1. **Grant access.** Microphone records your voice; Input Monitoring hears the
+   global shortcut; Accessibility returns text to your source app. Friday shows
+   which permissions are actually usable and offers recovery for each.
+2. **Choose your shortcut.** Command + Shift is the default. Choose a preset or
+   record Fn/Globe, an F-key, or a custom combination.
+3. **Set up the local model.** Friday offers the verified Parakeet TDT 0.6B v3
+   download (about 714 MB, 25 languages). Progress, cancellation, and retry are visible.
+4. **Go back to your app and talk.** Hold your shortcut, speak, and release.
+
+Closing the window keeps Friday in the menu bar. Click the mark for quick
+Start/Stop/Cancel actions, or **Open Friday…** for Controls. Use **Quit Friday**
+to exit. **Launch at Login** is in Controls.
+
+## Private by design
+
+Audio and recognition stay on this Mac. Friday stores no transcript history and
+never sends speech to a cloud service. Temporary audio is deleted after a
+completed, cancelled, dismissed, or superseded session; an explicit transcription
+retry may retain only the current failed recording. The recording limit is
+10 minutes, with a warning at 9:45.
+
+Network access is limited to visible model discovery and download actions.
+Friday verifies exact model identity, size, and SHA-256 before its in-process
+runtime opens a model. Currently only the pinned default artifact is supported;
+other Hugging Face repositories can be inspected as metadata, not installed
+as arbitrary speech engines.
+
+**Safe Diagnostics** excludes audio, transcript text, clipboard contents,
+document names, and raw paths. Export is explicit.
+
+[Read the user guide →](docs/friday-user-guide.md)
+
+## Develop Friday
+
+Friday uses a deterministic TypeScript core compiled by Native SDK, a pure-Zig
+macOS host, and the NeMo Metal speech runtime. No JavaScript runtime ships.
 
 ```sh
 mise exec -- npm ci --ignore-scripts
 mise exec -- npx patch-package --error-on-fail
+mise exec -- npm run check
 mise exec -- npm run build
-FRIDAY_SIGN_IDENTITY="<identity hash>" mise exec -- npm run package
-open zig-out/package/Friday.app
+mise exec -- npm test
 ```
 
-## Platform and permissions
+Run locally with `mise exec -- zig build -Dtarget=aarch64-macos run`.
+Build a signed development bundle with
+`FRIDAY_SIGN_IDENTITY="<Apple Development identity>" mise exec -- npm run package`.
 
-A public release must be the arm64-only, Developer ID-signed, notarized, and stapled `Friday-0.1.0-arm64.dmg`. Open the DMG, move Friday to Applications, then launch Friday. The current repository can produce a team-signed arm64 development package, but public release remains blocked until Developer ID and notary credentials are supplied and the external checks in the release checklist pass.
-
-Friday is arm64/aarch64 end to end and requires Apple Silicon and macOS 14+. The pure-Zig application host, direct macOS C APIs, NeMo Metal runtime, package, CI, and release scripts reject Intel, universal Mach-O slices, and Rosetta translation. The bundle permits launch on macOS 13 only so it can show a clear unsupported-system explanation; setup, downloads, and recording remain disabled there.
-
-Friday asks separately for:
-
-- **Microphone** — required to record.
-- **Input Monitoring** — required for the system-global shortcut. Manual menu-bar Start remains available in acknowledged limited mode.
-- **Accessibility** — used to return final text to the exact source app. Without it, Friday copies the final text and shows the recovery action.
-
-Recover a revoked permission from Friday’s **Access** page or System Settings → Privacy & Security, then return to Friday; it rechecks live.
-
-Closing Friday’s window hides it without quitting, and the Dock icon follows the window: opening Friday shows it, closing the window removes it, while the always-on **Friday** menu-bar item stays put. Clicking the menu-bar mark opens only its menu; choose **Open Friday…** for the main window, or use the menu to manage models and permissions, start recording, or quit. The mark keeps one identity in every state — red while recording, dimmed while transcribing, and a `!` badge only on failure.
-
-## Dictation
-
-The default shortcut is Command + Shift. Hold the confirmed shortcut to record and release to stop. A quick second press within the selected double-tap window locks recording; use Stop or Cancel afterward. Controls offers Command + Shift and Control + Option conveniences, plus a recorder for Fn/Globe by itself, an F-key, or another key combination. Presets apply immediately. Friday reviews custom candidates, warns about ordinary typing and known reserved/unreliable combinations, and changes the active shortcut only after explicit confirmation.
-
-Normal stop drains capture, visibly enters **transcribing**, runs local final-only ASR, then pastes to the exact captured source when safe. If exact-source paste is unavailable, Friday reports a clipboard fallback. Cancel invalidates the generation immediately; stale results cannot become current. Friday warns at 9:45 and stops at exactly 10:00 while preserving a visible 10-minute explanation through the final outcome.
-
-## Models and offline behavior
-
-On first setup Friday offers its pinned, verified default model automatically when the model step becomes visible. Downloads are user-visible, cancellable, SHA-256 verified, resumable after relaunch, runtime-probed, and atomically installed. Production parser admission is limited to immutable, hash-pinned artifacts on Friday’s compiled allowlist; today that list contains only the default Parakeet TDT artifact.
-
-The Models page also supports:
-
-- **Local model** — select an exact allowlisted artifact plus its matching Friday manifest sidecar. Friday checks allowlist identity and exact size/SHA-256 before any GGUF/NeMo parser call, references the original file, and never deletes it.
-- **Known Parakeet alternative** — choose Parakeet CTC 1.1B to fill its official repository identifier for metadata inspection. It is not currently parser-eligible.
-- **Public Hugging Face identifier** — enter `owner/repository`; Friday may resolve an **unverified immutable metadata candidate** when public JSON has an exact revision, exactly one top-level GGUF name, ASR/GGUF hints, LFS SHA/size, license, and attribution. Arbitrary candidate bytes are not downloaded, parsed, runtime-probed, recognized with, or activated. Download is offered only when immutable identity matches a compiled Friday allowlist entry; exact integrity verification still precedes parser access.
-
-This conservative policy accepts less model choice in exchange for keeping repository-controlled GGUF bytes out of the full unsandboxed app trust boundary. Friday does not claim that an in-process parser is sandboxed or that a background thread provides containment. Adding model support requires a reviewed manifest/code change and a newly signed release.
-
-After a verified model is installed and active, recording and transcription work offline. Network access is limited to explicit model metadata/download actions. Remove from Friday drops a reference. Delete Friday’s Copy is shown only for Friday-managed files. Failed/partial downloads can be cleaned without deleting installed models.
-
-Model data lives under `$HOME/Library/Application Support/com.phall.friday/Models`; partials live beside it in `ModelDownloads`. Do not edit the index or managed manifests by hand.
-
-## Privacy and diagnostics
-
-Audio and transcription stay on the Mac. Friday stores no transcript history and has no telemetry or cloud-ASR service. Temporary session audio is deleted after cancel, silence, successful delivery/fallback, dismissal, a superseding session, or exit; only an explicit transcription retry may retain the current failed session audio.
-
-**Safe Diagnostics** includes versions, platform/permission usability, model integrity/storage, bounded performance facts, and safe error codes. It explicitly excludes transcript text, microphone audio, clipboard contents, document names, and raw paths. Copy/export diagnostics only when you intend to share those safe facts.
-
-## Build and test
-
-Requirements: Apple Silicon Mac, macOS 14+, Xcode/Command Line Tools, Node.js 24, npm, and Zig 0.16.0. The NeMo runtime/model pins are documented in `specs/friday/TECH.md`.
+### Visual verification
 
 ```sh
-npm ci --ignore-scripts
-npx patch-package --error-on-fail
-npm run check
-npm run build
-npm test
-```
-
-Run the development binary:
-
-```sh
-zig build -Dtarget=aarch64-macos run
-```
-
-Build automation and compare every strict UI golden:
-
-```sh
-zig build -Dtarget=aarch64-macos -Dautomation=true
+mise exec -- zig build -Dtarget=aarch64-macos -Dautomation=true
 export FRIDAY_APP_BINARY="$PWD/zig-out/bin/friday"
-for scene in onboarding-light settings-dark model-light error-dark \
-  recording-light transcribing-dark overlay-preview-light accessibility-dark \
-  unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark; do
-  tests/ui-automation.sh "$scene"
-done
+tests/ui-automation.sh settings-dark
+tests/ui-automation.sh settings-light
 ```
 
-Regenerate an intentionally reviewed golden only with `tests/ui-automation.sh --update <scene>`. Verify the checked-in SVG and 1024×1024 PNG icon pair with:
+The state-preserving harness checks accessible names, keyboard traversal,
+in-viewport controls, and reviewed PNG goldens. Close Friday before running it.
+Use `--update <scene>` only after visual review. The README image comes directly
+from the reviewed `settings-dark` capture.
 
-```sh
-scripts/verify-icon.sh
-```
+### Project map
 
-## Package and release
+| Area | Start here |
+| --- | --- |
+| Product behavior and user stories | [PRODUCT](specs/friday/PRODUCT.md) · [UX](specs/friday/UX.md) |
+| Visual language and layout constraints | [Design system](docs/design-system.md) |
+| Core transitions and view projections | `src/core.ts` · `src/domain-transitions.ts` · `src/presentation.ts` |
+| Native markup and deterministic fixtures | `src/app.native` · `src/automation.ts` |
+| Audio, input, models, delivery, capsule | `native/friday_host.zig` · `native/macos/` |
+| Architecture and runtime pins | [TECH](specs/friday/TECH.md) · [Module architecture](docs/module-architecture.md) |
+| Quality and performance evidence | [ASR benchmark](docs/asr-quality-benchmark.md) · [Coverage](docs/friday-behavior-coverage.md) |
+| Packaging and external validation | [Release checklist](docs/friday-release-checklist.md) |
 
-A local development package requires a real team signing identity because hardened runtime library validation remains enabled:
-
-```sh
-FRIDAY_SIGN_IDENTITY="<Apple Development identity hash or name>" npm run package
-codesign --verify --deep --strict --verbose=2 zig-out/package/Friday.app
-```
-
-The package script signs every embedded dylib, the `Friday.app` bundle, and the development DMG with one team identity, verifies the release-only framework rpath and menu-bar bundle metadata, and replaces the Native SDK’s unsigned scaffold metadata. It does **not** claim notarization.
-
-The public release path is intentionally strict and fails before building if credentials are absent:
-
-```sh
-file zig-out/package/Friday.app/Contents/MacOS/friday
-lipo -archs zig-out/package/Friday.app/Contents/MacOS/friday
-otool -hv zig-out/package/Friday.app/Contents/MacOS/friday
-sysctl -in sysctl.proc_translated
-export FRIDAY_DEVELOPER_ID="Developer ID Application: Example (TEAMID)"
-export FRIDAY_NOTARY_PROFILE="friday-notary"
-scripts/release-macos.sh
-```
-
-That script validates the identity kind and Team ID, requires timestamps, signs nested dylibs/app/DMG, submits the zipped app and DMG with `notarytool --wait`, staples and validates both, and runs `spctl`. Credential setup and the current external blockers are in `docs/friday-release-checklist.md`.
-
-Run release validation from a signed automation package:
-
-```sh
-FRIDAY_AUTOMATION=1 npm run package
-tests/packaged-e2e.sh
-tests/performance.sh
-```
-
-Both harnesses refuse to race a running Friday process, preserve and restore app state and pasteboard contents, leave installed models and TCC grants intact, and fail on cleanup/privacy regressions.
-
-## Architecture
-
-- `src/core.ts` — Native SDK entry adapter and effect wiring. It compiles to native code; no JavaScript runtime ships.
-- `src/domain.ts`, `src/domain-transitions.ts`, and `src/presentation.ts` — stable vocabulary, pure workflow transitions, and view/status/theme projection.
-- `src/state.ts` and `src/protocol.ts` — durable state projections and bounded wire decoding.
-- `src/automation.ts` — deterministic visual-test fixtures, isolated from production transitions.
-- `src/app.native` — Native markup for unsupported/setup/settings/model/permission/diagnostic/result surfaces.
-- `native/friday_host.zig` — pure-Zig Native SDK coordinator; `native/host/` owns asynchronous operations, generation-scoped artifacts, and privacy-safe diagnostics.
-- `native/macos/system.zig` and `json.zig` — platform-service adapter plus typed wire JSON/base64.
-- `native/macos/input.zig` — CGEvent/TCC global shortcut capture, validation, press/release, and sleep/wake handling.
-- `native/macos/audio.zig` coordinates capture through private CoreAudio lifecycle, route authority, canonical storage, and allocation-free bounded-ring modules.
-- `native/macos/models.zig` serializes model intents and cancellation; private policy, metadata-source, and durable-publication modules own trust and persistence.
-- `native/macos/nemo.zig` — one serialized in-process NeMo C-ABI recognizer.
-- `native/macos/delivery.zig` — exact-source AX and Native SDK clipboard delivery with truthful fallback.
-- `native/macos/overlay.zig` — nonactivating recording/transcribing capsule.
-- `native/macos/objc.zig` — one narrow typed dynamic runtime wrapper per unavoidable AppKit selector; no Objective-C source or bridge.
-
-Known system-context gaps are not hidden: external pointer acceptance for the overlay and successful AX insertion into TextEdit/Terminal/browser fields have not been observed in this loginwindow-bound harness; public notarization cannot run without Developer ID/notary credentials; energy remains an Instruments check. These are release-checklist items, not inferred passes.
+Successful AX insertion and external-pointer capsule interaction still need
+normal-GUI release validation; energy needs an Instruments measurement. The
+release checklist records these separately from automated passes.

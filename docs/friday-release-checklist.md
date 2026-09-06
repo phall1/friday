@@ -16,6 +16,7 @@ A checked box means the exact artifact under release was observed. Do not infer 
 - [ ] **External blocker:** external-pointer overlay Stop/Cancel acceptance is not observed in a normal GUI session.
 - [ ] **External blocker:** successful AX insertion into TextEdit, Terminal, and a browser field is not observed in a normal GUI session; truthful clipboard fallback is observed.
 - [ ] **External blocker:** Instruments Energy Log is not yet recorded for the release candidate.
+- [ ] **2026-09-06 UX candidate:** resolve and rerun the signed E2E native capsule keyboard/VoiceOver/terminal contract failures. Earlier stages passed; later stages were not reached. Exact failed facts and the 14 passing visual scenes are recorded in the [UX verification record](../specs/friday/UX.md#verification-record--2026-09-06).
 
 The strict candidate builder must fail rather than produce a candidate when either credential is absent. A notarized candidate is still **not promotion-ready** until normal-GUI evidence matches its manifest, binary, and DMG hashes.
 

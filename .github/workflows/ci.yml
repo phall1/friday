@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           scenes=(
-            onboarding-light settings-dark model-light error-dark
+            onboarding-light settings-dark settings-light settings-result-light model-light error-dark
             recording-light transcribing-dark overlay-preview-light accessibility-dark
             unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark
           )

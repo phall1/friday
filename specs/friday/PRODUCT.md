@@ -6,6 +6,9 @@ Friday is a macOS-only Apple Silicon menu-bar dictation instrument for fast, pri
 
 ## Goals / Non-goals
 
+Everyday interaction stories, compact-window acceptance, and visual verification
+are specified in [UX.md](UX.md).
+
 - Goal: provide reliable global press-and-hold dictation into the source app with a compact nonactivating overlay.
 - Goal: keep the default model local, downloadable, cancellable, retryable, integrity-checked, and manageable on disk.
 - Goal: make permission, model, recording, transcription, paste, and fallback states explicit and recoverable.

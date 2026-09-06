@@ -79,13 +79,55 @@ rm -f "$SNAPSHOT" "$SNAPSHOT_BAK"
 FRIDAY_AUTOMATION_SCENE="$SCENE" "$APP" >"${TMPDIR:-/tmp}/friday-ui-$SCENE.log" 2>&1 &
 PID=$!
 cd "$ROOT"
-"$CLI" automate wait
+"$CLI" automate wait >/dev/null
 "$CLI" automate assert 'window @w1 "Friday" bounds=.* 640x480' "${REQUIRED[@]}"
 "$CLI" automate assert --absent 'error event='
 if [[ "${#NO_ELLIPSIS[@]}" -gt 0 ]]; then "$CLI" automate assert --absent "${NO_ELLIPSIS[@]}"; fi
+if [[ "$SCENE" == settings-result-* ]]; then
+  "$CLI" automate assert 'Copied to clipboard\. Paste your words with Command \+ V\.' 'role=button name="Dismiss"'
+fi
+# Presence in the accessibility tree does not prove a control is visible.
+# The old goldens passed while half of Controls sat below the viewport.
+if [[ "$SCENE" == settings-* || "$SCENE" == onboarding-* ]]; then
+  node - "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt" "$SCENE" <<'NODE'
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const snapshot = fs.readFileSync(process.argv[2], 'utf8');
+const controls = process.argv[3].startsWith('onboarding-')
+  ? ['Open Accessibility', 'Open Input Monitoring', 'Use limited mode', 'Continue', 'Back']
+  : ['Start Recording', 'Check Microphone', 'Change Shortcut…',
+  'Double-tap to lock recording', '250 ms', '300 ms', '400 ms',
+  'Paste automatically', 'Show capsule', 'Launch at Login'];
+for (const name of controls) {
+  const row = snapshot.split('\n').find(line => line.includes(`name="${name}"`));
+  assert.ok(row, `Missing control: ${name}`);
+  const bounds = row.match(/bounds=\(([-\d.]+),([-\d.]+) ([-\d.]+)x([-\d.]+)\)/);
+  assert.ok(bounds, `Missing bounds: ${name}`);
+  const [x, y, width, height] = bounds.slice(1).map(Number);
+  assert.ok(x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 640.5 && y + height <= 480,
+    `${name} is clipped: ${bounds[0]}`);
+}
+for (const match of snapshot.matchAll(/scroll=\[offset=([\d.]+),viewport=([\d.]+),content=([\d.]+)\]/g)) {
+  assert.equal(Number(match[1]), 0, 'The surface must start at the top');
+  assert.ok(Number(match[3]) <= Number(match[2]), `Unexpected scrolling: ${match[0]}`);
+}
+console.log(`${process.argv[3]} geometry passed: all expected controls visible; no scrolling.`);
+NODE
+fi
 "$CLI" automate screenshot main-canvas
 "$CLI" automate widget-key main-canvas tab
 "$CLI" automate assert 'focused=true'
+
+if [[ "$SCENE" == hotkey-conflict-* ]]; then
+  # AppKit suppresses widget focused=true when this harness has no active OS
+  # window, even with retained canvas focus. Never mistake view focus for it.
+  if grep -Eq '^window .*focused=true' "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt"; then
+    "$CLI" automate assert 'widget .*role=button name="(Command \+ Shift|Control \+ Option|Try Something Else)".*focused=true'
+  fi
+  "$CLI" automate widget-key main-canvas escape
+  "$CLI" automate assert --absent 'role=dialog' 'You pressed:'
+  "$CLI" automate assert 'role=button name="Change Shortcut…"' 'role=text name="Command \+ Shift"'
+fi
 "$CLI" automate widget-key main-canvas shift+tab
 "$CLI" automate assert 'focused=true'
 

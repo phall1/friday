@@ -416,6 +416,15 @@ test("menu-bar status exposes only legal workflow actions and exact destinations
   assert.equal(readyMenu.activationCommand.length, 0);
   assert.equal(readyMenu.alternateActivationCommand.length, 0);
   assert.equal(readyMenu.openCommand.length, 0);
+  assert.equal(labels.filter(Boolean).length, 6);
+  assert.equal(labels.some(label => label.includes("Launch at Login")), false);
+  assert.equal(new TextDecoder().decode(readyMenu.items[0].label), "Ready for dictation");
+  assert.equal(readyMenu.items[0].detail.length, 0);
+  const copied = { ...ready, hasImmediateResult: true, immediateResultKind: "clipboard" as const, immediateResultMessage: bytes("A very long delivery explanation. ".repeat(50)) };
+  const copiedMenu = statusItem(copied);
+  assert.equal(new TextDecoder().decode(copiedMenu.items[0].label), "Copied to clipboard");
+  assert.equal(copiedMenu.items[0].detail.length, 0);
+  assert.deepEqual(copiedMenu.tooltip, copied.immediateResultMessage);
 
   const recording: Model = {
     ...ready,
@@ -687,6 +696,8 @@ test("appearance and overlay-preview contracts retain accessibility state", () =
   assert.equal(appearance.systemColorScheme, "dark");
   assert.equal(themeState(appearance).pack, "geist");
   assert.equal(themeState(appearance).accent, undefined);
+  assert.equal(themeState({ ...appearance, highContrast: false }).accent, "#a1693e");
+  assert.equal(themeState({ ...appearance, highContrast: false, appearanceOverride: "light" }).accent, "#a1693e");
   const preview = dispatch(initial, { kind: "automation_scene_requested", value: bytes("overlay-preview-light") });
   assert.equal(preview.automationOverlayPreview, true);
   const dismissed = dispatch(preview, { kind: "dismiss_overlay_preview" });
@@ -703,7 +714,7 @@ test("platform gate blocks Intel and old macOS without onboarding or network", (
   assert.equal(showUnsupported(intel), true);
   assert.equal(new TextDecoder().decode(blockerText(intel)), "Friday requires an Apple Silicon Mac.");
   const intelItems = statusItem(intel).items.map((item) => new TextDecoder().decode(item.label));
-  assert.deepEqual(intelItems.filter(Boolean), ["unsupported", "Open Friday…", "Quit Friday"]);
+  assert.deepEqual(intelItems.filter(Boolean), ["Unsupported Mac", "Open Friday…", "Quit Friday"]);
   assert.equal(commandOf(update(intel, { kind: "onboarding_next" })), null);
   assert.equal(commandOf(update(intel, { kind: "retry_model_download" })), null);
   assert.equal(commandOf(update(intel, { kind: "start_recording" })), null);
@@ -762,9 +773,36 @@ test("captured shortcuts preserve the active shortcut until a reviewed replaceme
     body: bytes('{"ok":true,"valid":true,"config":"key=-1;command=0;shift=0;option=0;control=0;fn=1","display":"Fn","warning":""}'),
   });
   assert.equal(fnCandidate.hotkeyCandidateValid, true);
-  const preset = update(ready, { kind: "choose_control_option" });
-  assert.equal(commandOf(preset)?.op, "request");
+  const preset = update({ ...ready, hotkeyCaptureActive: true }, { kind: "choose_control_option" });
+  const presetCommand = commandOf(preset) as unknown as { op: string; cmds: { op: string; key?: string; name?: string }[] };
+  assert.equal(presetCommand.op, "batch");
+  assert.equal(presetCommand.cmds[0].op, "cancel");
+  assert.equal(presetCommand.cmds[0].key, "hotkey-capture");
+  assert.equal(presetCommand.cmds[1].name, "friday.hotkey.configure");
+  assert.equal(modelOf(preset).hotkeyCaptureActive, false);
   assert.equal(modelOf(preset).hotkeyCandidateValid, true);
+});
+
+test("preference saves recover live input and login facts after persistence scrubs them", () => {
+  let ready = readyModel();
+  ready = dispatch(ready, { kind: "login_status_loaded", body: bytes('{"enabled":true}') });
+  ready = dispatch(ready, { kind: "microphone_loaded", body: bytes('{"deviceName":"Studio microphone","detail":"Available · 48000 Hz · 1 channel"}') });
+  const saves: Msg[] = [{ kind: "hotkey_configured", body: bytes('{"ok":true}') },
+    { kind: "toggle_paste" }, { kind: "toggle_overlay" }, { kind: "toggle_double_tap" },
+    { kind: "set_double_tap_fast" }, { kind: "set_double_tap_balanced" }, { kind: "set_double_tap_deliberate" }];
+  for (const save of saves) {
+    const cleared = dispatch(ready, save);
+    assert.equal(cleared.loginStatus, "checking");
+    const recheck = update(cleared, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') });
+    const command = commandOf(recheck) as { op: string; cmds: { name: string }[] };
+    assert.equal(command.op, "batch", save.kind);
+    assert.deepEqual(command.cmds.map(cmd => cmd.name), ["friday.login.status", "friday.audio.input_status"]);
+    let refreshed = dispatch(modelOf(recheck), { kind: "login_status_loaded", body: bytes('{"enabled":true}') });
+    refreshed = dispatch(refreshed, { kind: "microphone_loaded", body: bytes('{"deviceName":"Studio microphone","detail":"Available · 48000 Hz · 1 channel"}') });
+    assert.equal(refreshed.loginStatus, "enabled");
+    assert.equal(new TextDecoder().decode(refreshed.microphoneName), "Studio microphone");
+    assert.equal(commandOf(update(refreshed, { kind: "permissions_loaded", body: bytes('{"microphone":true,"accessibility":true,"inputMonitoring":true}') })), null);
+  }
 });
 
 test("microphone onboarding action invokes the permission-request host path", () => {

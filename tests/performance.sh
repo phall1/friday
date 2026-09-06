@@ -111,7 +111,7 @@ while [[ "$sample" -lt "$ITERATIONS" ]]; do
   "$CLI" automate widget-action main-canvas "$probe_id" press >/dev/null
   "$CLI" automate assert 'role=text name="recording"' 'Locked recording' >/dev/null
   "$CLI" automate tray-action 11 >/dev/null
-  "$CLI" automate assert 'role=text name="ready"' >/dev/null
+  "$CLI" automate assert 'role=text name="Ready when you are\."' >/dev/null
   sample=$((sample + 1))
 done
 

@@ -36,7 +36,11 @@ export function projectWorkflowDetail(model: Model): Uint8Array {
   switch (model.workflow.kind) {
     case "booting": return utf8Bytes("Checking Friday’s local services…");
     case "not_ready": return projectBlockerText(model);
-    case "ready": return model.hasImmediateResult ? model.immediateResultMessage : utf8Bytes("Ready. Hold the shortcut and speak naturally.");
+    case "ready":
+      if (model.hasImmediateResult) return model.immediateResultMessage;
+      if (!model.inputMonitoringPermission) return utf8Bytes("Start here, or enable your global shortcut in Access.");
+      if (!model.pasteAutomatically || !model.accessibilityPermission) return utf8Bytes("Hold your shortcut. Speak. Release to copy text.");
+      return utf8Bytes("Hold your shortcut. Speak. Release to insert.");
     case "starting": return utf8Bytes("Keep holding to record, or release to dismiss.");
     case "recording": return model.workflow.control === "locked" ? utf8Bytes("Locked recording. Stop when you’re finished.") : utf8Bytes("Listening while the shortcut is held.");
     case "stopping": return utf8Bytes("Finishing and saving the recording.");
@@ -144,7 +148,32 @@ export function projectElapsedLabel(model: Model): Uint8Array {
 export function projectHasDiagnosticsExport(model: Model): boolean { return model.diagnosticsExported; }
 export function projectShowOverlayPreview(model: Model): boolean { return model.automationSceneActive && model.automationOverlayPreview; }
 export function projectThemeState(model: Model): ThemeState {
-  return { pack: "geist", colorScheme: model.appearanceOverride };
+  if (model.highContrast) return { pack: "geist", colorScheme: model.appearanceOverride };
+  // One copper clears 4.5:1 against both black and white. It stays legible
+  // while persistence rehydrates appearance facts; the SDK owns OS contrast.
+  return { pack: "geist", colorScheme: model.appearanceOverride, accent: "#a1693e" };
+}
+
+// Menu rows are deliberately bounded. Full explanations belong in the window
+// and tooltip, not a second column that stretches a native menu across the screen.
+export function projectMenuSummary(model: Model): Uint8Array {
+  switch (model.workflow.kind) {
+    case "booting": return utf8Bytes("Checking Friday…");
+    case "not_ready": return utf8Bytes("Setup needs attention");
+    case "ready":
+      if (model.hasImmediateResult) {
+        if (model.immediateResultKind === "clipboard") return utf8Bytes("Copied to clipboard");
+        if (model.immediateResultKind === "shown") return utf8Bytes("Text ready in Friday");
+        return utf8Bytes("Ready for dictation");
+      }
+      return utf8Bytes("Ready for dictation");
+    case "starting": return utf8Bytes("Starting microphone…");
+    case "recording": return model.workflow.control === "locked" ? utf8Bytes("Recording · locked") : utf8Bytes("Recording · hold to talk");
+    case "stopping": return utf8Bytes("Finishing recording…");
+    case "transcribing": return utf8Bytes("Transcribing on this Mac…");
+    case "delivering": return utf8Bytes("Returning your words…");
+    case "failed": return utf8Bytes("Dictation needs attention");
+  }
 }
 
 function statusRow(id: number, label: Uint8Array, command: Uint8Array, enabled: boolean, detail: Uint8Array, role: "command" | "info"): StatusItemMenuItem {
@@ -155,7 +184,7 @@ function statusRow(id: number, label: Uint8Array, command: Uint8Array, enabled: 
 export function projectStatusItem(model: Model): StatusItemState {
   if (projectShowUnsupported(model)) {
     const unsupportedItems: StatusItemMenuItem[] = [];
-    unsupportedItems[unsupportedItems.length] = statusRow(1, utf8Bytes("unsupported"), asciiBytes(""), false, model.platformMessage, "info");
+    unsupportedItems[unsupportedItems.length] = statusRow(1, utf8Bytes("Unsupported Mac"), asciiBytes(""), false, asciiBytes(""), "info");
     unsupportedItems[unsupportedItems.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
     unsupportedItems[unsupportedItems.length] = statusRow(20, utf8Bytes("Open Friday…"), asciiBytes("friday.settings"), true, asciiBytes(""), "command");
     unsupportedItems[unsupportedItems.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
@@ -170,7 +199,7 @@ export function projectStatusItem(model: Model): StatusItemState {
     };
   }
   const items: StatusItemMenuItem[] = [];
-  items[items.length] = statusRow(1, projectWorkflowName(model), asciiBytes(""), false, model.workflow.kind === "not_ready" || model.workflow.kind === "booting" ? projectBlockerText(model) : projectWorkflowDetail(model), "info");
+  items[items.length] = statusRow(1, projectMenuSummary(model), asciiBytes(""), false, asciiBytes(""), "info");
   if (model.workflow.kind === "ready") items[items.length] = statusRow(10, utf8Bytes("Start Recording"), asciiBytes("friday.start"), true, asciiBytes(""), "command");
   if (model.workflow.kind === "recording") items[items.length] = statusRow(11, utf8Bytes("Stop Recording"), asciiBytes("friday.stop"), true, asciiBytes(""), "command");
   if (projectIsBusy(model)) items[items.length] = statusRow(12, utf8Bytes("Cancel"), asciiBytes("friday.cancel"), true, asciiBytes(""), "command");
@@ -178,7 +207,6 @@ export function projectStatusItem(model: Model): StatusItemState {
   items[items.length] = statusRow(20, utf8Bytes("Open Friday…"), asciiBytes("friday.settings"), true, asciiBytes(""), "command");
   items[items.length] = statusRow(21, utf8Bytes("Models…"), asciiBytes("friday.models"), true, asciiBytes(""), "command");
   items[items.length] = statusRow(22, utf8Bytes("Access…"), asciiBytes("friday.permissions"), true, asciiBytes(""), "command");
-  items[items.length] = statusRow(23, model.launchAtLogin ? utf8Bytes("Disable Launch at Login") : utf8Bytes("Enable Launch at Login"), asciiBytes("friday.login"), model.loginStatus !== "checking", asciiBytes(""), "command");
   items[items.length] = { id: 0, label: asciiBytes(""), command: asciiBytes(""), separator: true, enabled: false, detail: asciiBytes(""), role: "command", key: asciiBytes(""), modifiers: { primary: false, command: false, control: false, option: false, shift: false } };
   items[items.length] = statusRow(30, utf8Bytes("Quit Friday"), asciiBytes("friday.quit"), true, asciiBytes(""), "command");
   // The menu-bar mark never changes identity: the Friday waveform stays put

@@ -6,6 +6,10 @@ All notable changes to Friday are documented here.
 
 ### Changed
 
+- Reorganized Controls to fit everyday preferences at 640×480 without scrolling, with a focused shortcut editor, disabled timing controls when locking is off, and direct permission recovery.
+- Introduced copper action accents, layered surfaces, readable heading hierarchy, and semantic readiness/access indicators. Removed the duplicate ready state and idle microphone waveform.
+- Shortened menu-bar status to one compact line and moved Launch at Login to Controls. Expanded README with usage, installation, and an actual app-rendered screenshot.
+- Added viewport geometry checks alongside light/dark Controls goldens so offscreen preferences cannot pass visual acceptance.
 - Restricted production GGUF parser and recognizer access to Friday-reviewed immutable, hash-pinned manifest identities. Arbitrary local and Hugging Face artifacts remain metadata candidates only; they are never downloaded or runtime-probed in the unsandboxed app.
 - Recast the recording capsule as a slim pill: no status words, just elapsed time; recording shows the platform-red dot with adaptive label bars, transcribing shows a quiet continuous traveling wave, and the meter animates at frame rate with fast-attack/slow-release dynamics instead of stepped keyframes.
 - Gave the menu-bar item one persistent identity — the Friday waveform mark as a template image — instead of swapping letters and dots; state reads through treatment (red while live, dimmed while transcribing, ghosted while blocked, `!` badge on failure), so the mark never looks like it vanished.
@@ -36,6 +40,7 @@ All notable changes to Friday are documented here.
 
 ### Fixed
 
+- Recheck microphone format and login registration after preference persistence, which clears ambient state. A late shortcut-configuration response no longer strands either readout at “Checking…”.
 - A quick release during a double-tap lock no longer races the in-flight audio start and orphans a live microphone capture; the locked session now survives the release, and a release after the hold timer cancels both the hold timer and the in-flight start, discarding any capture it already began.
 - Kept Friday alive behind its menu-bar item when the main window closes, made status-item activation menu-only, and added an explicit **Open Friday…** action.
 - Removed the development-tree rpath from packaged binaries, standardized the bundle as `Friday.app`, and added package-time metadata/rpath assertions.
