@@ -69,6 +69,17 @@ jobs:
             recording-light transcribing-dark overlay-preview-light accessibility-dark
             unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark
           )
+          failed=0
           for scene in "${scenes[@]}"; do
-            tests/ui-automation.sh "$scene"
+            tests/ui-automation.sh "$scene" || failed=1
           done
+          exit "$failed"
+      - name: Upload UI captures, expected images, and fixture diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: friday-ui-results
+          path: .zig-cache/ui-results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14

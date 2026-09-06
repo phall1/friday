@@ -9,6 +9,7 @@ if [[ "${1:-}" == "--update" ]]; then UPDATE=1; shift; fi
 SCENE="${1:?usage: tests/ui-automation.sh [--update] <onboarding|settings|model|error|recording|transcribing|overlay-preview|accessibility|unsupported-intel|hotkey-conflict|resume|hf-confirmation>-<light|dark>}"
 GOLDEN="$ROOT/tests/screenshots/$SCENE.png"
 CAPTURE="$ROOT/.zig-cache/native-sdk-automation/screenshot-main-canvas.png"
+RESULTS="$ROOT/.zig-cache/ui-results/$SCENE"
 SUPPORT_ROOT="$HOME/Library/Application Support/com.phall.friday"
 STATE_DIR="$SUPPORT_ROOT/State"
 SNAPSHOT="$SUPPORT_ROOT/snapshot.nsd"
@@ -41,6 +42,11 @@ cleanup() {
   if [[ -n "$PID" ]]; then
     kill -TERM "$PID" 2>/dev/null || true
     wait "$PID" 2>/dev/null || true
+    # Keep fixture evidence per scene, including failed assertions, for CI review.
+    if [[ -f "$CAPTURE" ]]; then cp "$CAPTURE" "$RESULTS/actual.png" || true; fi
+    if [[ -f "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt" ]]; then
+      cp "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt" "$RESULTS/snapshot.txt" || true
+    fi
   fi
   if [[ "$MANAGED_STATE" == "1" ]]; then
     rm -rf "$STATE_DIR"
@@ -61,6 +67,10 @@ if pgrep -x friday >/dev/null; then
   exit 2
 fi
 mkdir -p "$ROOT/tests/screenshots"
+mkdir -p "$RESULTS"
+rm -f "$CAPTURE" "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt" \
+  "$RESULTS/actual.png" "$RESULTS/expected.png" "$RESULTS/snapshot.txt"
+if [[ -f "$GOLDEN" ]]; then cp "$GOLDEN" "$RESULTS/expected.png"; fi
 if [[ -d "$STATE_DIR" ]]; then
   ditto "$STATE_DIR" "$BACKUP_ROOT/State"
   HAD_STATE=1
@@ -76,7 +86,7 @@ fi
 MANAGED_STATE=1
 rm -rf "$STATE_DIR"
 rm -f "$SNAPSHOT" "$SNAPSHOT_BAK"
-FRIDAY_AUTOMATION_SCENE="$SCENE" "$APP" >"${TMPDIR:-/tmp}/friday-ui-$SCENE.log" 2>&1 &
+FRIDAY_AUTOMATION_SCENE="$SCENE" "$APP" >"$RESULTS/app.log" 2>&1 &
 PID=$!
 cd "$ROOT"
 "$CLI" automate wait >/dev/null
@@ -168,7 +178,7 @@ elif [[ ! -f "$GOLDEN" ]]; then
   exit 1
 elif ! cmp -s "$CAPTURE" "$GOLDEN"; then
   echo "golden mismatch for $SCENE (run with --update only after visual review)" >&2
-  sha256sum "$CAPTURE" "$GOLDEN" >&2
+  shasum -a 256 "$CAPTURE" "$GOLDEN" >&2
   exit 1
 else
   printf 'Golden matched %s\n' "$GOLDEN"
