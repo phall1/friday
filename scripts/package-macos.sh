@@ -76,6 +76,7 @@ done
 
 ditto "$ROOT/resources/models/parakeet-tdt-0.6b-v3.json" "$RESOURCES/models/parakeet-tdt-0.6b-v3.json"
 ditto "$ROOT/third_party/nemo-speech/share/licenses/nemo-speech" "$RESOURCES/licenses/nemo-speech"
+ditto "$ROOT/native/fonts/OFL.txt" "$RESOURCES/licenses/IBM-Plex-Sans-OFL.txt"
 
 # The Native SDK packager emits unsigned-scaffold notes before Friday applies
 # its own hardened-runtime signature. Replace them before signing so the

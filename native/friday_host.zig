@@ -1,5 +1,7 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
+pub const fonts = @import("design.zig").fonts;
+pub const refineTheme = @import("design.zig").refineTheme;
 const diagnostics_mod = @import("host/diagnostics.zig");
 const operations_mod = @import("host/operation_registry.zig");
 const artifacts_mod = @import("host/session_artifacts.zig");
@@ -1371,6 +1373,7 @@ fn lifecycleMain(self: *FridayHost) void {
 pub const Host = FridayHost;
 
 pub fn testExtension() !void {
+    try @import("design.zig").testContracts();
     try operations_mod.testContracts();
     try artifacts_mod.testContracts();
     try diagnostics_mod.testContracts();

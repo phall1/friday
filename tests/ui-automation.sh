@@ -23,16 +23,16 @@ NO_ELLIPSIS=()
 case "$SCENE" in
   onboarding-*) REQUIRED=('STEP 2 / 4' 'role=button name="Open Accessibility"' 'role=button name="Open Input Monitoring"' 'role=button name="Continue"' 'Hear the shortcut while another app is focused.' 'Status refreshes automatically.'); NO_ELLIPSIS=('Hear the shortcut while another app is focu…') ;;
   settings-*) REQUIRED=('role=button name="Start Recording"' 'role=button name="Check Microphone"' 'role=text name="Default microphone"' 'role=switch name="Double-tap to lock recording"' 'role=switch name="Launch at Login"'); NO_ELLIPSIS=('Default microph…') ;;
-  model-*) REQUIRED=('role=button name="Models"' 'role=text name="Local models"' 'Friday’s reviewed production allowlist' 'role=button name="Add Local Model…"' 'role=button name="Use Parakeet CTC repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Inspect Candidate Metadata"') ;;
+  model-*) REQUIRED=('role=treeitem name="Models"' 'role=text name="Local models"' 'Friday’s reviewed production allowlist' 'role=button name="Add Local Model…"' 'role=button name="Use Parakeet CTC repository"' 'role=textbox name="Hugging Face model identifier"' 'role=button name="Inspect Candidate Metadata"') ;;
   error-*) REQUIRED=('attention required' 'Model: Parakeet TDT 0.6B v3' 'role=button name="Retry Transcription"' 'role=button name="Change Model"') ;;
-  recording-*) REQUIRED=('role=text name="recording"' 'role=button name="Stop Recording"' 'role=button name="Cancel"') ;;
+  recording-*) REQUIRED=('role=text name="recording"' 'role=button name="Stop Recording"' 'role=button name="Cancel"' 'role=slider name="Tap interval, 300 milliseconds. Range 200 to 500 milliseconds".*enabled=false' 'role=switch name="Double-tap to lock recording".*enabled=false') ;;
   transcribing-*) REQUIRED=('role=text name="transcribing"' 'role=button name="Cancel"' 'Transcribing locally') ;;
   overlay-preview-*) REQUIRED=('Recording capsule preview' 'role=button name="Stop"' 'role=button name="Hide"' 'role=button name="Cancel"') ;;
-  accessibility-*) REQUIRED=('role=button name="Access"' 'role=text name="Permissions"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
+  accessibility-*) REQUIRED=('role=treeitem name="Access"' 'role=text name="Permissions"' 'role=text name="Microphone"' 'role=text name="Accessibility"' 'role=text name="Input Monitoring"' 'role=button name="Recover Paste Access"' 'Accessibility missing'); NO_ELLIPSIS=('Accessibilit…' 'Input Monitor…') ;;
   unsupported-intel-*) REQUIRED=('Apple Silicon required' 'Friday requires an Apple Silicon Mac.' 'Architecture' 'x86_64' 'macOS 14.0' 'Setup, model downloads, and recording are disabled'); NO_ELLIPSIS=('Apple Silicon requir…') ;;
   hotkey-conflict-*) REQUIRED=('You pressed: Command' 'That shortcut is reserved by macOS or a standard app command. Choose another shortcut.' 'role=button name="Use This Shortcut"' 'role=button name="Try Something Else"'); NO_ELLIPSIS=('That shortcut is reserved by macOS or a standard app command. Choose another short…') ;;
   resume-*) REQUIRED=('STEP 4 / 4' 'Run the model here.' 'Parakeet turns speech into final text on this Mac. The verified download is about 714 MB.' 'A verified partial is ready.' '321,000,000 / 713,975,456 bytes downloaded' 'role=button name="Resume Download"'); NO_ELLIPSIS=('Run the model he…' 'Parakeet turns speech into final text on this Mac. The verified download is about…') ;;
-  hf-confirmation-*) REQUIRED=('role=button name="Models"' 'role=text name="Local models"' 'unverified candidate' 'community/parakeet-tdt-gguf' 'CC-BY-4.0 · 702 MB' 'rev 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Metadata only.' 'will not download, parse, runtime-probe, recognize with, or activate' 'role=button name="Choose Another Repository"'); NO_ELLIPSIS=('unverified candid…' 'Metadata only…') ;;
+  hf-confirmation-*) REQUIRED=('role=treeitem name="Models"' 'role=text name="Local models"' 'unverified candidate' 'community/parakeet-tdt-gguf' 'CC-BY-4.0 · 702 MB' 'rev 0123456789abcdef0123456789abcdef01234567' 'Artifact parakeet-tdt-q8.gguf' 'Metadata only.' 'will not download, parse, runtime-probe, recognize with, or activate' 'role=button name="Choose Another Repository"'); NO_ELLIPSIS=('unverified candid…' 'Metadata only…') ;;
   *) echo "unknown scene: $SCENE" >&2; exit 2 ;;
 esac
 
@@ -95,11 +95,12 @@ const assert = require('node:assert/strict');
 const snapshot = fs.readFileSync(process.argv[2], 'utf8');
 const controls = process.argv[3].startsWith('onboarding-')
   ? ['Open Accessibility', 'Open Input Monitoring', 'Use limited mode', 'Continue', 'Back']
-  : ['Start Recording', 'Check Microphone', 'Change Shortcut…',
-  'Double-tap to lock recording', '250 ms', '300 ms', '400 ms',
+  : ['Controls', 'Models', 'Access', 'Diagnostics', 'Start Recording', 'Check Microphone', 'Change Shortcut…',
+   'Double-tap to lock recording', 'Tap interval, 300 milliseconds. Range 200 to 500 milliseconds',
   'Paste automatically', 'Show capsule', 'Launch at Login'];
+if (process.argv[3].startsWith('settings-result-')) controls.push('Dismiss');
 for (const name of controls) {
-  const row = snapshot.split('\n').find(line => line.includes(`name="${name}"`));
+  const row = snapshot.split('\n').find(line => line.includes(`name="${name}"`) && /role=(button|switch|treeitem|slider) /.test(line));
   assert.ok(row, `Missing control: ${name}`);
   const bounds = row.match(/bounds=\(([-\d.]+),([-\d.]+) ([-\d.]+)x([-\d.]+)\)/);
   assert.ok(bounds, `Missing bounds: ${name}`);
@@ -130,6 +131,34 @@ if [[ "$SCENE" == hotkey-conflict-* ]]; then
 fi
 "$CLI" automate widget-key main-canvas shift+tab
 "$CLI" automate assert 'focused=true'
+
+if [[ "$SCENE" == settings-dark ]]; then
+  # The navigation tree uses native activation and arrow-key selection.
+  for section in Models Access Diagnostics Controls; do
+    id="$(sed -n "s/.*widget @w1\/main-canvas#\([0-9]*\) role=treeitem name=\"$section\".*/\1/p" "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt")"
+    "$CLI" automate widget-action main-canvas "$id" press
+    "$CLI" automate assert "role=treeitem name=\"$section\".*state=\[[^]]*selected"
+    case "$section" in
+      Models) "$CLI" automate assert 'role=text name="Local models"' ;;
+      Access) "$CLI" automate assert 'role=text name="Permissions"' ;;
+      Diagnostics) "$CLI" automate assert 'role=text name="Safe diagnostics"' ;;
+      Controls) "$CLI" automate assert 'role=switch name="Launch at Login"' ;;
+    esac
+  done
+  "$CLI" automate widget-key main-canvas arrowdown
+  "$CLI" automate assert 'role=treeitem name="Models".*state=\[[^]]*selected' 'role=text name="Local models"'
+  "$CLI" automate tray-action 20
+  slider_id="$(sed -n 's/.*widget @w1\/main-canvas#\([0-9]*\) role=slider name="Tap interval, [^"]*".*/\1/p' "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt")"
+  "$CLI" automate widget-drag main-canvas "$slider_id" 0.3333 0.8
+  "$CLI" automate assert 'role=text name="440 ms"' 'role=text name="Ready when you are\."' 'role=slider name="Tap interval, 440 milliseconds. Range 200 to 500 milliseconds"'
+  "$CLI" automate widget-action main-canvas "$slider_id" focus
+  "$CLI" automate widget-key main-canvas home
+  "$CLI" automate assert 'role=text name="200 ms"'
+  "$CLI" automate widget-key main-canvas arrowright
+  "$CLI" automate assert 'role=text name="220 ms"'
+  "$CLI" automate widget-key main-canvas end
+  "$CLI" automate assert 'role=text name="500 ms"'
+fi
 
 if [[ "$UPDATE" == "1" ]]; then
   cp "$CAPTURE" "$GOLDEN"

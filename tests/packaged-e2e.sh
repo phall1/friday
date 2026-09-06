@@ -123,7 +123,7 @@ done
 # The process owns a live menu-only status item, and its explicit Open Friday
 # row routes the app window back to the settings page.
 launch_scene model-light
-"$CLI" automate assert 'role=button name="Models"' 'role=text name="Local models"' >/dev/null
+"$CLI" automate assert 'role=treeitem name="Models"' 'role=text name="Local models"' >/dev/null
 "$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate assert 'role=button name="Check Microphone"' 'role=switch name="Launch at Login"' >/dev/null
 
@@ -146,8 +146,8 @@ fi
 # TCC. A separate-process helper remains a required release check when the
 # controlling GUI session grants that helper event-post authority.
 launch_scene settings-light
-diagnostics_id="$(widget_id button 'Diagnostics')"
-"$CLI" automate widget-action main-canvas "$diagnostics_id" toggle >/dev/null
+diagnostics_id="$(widget_id treeitem 'Diagnostics')"
+"$CLI" automate widget-action main-canvas "$diagnostics_id" press >/dev/null
 probe_id="$(widget_id button 'Run Automation Hotkey Probe')"
 "$CLI" automate widget-action main-canvas "$probe_id" press >/dev/null
 "$CLI" automate assert 'role=text name="recording"' 'Locked recording' >/dev/null
@@ -197,8 +197,8 @@ launch_scene settings-light FRIDAY_AUTOMATION_LOGIN=cycle
 
 # Diagnostics must expose safe facts and explicit exclusion flags only.
 "$CLI" automate tray-action 20 >/dev/null
-diag_id="$(widget_id button Diagnostics)"
-"$CLI" automate widget-action main-canvas "$diag_id" toggle >/dev/null
+diag_id="$(widget_id treeitem Diagnostics)"
+"$CLI" automate widget-action main-canvas "$diag_id" press >/dev/null
 "$CLI" automate assert 'role=text name="Safe diagnostics"' 'transcriptIncluded' 'audioIncluded' 'rawPathsIncluded' >/dev/null
 "$CLI" automate assert --absent "$WORK/fixture.f32" 'Friday local dictation works' >/dev/null
 

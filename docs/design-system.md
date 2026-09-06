@@ -1,7 +1,8 @@
 # Friday design system
 
-Friday is a small, dependable dictation utility. Its interface should feel
-welcoming, legible, and immediately useful.
+Friday is a small, dependable dictation instrument. Its interface should feel
+precise, composed, and immediately useful: a fixed navigation rail, a clear
+type scale, flat sections, and restrained color.
 
 ## Principles
 
@@ -18,15 +19,17 @@ welcoming, legible, and immediately useful.
 
 ## Tokens
 
-The Native SDK Geist register supplies control metrics, typography, surfaces,
-contrast, and focus treatment. `projectThemeState` owns Friday's copper accent:
+The Native SDK Geist register supplies control metrics, surfaces, contrast,
+and focus treatment. `projectThemeState` owns Friday's cobalt accent;
+`native/design.zig` layers IBM Plex Sans and tighter geometry over the live
+theme. Bundled fonts and their OFL license live in `native/fonts/`.
 
 | Role | Light | Dark | Use |
 | --- | --- | --- | --- |
-| `accent` | `#a1693e` | `#a1693e` | Friday wordmark, primary action, selected controls |
+| `accent` | `#476fd9` | `#476fd9` | Primary action, readiness mark, slider fill |
 | `accent_text` | SDK contrast-selected | SDK contrast-selected | Text on accent controls |
 | `surface_subtle` | SDK neutral wash | SDK neutral wash | Window field, inset notices |
-| `surface` | SDK white | SDK black | Content groups and header |
+| `surface` | SDK white | SDK black | Main content field |
 | `text` / `text_muted` | SDK | SDK | Primary / supporting text |
 | `success` | SDK green | SDK green | Ready and granted indicators |
 | `warning` | SDK amber | SDK amber | Recovery and invalid candidates |
@@ -35,32 +38,54 @@ contrast, and focus treatment. `projectThemeState` owns Friday's copper accent:
 Colors in markup are token references. System appearance is followed live;
 high contrast suppresses the custom accent through the SDK. Native title bars
 follow macOS even when test fixtures force canvas appearance.
-The copper is 4.56:1 against white and 4.61:1 against black. A shared accent
+The cobalt is 4.62:1 against white and 4.54:1 against black. A shared accent
 also remains legible while transient appearance facts rehydrate after saving
 preferences; no cached OS appearance is needed to choose its color.
 
 ## Layout and typography
 
-- Window: 640×480 default. Main content: 12 px padding, 8 px group gap.
-- Header: 12 px padding; wordmark at 1.4× body, bold; four compact text tabs.
-- Status area: 12 px padding; 28 px semantic icon; 1.4× medium headline;
-  small wrapped description. Primary action sits beside it.
-- Settings groups: 12 px padding, 8 px row gaps, `lg` radius. Separate
-  input/shortcut/lock from output/window/login preferences.
+- Window: 640×480 default. Navigation: 148 px fixed rail, 12 px insets,
+  6 px item gaps, and a 1 px vertical divider. Content: 20 px insets and
+  10 px section gaps. Controls uses flat sections separated by rules.
+- Navigation: SDK `tree` with four labeled, icon-bearing `treeitem` rows.
+  Selection follows arrow-key focus; pointer and accessibility activation
+  open the same destination. The rail never scrolls with the content.
+- Wordmark: 1.6× body, SemiBold. Headline: 1.4× body, Medium.
+  Body: Plex Sans Regular 14 px; supporting copy: 13 px; controls: Medium
+  13 px. The native theme hook registers real Regular/Medium/SemiBold faces;
+  custom span weights resolve to their companion font IDs.
+- Status: 20 px semantic icon and headline beside the action; the wrapped
+  explanation gets its own full-width row so recording controls cannot clip it.
+- Preference labels align left; label-free, accessibly named switches align
+  right. Switch tracks are monochrome with a 6 px corner and a contrasting
+  thumb. Disabled controls retain native semantics and hit-testing behavior.
+- Tap interval: the Geist slider primitive, 200–500 ms in 10 ms steps, with
+  a live fixed-width monospace readout. Dragging and keyboard input update the
+  model. A 500 ms debounce saves through the scrubbed persistence boundary;
+  an active session, failure, undismissed result, shortcut editor, or another
+  settings destination postpones the save. Normal Quit persists the scrubbed
+  preferences before shutdown so a deferred interval survives relaunch.
+  The slider's accessible name includes its live milliseconds and range.
+  Turning locking off or starting dictation disables interval editing.
 - Completed-session messages replace the status description; Copy/Dismiss sit
   in the footer. Do not add a second result card that forces Controls to scroll.
-- Body: default proportional type. Supporting copy: `size="sm"`, muted.
 - Monospace: time, revision, byte telemetry; never ordinary prose.
 - Controls: `size="sm"` consistently. Primary for progression, outline for
   configuration, ghost for low-emphasis actions, destructive for deletion.
-- Icons: SDK vector vocabulary, 20 px in settings, 14 px in the privacy footer.
-  Icons supplement accessible labels; controls retain text names.
+- Icons: SDK vector vocabulary. Icons supplement accessible labels;
+  controls retain text names.
 - Shortcut dialog: 20 px padding, 12 px gap. Candidate warnings wrap. Presets
   remain one-action choices; custom candidates require confirmation.
   Use an explicit heading inside the column: the SDK's surface `text` title
   paints over content without reserving a row. Autofocus the first preset so
   Escape has a focused descendant from which to resolve the modal boundary.
   Warning prose uses primary text ink for contrast in both appearances.
+
+The stock SDK runner accepts optional extension font registrations and a
+post-resolution theme refinement hook through the checked-in SDK patch.
+Friday only refines type/shape and normal-contrast switch colors. High contrast
+keeps all SDK control colors, while Reduce Motion, focus strokes, and device
+scale remain runtime-owned. This does not require a custom application runner.
 
 ## Menu bar
 

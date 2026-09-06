@@ -121,8 +121,8 @@ done
 "$CLI" automate tray-action 22 >/dev/null
 "$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate snapshot >/dev/null
-diagnostics_id="$(widget_id button Diagnostics)"
-"$CLI" automate widget-action main-canvas "$diagnostics_id" toggle >/dev/null
+diagnostics_id="$(widget_id treeitem Diagnostics)"
+"$CLI" automate widget-action main-canvas "$diagnostics_id" press >/dev/null
 "$CLI" automate tray-action 20 >/dev/null
 "$CLI" automate snapshot >"$PROFILE"
 "$CLI" automate assert --absent 'error event=' >/dev/null

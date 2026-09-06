@@ -183,9 +183,8 @@ export type Msg =
   | { readonly kind: "confirm_hotkey_candidate" }
   | { readonly kind: "choose_command_shift" }
   | { readonly kind: "choose_control_option" }
-  | { readonly kind: "set_double_tap_fast" }
-  | { readonly kind: "set_double_tap_balanced" }
-  | { readonly kind: "set_double_tap_deliberate" }
+  | { readonly kind: "set_double_tap_interval"; readonly fraction: number }
+  | { readonly kind: "save_double_tap_interval"; readonly at: number }
   | { readonly kind: "cancel_model_download" }
   | { readonly kind: "retry_model_download" }
   | { readonly kind: "hf_model_resolved"; readonly body: Uint8Array }

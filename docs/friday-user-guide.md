@@ -43,13 +43,14 @@ Friday rejects ordinary unmodified typing and warns about known macOS-reserved, 
 
 - Press and hold the shortcut; recording begins after the deliberate hold threshold. Release to stop and transcribe.
 - A very short first press seeds double-tap detection without recording usable audio.
-- Press again within the selected 250 ms, 300 ms, or 400 ms window to lock recording.
+- Press again within your selected tap interval to lock recording. Drag **Tap interval** in Controls to choose 200–500 ms in 10 ms steps; the default is 300 ms. The slider also supports arrow keys and Home/End. Interval editing is disabled while locking is off or dictation is active.
 - A locked session continues after release. Use **Stop Recording** to transcribe or **Cancel** to discard.
 - A normal long hold never seeds a later lock.
 
 Friday allows one active session. Cancel invalidates it immediately, and late results from that generation are ignored.
 
-Controls keeps the microphone, current shortcut, double-tap timing, automatic
+The fixed sidebar opens Controls, Models, Access, and Diagnostics. Arrow keys
+move between sections. Controls keeps the microphone, current shortcut, double-tap timing, automatic
 paste, capsule visibility, and Launch at Login together in the default window.
 Timing choices are disabled when double-tap locking is off. Check Microphone
 inspects the system input format without recording; it is not a live level test.

@@ -141,7 +141,7 @@ index 0000000..a0cab94
 +    }
 +};
 diff --git a/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig b/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
-index cd98674..97f84b4 100644
+index cd98674..281dd0c 100644
 --- a/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
 +++ b/node_modules/@native-sdk/cli/src/app_runner/ts_core_main.zig
 @@ -67,6 +67,7 @@ const services = @import("services.zig");
@@ -163,7 +163,16 @@ index cd98674..97f84b4 100644
  const app_permissions = manifestStringList(manifest, "permissions");
  const allowed_origins = manifestAllowedOrigins();
  const app_data_dir_env = "NATIVE_SDK_APP_DATA_DIR";
-@@ -149,6 +154,8 @@ pub fn main(init: std.process.Init) !void {
+@@ -107,6 +112,8 @@ pub fn main(init: std.process.Init) !void {
+         // high contrast — accessibility beats brand).
+         .theme = comptime runner.manifestThemePack(),
+         .theme_accent = comptime runner.manifestThemeAccent(),
++        .fonts = if (@hasDecl(app_extension, "fonts")) &(comptime app_extension.fonts(App.FontRegistration)) else &.{},
++        .theme_refine_fn = if (@hasDecl(app_extension, "refineTheme")) app_extension.refineTheme else null,
+     };
+     if (comptime @hasDecl(core.Model, "windows")) {
+         options.window_view = window_views.build;
+@@ -149,6 +156,8 @@ pub fn main(init: std.process.Init) !void {
          &data_dir_buffer,
      ) catch "";
      if (app_data_dir.len > 0) std.Io.Dir.cwd().createDirPath(init.io, app_data_dir) catch {};
@@ -172,7 +181,7 @@ index cd98674..97f84b4 100644
 
      // TypeScript services, on the build-selected carrier (service_carrier.zig).
      // In-process (explicit opt-in): the service archive is linked into this
-@@ -300,7 +307,7 @@ pub fn main(init: std.process.Init) !void {
+@@ -300,7 +309,7 @@ pub fn main(init: std.process.Init) !void {
          else if (comptime use_child)
              child_transport.binding()
          else
@@ -207,6 +216,51 @@ index 280ed14..e8f1386 100644
      if (!serviceClass || ![serviceClass respondsToSelector:selector]) return nil;
      IMP implementation = [serviceClass methodForSelector:selector];
      return ((id (*)(id, SEL))implementation)(serviceClass, selector);
+diff --git a/node_modules/@native-sdk/cli/src/primitives/canvas/text_spans.zig b/node_modules/@native-sdk/cli/src/primitives/canvas/text_spans.zig
+index dc60e74..cdd1198 100644
+--- a/node_modules/@native-sdk/cli/src/primitives/canvas/text_spans.zig
++++ b/node_modules/@native-sdk/cli/src/primitives/canvas/text_spans.zig
+@@ -135,11 +135,15 @@ pub const TextSpanLayout = struct {
+
+ /// Resolve the font id a span draws (and therefore measures) with. Weight
+ /// and slant map onto the reserved sans variant ids only when the app uses
+-/// the default sans font; custom fonts keep their id and degrade weight to
+-/// the base face. Mono ignores weight/slant (a single mono face ships).
++/// the default sans font; custom families may supply medium/bold companion
++/// ids and otherwise keep the base face. Mono ignores weight/slant.
+ pub fn textSpanFontId(span: TextSpan, typography: token_model.TypographyTokens) FontId {
+     if (span.monospace) return typography.mono_font_id;
+-    if (typography.font_id != canvas.default_sans_font_id) return typography.font_id;
++    if (typography.font_id != canvas.default_sans_font_id) return switch (span.weight) {
++        .regular => typography.font_id,
++        .medium => typography.medium_font_id orelse typography.font_id,
++        .bold => typography.bold_font_id orelse typography.font_id,
++    };
+     return switch (span.weight) {
+         .regular => if (span.italic) canvas.default_sans_italic_font_id else canvas.default_sans_font_id,
+         .medium => if (span.italic) canvas.default_sans_bold_italic_font_id else canvas.default_sans_medium_font_id,
+diff --git a/node_modules/@native-sdk/cli/src/primitives/canvas/tokens.zig b/node_modules/@native-sdk/cli/src/primitives/canvas/tokens.zig
+index 9bd8032..2c98354 100644
+--- a/node_modules/@native-sdk/cli/src/primitives/canvas/tokens.zig
++++ b/node_modules/@native-sdk/cli/src/primitives/canvas/tokens.zig
+@@ -384,6 +384,8 @@ pub const FontFamily = enum {
+
+ pub const TypographyTokens = struct {
+     font_id: FontId = default_sans_font_id,
++    medium_font_id: ?FontId = null,
++    bold_font_id: ?FontId = null,
+     mono_font_id: FontId = default_mono_font_id,
+     font_family: FontFamily = default_sans_font_family,
+     mono_font_family: FontFamily = default_mono_font_family,
+@@ -1320,6 +1322,8 @@ pub const ColorTokenOverrides = struct {
+
+ pub const TypographyTokenOverrides = struct {
+     font_id: ?FontId = null,
++    medium_font_id: ?FontId = null,
++    bold_font_id: ?FontId = null,
+     mono_font_id: ?FontId = null,
+     font_family: ?FontFamily = null,
+     mono_font_family: ?FontFamily = null,
 diff --git a/node_modules/@native-sdk/cli/src/root.zig b/node_modules/@native-sdk/cli/src/root.zig
 index 2da935a..c1fa0c0 100644
 --- a/node_modules/@native-sdk/cli/src/root.zig
@@ -231,3 +285,25 @@ index d6a79e9..2307a25 100644
  pub const HostCallCompletion = runtime_effects.HostCallCompletion;
  pub const ServiceHost = @import("service_host.zig").ServiceHost;
  pub const serviceEnvironmentVariableAllowed = @import("service_host.zig").environmentVariableAllowed;
+diff --git a/node_modules/@native-sdk/cli/src/runtime/ui_app.zig b/node_modules/@native-sdk/cli/src/runtime/ui_app.zig
+index 02589cb..d2955a1 100644
+--- a/node_modules/@native-sdk/cli/src/runtime/ui_app.zig
++++ b/node_modules/@native-sdk/cli/src/runtime/ui_app.zig
+@@ -504,6 +504,9 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
+             /// The scaffold wires this to app.zon's `theme` field
+             /// through `app_runner.manifestThemePack()`.
+             theme: canvas.ThemePack = .house,
++            /// Refine the resolved stock theme without taking ownership of
++            /// system appearance. Called after accent/contrast resolution.
++            theme_refine_fn: ?*const fn (canvas.DesignTokens, bool) canvas.DesignTokens = null,
+             /// Model-derived built-in theme pack. When set, this is
+             /// consulted on every rebuild instead of the static `theme`
+             /// field, while the runtime continues to own the live system
+@@ -1945,6 +1948,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
+                     tokens = tokens.withOverrides(canvas.accentOverrides(accent, color_scheme));
+                 }
+             }
++            if (self.options.theme_refine_fn) |refine| tokens = refine(tokens, self.system_appearance.high_contrast);
+             tokens.pixel_snap.scale = self.pixel_snap_scale;
+             return tokens;
+         }

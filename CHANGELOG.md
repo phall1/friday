@@ -7,7 +7,8 @@ All notable changes to Friday are documented here.
 ### Changed
 
 - Reorganized Controls to fit everyday preferences at 640×480 without scrolling, with a focused shortcut editor, disabled timing controls when locking is off, and direct permission recovery.
-- Introduced copper action accents, layered surfaces, readable heading hierarchy, and semantic readiness/access indicators. Removed the duplicate ready state and idle microphone waveform.
+- Replaced top navigation with a fixed, keyboard-navigable sidebar, bundled IBM Plex Sans, cobalt actions, flat sections, and right-aligned monochrome switches. Removed the duplicate ready state and idle microphone waveform.
+- Replaced fixed double-tap timing presets with a draggable 200–500 ms slider, live 10 ms readout, keyboard adjustment, and debounced saving that preserves an active session or undismissed result.
 - Shortened menu-bar status to one compact line and moved Launch at Login to Controls. Expanded README with usage, installation, and an actual app-rendered screenshot.
 - Added viewport geometry checks alongside light/dark Controls goldens so offscreen preferences cannot pass visual acceptance.
 - Restricted production GGUF parser and recognizer access to Friday-reviewed immutable, hash-pinned manifest identities. Arbitrary local and Hugging Face artifacts remain metadata candidates only; they are never downloaded or runtime-probed in the unsandboxed app.

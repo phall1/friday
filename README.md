@@ -7,7 +7,7 @@ and release. Friday transcribes on your Mac and returns the final words to
 where you started.
 
 <p align="center">
-  <img src="docs/images/friday-controls.png" alt="Friday in dark mode: a copper-accented ready state, Start Recording, and microphone, shortcut, lock timing, paste, capsule, and login controls visible together." width="640">
+  <img src="docs/images/friday-controls.png" alt="Friday in dark mode: a fixed navigation sidebar, cobalt Start Recording action, tap-interval slider, and aligned monochrome switches. All everyday controls fit in one window." width="640">
 </p>
 
 <p align="center"><sub>Actual Friday renderer capture · deterministic ready-state fixture · dark appearance</sub></p>

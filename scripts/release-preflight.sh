@@ -8,7 +8,7 @@ RUNTIME_PINS="$ROOT/release/macos-arm64-runtime.sha256"
 SOURCE_REPORT="$ROOT/.native/release/source-gates.json"
 E2E_REPORT="$ROOT/.native/release/package-e2e.json"
 UI_SCENES=(
-  onboarding-light settings-dark model-light error-dark
+  onboarding-light settings-dark settings-light settings-result-light model-light error-dark
   recording-light transcribing-dark overlay-preview-light accessibility-dark
   unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark
 )

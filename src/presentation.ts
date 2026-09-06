@@ -147,11 +147,15 @@ export function projectElapsedLabel(model: Model): Uint8Array {
 }
 export function projectHasDiagnosticsExport(model: Model): boolean { return model.diagnosticsExported; }
 export function projectShowOverlayPreview(model: Model): boolean { return model.automationSceneActive && model.automationOverlayPreview; }
+export function projectTapIntervalLabel(model: Model): Uint8Array {
+  const milliseconds = Math.trunc(model.doubleTapWindowMs);
+  return utf8Bytes(`Tap interval, ${milliseconds} milliseconds. Range 200 to 500 milliseconds`);
+}
 export function projectThemeState(model: Model): ThemeState {
   if (model.highContrast) return { pack: "geist", colorScheme: model.appearanceOverride };
-  // One copper clears 4.5:1 against both black and white. It stays legible
-  // while persistence rehydrates appearance facts; the SDK owns OS contrast.
-  return { pack: "geist", colorScheme: model.appearanceOverride, accent: "#a1693e" };
+  // Cobalt clears 4.5:1 against black and white, including while ambient
+  // appearance facts rehydrate after persistence. The SDK owns OS contrast.
+  return { pack: "geist", colorScheme: model.appearanceOverride, accent: "#476fd9" };
 }
 
 // Menu rows are deliberately bounded. Full explanations belong in the window

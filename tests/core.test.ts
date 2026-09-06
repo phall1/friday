@@ -38,6 +38,52 @@ test("boot readiness requires ambient permissions, hotkey, model, and onboarding
   assert.equal(ready.onboardingComplete, true);
 });
 
+test("tap interval drag is bounded, debounced, and cannot reset a live session or result", () => {
+  const ready = readyModel();
+  for (const [fraction, milliseconds] of [[-1, 200], [0.3333, 300], [0.81, 440], [2, 500]]) {
+    const changed = update(ready, { kind: "set_double_tap_interval", fraction });
+    assert.equal(modelOf(changed).doubleTapWindowMs, milliseconds);
+    assert.equal(modelOf(changed).workflow.kind, "ready");
+    assert.equal(modelOf(changed).permissionsLoaded, true);
+    if (milliseconds !== ready.doubleTapWindowMs) assert.equal(commandOf(changed)?.op, "delay");
+  }
+  for (const fraction of [NaN, Infinity, -Infinity]) {
+    assert.equal(update(ready, { kind: "set_double_tap_interval", fraction }), ready);
+  }
+  const disabled = { ...ready, doubleTapEnabled: false };
+  assert.equal(update(disabled, { kind: "set_double_tap_interval", fraction: 1 }), disabled);
+  const recording = dispatch(ready, { kind: "start_recording" });
+  assert.equal(update(recording, { kind: "set_double_tap_interval", fraction: 1 }), recording);
+  const duringSession = update(recording, { kind: "save_double_tap_interval", at: 1000 });
+  assert.equal(modelOf(duringSession), recording);
+  assert.equal(commandOf(duringSession)?.op, "delay");
+  const result = { ...ready, hasImmediateResult: true, immediateResultMessage: bytes("Keep my words") };
+  assert.equal(modelOf(update(result, { kind: "save_double_tap_interval", at: 1000 })), result);
+  for (const editing of [
+    { ...ready, hotkeyCaptureActive: true },
+    { ...ready, hotkeyCandidateConfig: bytes("key=1") },
+    { ...ready, hotkeyCandidateWarning: bytes("Try again") },
+    { ...ready, page: "models" as const },
+  ]) {
+    const deferred = update(editing, { kind: "save_double_tap_interval", at: 1000 });
+    assert.equal(modelOf(deferred), editing);
+    assert.equal(commandOf(deferred)?.op, "delay");
+  }
+  const quitting = update({ ...result, doubleTapWindowMs: 440 }, { kind: "quit_app" });
+  assert.equal(modelOf(quitting).doubleTapWindowMs, 440);
+  assert.equal(modelOf(quitting).immediateResultMessage.length, 0);
+  assert.equal(modelOf(quitting).hasImmediateResult, false);
+  const quitCommands = commandOf(quitting) as { op: string; cmds: { op: string }[] };
+  assert.equal(quitCommands.op, "batch");
+  assert.deepEqual(quitCommands.cmds.map(c => c.op), ["cancel", "persist", "quit_app"]);
+  const changed = dispatch(ready, { kind: "set_double_tap_interval", fraction: 0.8 });
+  const saved = update(changed, { kind: "save_double_tap_interval", at: 1500 });
+  assert.equal(modelOf(saved).doubleTapWindowMs, 440);
+  assert.equal(modelOf(saved).sessionSourceToken.length, 0);
+  assert.equal(modelOf(saved).immediateResultMessage.length, 0);
+  assert.equal(commandOf(saved)?.op, "batch");
+});
+
 test("short modifier tap seeds lock and second tap locks without long-hold seeding", () => {
   let model = readyModel();
   const firstDown = update(model, hostEvent("hotkey_down|1|1000|dG9rZW4=|1||"));
@@ -696,8 +742,8 @@ test("appearance and overlay-preview contracts retain accessibility state", () =
   assert.equal(appearance.systemColorScheme, "dark");
   assert.equal(themeState(appearance).pack, "geist");
   assert.equal(themeState(appearance).accent, undefined);
-  assert.equal(themeState({ ...appearance, highContrast: false }).accent, "#a1693e");
-  assert.equal(themeState({ ...appearance, highContrast: false, appearanceOverride: "light" }).accent, "#a1693e");
+  assert.equal(themeState({ ...appearance, highContrast: false }).accent, "#476fd9");
+  assert.equal(themeState({ ...appearance, highContrast: false, appearanceOverride: "light" }).accent, "#476fd9");
   const preview = dispatch(initial, { kind: "automation_scene_requested", value: bytes("overlay-preview-light") });
   assert.equal(preview.automationOverlayPreview, true);
   const dismissed = dispatch(preview, { kind: "dismiss_overlay_preview" });
@@ -789,7 +835,7 @@ test("preference saves recover live input and login facts after persistence scru
   ready = dispatch(ready, { kind: "microphone_loaded", body: bytes('{"deviceName":"Studio microphone","detail":"Available · 48000 Hz · 1 channel"}') });
   const saves: Msg[] = [{ kind: "hotkey_configured", body: bytes('{"ok":true}') },
     { kind: "toggle_paste" }, { kind: "toggle_overlay" }, { kind: "toggle_double_tap" },
-    { kind: "set_double_tap_fast" }, { kind: "set_double_tap_balanced" }, { kind: "set_double_tap_deliberate" }];
+    { kind: "save_double_tap_interval", at: 1000 }];
   for (const save of saves) {
     const cleared = dispatch(ready, save);
     assert.equal(cleared.loginStatus, "checking");

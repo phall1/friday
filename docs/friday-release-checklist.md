@@ -74,7 +74,7 @@ This fast repository check fails on a dirty/stale commit or tag, wrong Node/Zig/
 scripts/release-preflight.sh source "$EXPECTED_COMMIT" "$EXPECTED_TAG"
 ```
 
-The source preflight runs `npm run check`, `npm run build`, `npm test`, the icon check, an automation build, and all twelve UI/accessibility/keyboard goldens. It writes an ignored, commit/tag-bound gate report only after every command passes and the worktree remains clean.
+The source preflight runs `npm run check`, `npm run build`, `npm test`, the icon check, an automation build, and all fourteen UI/accessibility/keyboard goldens. It writes an ignored, commit/tag-bound gate report only after every command passes and the worktree remains clean.
 
 - [ ] Canonical icon SVG and 1024×1024 PNG pass their pinned integrity check:
 
@@ -84,12 +84,12 @@ scripts/verify-icon.sh
 
 ## UI and behavior evidence
 
-Build the raw automation binary and compare all twelve committed 640×480 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
+Build the raw automation binary and compare all fourteen committed 640×480 scenes. The harness backs up/restores Native state and refuses to race a running Friday process.
 
 ```sh
 zig build -Dtarget=aarch64-macos -Dautomation=true
 export FRIDAY_APP_BINARY="$PWD/zig-out/bin/friday"
-for scene in onboarding-light settings-dark model-light error-dark \
+for scene in onboarding-light settings-dark settings-light settings-result-light model-light error-dark \
   recording-light transcribing-dark overlay-preview-light accessibility-dark \
   unsupported-intel-light hotkey-conflict-light resume-light hf-confirmation-dark; do
   tests/ui-automation.sh "$scene"

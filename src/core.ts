@@ -57,6 +57,7 @@ export const envMsgs = [
 ] as const;
 export const appearanceMsg = "appearance_changed";
 export const viewUnbound = [
+  "save_double_tap_interval",
   "host_event", "subscribed", "subscribe_failed", "permissions_loaded", "permissions_failed",
   "model_status_loaded", "model_status_failed", "model_downloaded", "model_download_failed",
   "restored", "fresh_boot", "restore_failed", "source_captured", "source_capture_failed", "hotkey_configured", "hotkey_failed", "hold_elapsed",
@@ -124,6 +125,7 @@ export function failureDetail(model: Model): Uint8Array { return presentation.pr
 export function elapsedLabel(model: Model): Uint8Array { return presentation.projectElapsedLabel(model); }
 export function hasDiagnosticsExport(model: Model): boolean { return presentation.projectHasDiagnosticsExport(model); }
 export function showOverlayPreview(model: Model): boolean { return presentation.projectShowOverlayPreview(model); }
+export function tapIntervalLabel(model: Model): Uint8Array { return presentation.projectTapIntervalLabel(model); }
 export function themeState(model: Model): ThemeState { return presentation.projectThemeState(model); }
 export function statusItem(model: Model): StatusItemState { return presentation.projectStatusItem(model); }
 
@@ -243,7 +245,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "quit_app":
-      return [model, Cmd.quitApp()];
+      if (model.automationSceneActive || !model.onboardingComplete || !model.platformSupported) return [model, Cmd.quitApp()];
+      // A result or shortcut editor can postpone the slider's save. On Quit
+      // there is no live UI to preserve; snapshot the scrubbed preferences
+      // before the SDK drains its persistence coordinator during shutdown.
+      return [durableModel(model), Cmd.batch([Cmd.cancel("tap-interval-save"), Cmd.persist(), Cmd.quitApp()])];
     case "onboarding_next":
       if (!model.platformSupported) return model;
       if (model.onboardingStep === 0) return { ...model, onboardingStep: 1 / 1 };
@@ -270,12 +276,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [{ ...model, hotkeyCaptureActive: false, hotkeyChoice: "command_shift", hotkeyCandidateConfig: asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Command + Shift"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.batch([Cmd.cancel("hotkey-capture"), Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=1;shift=1;option=0;control=0;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })])];
     case "choose_control_option":
       return [{ ...model, hotkeyCaptureActive: false, hotkeyChoice: "control_option", hotkeyCandidateConfig: asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), hotkeyCandidateDisplay: utf8Bytes("Control + Option"), hotkeyCandidateWarning: asciiBytes(""), hotkeyCandidateValid: true }, Cmd.batch([Cmd.cancel("hotkey-capture"), Cmd.request("friday.hotkey.configure", asciiBytes("key=-1;command=0;shift=0;option=1;control=1;fn=0"), { key: "hotkey-configure", ok: "hotkey_configured", err: "hotkey_failed" })])];
-    case "set_double_tap_fast":
-      return [durableModel({ ...model, doubleTapWindowMs: 250 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
-    case "set_double_tap_balanced":
-      return [durableModel({ ...model, doubleTapWindowMs: 300 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
-    case "set_double_tap_deliberate":
-      return [durableModel({ ...model, doubleTapWindowMs: 400 / 1 }), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
+    case "set_double_tap_interval": {
+      if (isBusy(model) || !model.doubleTapEnabled || !Number.isFinite(msg.fraction)) return model;
+      const milliseconds = Math.round((200 + Math.max(0, Math.min(1, msg.fraction)) * 300) / 10) * 10;
+      if (milliseconds === model.doubleTapWindowMs) return model;
+      // Keep live readiness and the drag intact. Persist only after the hand
+      // settles, through the same transcript-scrubbing boundary as settings.
+      return [{ ...model, doubleTapWindowMs: milliseconds }, Cmd.delay("tap-interval-save", 500, "save_double_tap_interval")];
+    }
+    case "save_double_tap_interval":
+      if (model.automationSceneActive) return model;
+      // A shortcut may have started recording during the debounce window.
+      if (isBusy(model) || model.workflow.kind === "failed" || model.hasImmediateResult || model.page !== "settings" || model.hotkeyCaptureActive || model.hotkeyCandidateConfig.length > 0 || model.hotkeyCandidateWarning.length > 0) return [model, Cmd.delay("tap-interval-save", 1000, "save_double_tap_interval")];
+      return [durableModel(model), Cmd.batch([Cmd.persist(), Cmd.request("friday.permissions", asciiBytes(""), { key: "permissions", ok: "permissions_loaded", err: "permissions_failed" }), Cmd.request("friday.model.status", asciiBytes(""), { key: "model-status", ok: "model_status_loaded", err: "model_status_failed" })])];
     case "select_model": {
       if (isBusy(model)) return { ...model, modelDownloadMessage: utf8Bytes("Finish or cancel the active dictation before changing models.") };
       const key = parseUnsigned(msg.rowKey, 0, msg.rowKey.length);
