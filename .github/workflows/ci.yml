@@ -52,12 +52,15 @@ jobs:
         run: scripts/verify-icon.sh
       - name: Build and verify automation-enabled arm64 development binary
         run: |
+          set -euo pipefail
           zig build -Dtarget=aarch64-macos -Dautomation=true
           test "$(lipo -archs zig-out/bin/friday)" = arm64
-          file zig-out/bin/friday | grep -q arm64
-          ! file zig-out/bin/friday | grep -q x86_64
-          ! nm -gU zig-out/bin/friday | grep -q 'friday_host_native_'
-          ! otool -L zig-out/bin/friday | grep -q 'FridayHost'
+          description="$(file zig-out/bin/friday)"
+          symbols="$(nm -gU zig-out/bin/friday)"
+          libraries="$(otool -L zig-out/bin/friday)"
+          [[ "$description" == *arm64* && "$description" != *x86_64* ]]
+          [[ "$symbols" != *friday_host_native_* ]]
+          [[ "$libraries" != *FridayHost* ]]
       - name: Compare all UI, accessibility, and keyboard goldens
         env:
           FRIDAY_APP_BINARY: ${{ github.workspace }}/zig-out/bin/friday
