@@ -7,7 +7,6 @@ CLI="${FRIDAY_NATIVE_CLI:-$ROOT/node_modules/.bin/native}"
 UPDATE=0
 if [[ "${1:-}" == "--update" ]]; then UPDATE=1; shift; fi
 SCENE="${1:?usage: tests/ui-automation.sh [--update] <onboarding|settings|model|error|recording|transcribing|overlay-preview|accessibility|unsupported-intel|hotkey-conflict|resume|hf-confirmation>-<light|dark>}"
-GOLDEN="$ROOT/tests/screenshots/$SCENE.png"
 CAPTURE="$ROOT/.zig-cache/native-sdk-automation/screenshot-main-canvas.png"
 RESULTS="$ROOT/.zig-cache/ui-results/$SCENE"
 SUPPORT_ROOT="$HOME/Library/Application Support/com.phall.friday"
@@ -66,11 +65,9 @@ if pgrep -x friday >/dev/null; then
   echo "Friday is already running; close it before UI automation so user state cannot race the harness." >&2
   exit 2
 fi
-mkdir -p "$ROOT/tests/screenshots"
 mkdir -p "$RESULTS"
 rm -f "$CAPTURE" "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt" \
-  "$RESULTS/actual.png" "$RESULTS/expected.png" "$RESULTS/snapshot.txt"
-if [[ -f "$GOLDEN" ]]; then cp "$GOLDEN" "$RESULTS/expected.png"; fi
+  "$RESULTS/actual.png" "$RESULTS/expected.png" "$RESULTS/snapshot.txt" "$RESULTS/capture.txt"
 if [[ -d "$STATE_DIR" ]]; then
   ditto "$STATE_DIR" "$BACKUP_ROOT/State"
   HAD_STATE=1
@@ -90,6 +87,15 @@ FRIDAY_AUTOMATION_SCENE="$SCENE" "$APP" >"$RESULTS/app.log" 2>&1 &
 PID=$!
 cd "$ROOT"
 "$CLI" automate wait >/dev/null
+# Native pixel snapping follows the attached display even though the software
+# screenshot is always 640x480. Never compare a 1x runner with a Retina golden.
+DISPLAY_SCALE="$(sed -n 's/^ *view @w1\/main-canvas .* gpu_scale=\([^ ]*\) .*/\1/p' "$ROOT/.zig-cache/native-sdk-automation/snapshot.txt")"
+case "$DISPLAY_SCALE" in
+  1|2) GOLDEN="$ROOT/tests/screenshots/${DISPLAY_SCALE}x/$SCENE.png" ;;
+  *) echo "unsupported or missing main-canvas display scale: $DISPLAY_SCALE" >&2; exit 2 ;;
+esac
+printf 'display_scale=%s\ngolden=%s\n' "$DISPLAY_SCALE" "${GOLDEN#"$ROOT/"}" >"$RESULTS/capture.txt"
+if [[ -f "$GOLDEN" ]]; then cp "$GOLDEN" "$RESULTS/expected.png"; fi
 "$CLI" automate assert 'window @w1 "Friday" bounds=.* 640x480' "${REQUIRED[@]}"
 "$CLI" automate assert --absent 'error event='
 if [[ "${#NO_ELLIPSIS[@]}" -gt 0 ]]; then "$CLI" automate assert --absent "${NO_ELLIPSIS[@]}"; fi
@@ -171,13 +177,14 @@ if [[ "$SCENE" == settings-dark ]]; then
 fi
 
 if [[ "$UPDATE" == "1" ]]; then
+  mkdir -p "$(dirname "$GOLDEN")"
   cp "$CAPTURE" "$GOLDEN"
   printf 'Updated %s\n' "$GOLDEN"
 elif [[ ! -f "$GOLDEN" ]]; then
   echo "missing golden: $GOLDEN (run with --update)" >&2
   exit 1
 elif ! cmp -s "$CAPTURE" "$GOLDEN"; then
-  echo "golden mismatch for $SCENE (run with --update only after visual review)" >&2
+  echo "golden mismatch for $SCENE at ${DISPLAY_SCALE}x (run with --update only after visual review)" >&2
   shasum -a 256 "$CAPTURE" "$GOLDEN" >&2
   exit 1
 else
