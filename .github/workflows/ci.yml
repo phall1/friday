@@ -9,10 +9,16 @@ on:
 permissions:
   contents: read
 
+# A fresh namespace isolates this rollout from earlier queued/running jobs.
+concurrency:
+  group: free-v1-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   macos:
     name: Apple Silicon macOS Build, Contracts, and UI
-    runs-on: macos-14-xlarge
+    # Standard ARM64 runner: free for this public repository. See docs/ci.md.
+    runs-on: macos-14
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
