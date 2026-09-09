@@ -3,7 +3,7 @@
 Each scene has an exact PNG baseline for the display scale reported by the
 Native SDK's `main-canvas` snapshot:
 
-- `1x/`: standard-density display, including GitHub's `macos-14-xlarge` runner.
+- `1x/`: standard-density display, including the original GitHub hosted captures.
 - `2x/`: Retina display.
 
 Both sets are **640×480 software-renderer captures**. Display scale still
